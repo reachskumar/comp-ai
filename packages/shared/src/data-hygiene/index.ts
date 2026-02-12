@@ -39,3 +39,15 @@ export { parseCSV, detectDelimiter, type ParsedCSV, type CSVParseOptions } from 
 // Main analyzer
 export { analyzeFile } from './analyzer.js';
 
+// Cleaning pipeline
+export { cleanData } from './cleaner.js';
+export {
+  DEFAULT_CLEANING_CONFIG,
+  type CleaningConfig,
+  type CellDiff,
+  type RowDecision,
+  type RowResult,
+  type CleaningSummary,
+  type CleaningResult,
+} from './cleaner-types.js';
+
