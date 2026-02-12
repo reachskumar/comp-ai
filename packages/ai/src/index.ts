@@ -46,6 +46,12 @@ export {
   type SSEEventType,
 } from './streaming.js';
 
+// Copilot tools
+export {
+  createCopilotTools,
+  type CopilotDbAdapter,
+} from './tools/index.js';
+
 // Graphs
 export {
   buildEchoGraph,
@@ -53,4 +59,11 @@ export {
   type EchoGraphInput,
   type EchoGraphOutput,
 } from './graphs/echo-graph.js';
+
+export {
+  buildCopilotGraph,
+  invokeCopilotGraph,
+  type CopilotGraphInput,
+  type CopilotGraphOutput,
+} from './graphs/copilot-graph.js';
 

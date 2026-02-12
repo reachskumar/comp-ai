@@ -29,6 +29,7 @@ const GRAPH_MODEL_DEFAULTS: Record<string, Partial<ModelConfig>> = {
   'anomaly-explainer': { temperature: 0.1, maxTokens: 2048 },
   'data-quality': { temperature: 0.1, maxTokens: 2048 },
   echo: { temperature: 0.7, maxTokens: 1024 },
+  copilot: { temperature: 0.2, maxTokens: 4096 },
 };
 
 /**
