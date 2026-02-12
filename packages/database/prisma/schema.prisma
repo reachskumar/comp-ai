@@ -164,6 +164,7 @@ model Tenant {
   payrollRuns         PayrollRun[]
   auditLogs           AuditLog[]
   notifications       Notification[]
+  integrationConnectors IntegrationConnector[]
 
   @@map("tenants")
 }
@@ -531,6 +532,184 @@ model PayrollAnomaly {
   @@index([employeeId])
   @@index([payrollRunId, resolved])
   @@map("payroll_anomalies")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Integration Hub
+// ─────────────────────────────────────────────────────────────
+
+enum ConnectorType {
+  HRIS
+  PAYROLL
+  BENEFITS
+  SSO
+  CUSTOM
+}
+
+enum ConnectorStatus {
+  ACTIVE
+  INACTIVE
+  ERROR
+  PENDING
+}
+
+enum SyncDirection {
+  INBOUND
+  OUTBOUND
+  BIDIRECTIONAL
+}
+
+enum SyncSchedule {
+  REALTIME
+  HOURLY
+  DAILY
+  MANUAL
+}
+
+enum SyncJobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum SyncLogAction {
+  CREATE
+  UPDATE
+  DELETE
+  SKIP
+  ERROR
+}
+
+enum ConflictStrategy {
+  LAST_WRITE_WINS
+  MANUAL_REVIEW
+  SOURCE_PRIORITY
+}
+
+model IntegrationConnector {
+  id               String          @id @default(cuid())
+  tenantId         String
+  name             String
+  connectorType    ConnectorType
+  status           ConnectorStatus @default(PENDING)
+  config           Json            @default("{}")
+  encryptedCredentials String?
+  credentialIv     String?
+  credentialTag    String?
+  syncDirection    SyncDirection   @default(INBOUND)
+  syncSchedule     SyncSchedule    @default(MANUAL)
+  conflictStrategy ConflictStrategy @default(LAST_WRITE_WINS)
+  lastSyncAt       DateTime?
+  lastHealthCheck  DateTime?
+  healthStatus     String?
+  metadata         Json            @default("{}")
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  syncJobs        SyncJob[]
+  fieldMappings   FieldMapping[]
+  webhookEndpoints WebhookEndpoint[]
+
+  @@index([tenantId])
+  @@index([tenantId, connectorType])
+  @@index([tenantId, status])
+  @@map("integration_connectors")
+}
+
+model SyncJob {
+  id            String        @id @default(cuid())
+  connectorId   String
+  tenantId      String
+  direction     SyncDirection
+  entityType    String
+  status        SyncJobStatus @default(PENDING)
+  totalRecords  Int           @default(0)
+  processedRecords Int        @default(0)
+  failedRecords Int           @default(0)
+  skippedRecords Int          @default(0)
+  startedAt     DateTime?
+  completedAt   DateTime?
+  errorMessage  String?
+  metadata      Json          @default("{}")
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  connector     IntegrationConnector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+  syncLogs      SyncLog[]
+
+  @@index([connectorId])
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([connectorId, createdAt])
+  @@map("sync_jobs")
+}
+
+model SyncLog {
+  id          String        @id @default(cuid())
+  syncJobId   String
+  entityId    String
+  entityType  String
+  action      SyncLogAction
+  sourceData  Json?
+  targetData  Json?
+  diff        Json?
+  errorMessage String?
+  createdAt   DateTime      @default(now())
+
+  syncJob     SyncJob       @relation(fields: [syncJobId], references: [id], onDelete: Cascade)
+
+  @@index([syncJobId])
+  @@index([syncJobId, action])
+  @@index([syncJobId, entityId])
+  @@map("sync_logs")
+}
+
+model FieldMapping {
+  id            String   @id @default(cuid())
+  connectorId   String
+  tenantId      String
+  sourceField   String
+  targetField   String
+  transformType String   @default("direct")
+  transformConfig Json   @default("{}")
+  isRequired    Boolean  @default(false)
+  defaultValue  String?
+  enabled       Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  connector     IntegrationConnector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+
+  @@index([connectorId])
+  @@index([tenantId])
+  @@index([connectorId, enabled])
+  @@map("field_mappings")
+}
+
+model WebhookEndpoint {
+  id            String   @id @default(cuid())
+  connectorId   String
+  tenantId      String
+  url           String
+  direction     String   @default("inbound")
+  events        Json     @default("[]")
+  secretHash    String?
+  isActive      Boolean  @default(true)
+  lastTriggeredAt DateTime?
+  failureCount  Int      @default(0)
+  metadata      Json     @default("{}")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  connector     IntegrationConnector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+
+  @@index([connectorId])
+  @@index([tenantId])
+  @@index([tenantId, isActive])
+  @@map("webhook_endpoints")
 }
 
 // ─────────────────────────────────────────────────────────────
