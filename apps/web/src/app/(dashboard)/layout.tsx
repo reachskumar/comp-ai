@@ -8,13 +8,17 @@ import { Sheet, SheetContent } from "@/components/ui/sheet";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   return (
     <ProtectedRoute>
       <div className="flex h-screen overflow-hidden">
         {/* Desktop sidebar */}
         <div className="hidden lg:block">
-          <Sidebar />
+          <Sidebar
+            collapsed={sidebarCollapsed}
+            onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+          />
         </div>
 
         {/* Mobile sidebar */}
