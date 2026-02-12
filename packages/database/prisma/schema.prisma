@@ -1,0 +1,577 @@
+// Compensation Platform - Prisma Schema
+// Multi-tenant SaaS for compensation management
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────────────────────
+
+enum UserRole {
+  ADMIN
+  HR_MANAGER
+  MANAGER
+  ANALYST
+  EMPLOYEE
+}
+
+enum ImportStatus {
+  PENDING
+  ANALYZING
+  CLEANING
+  REVIEW
+  APPROVED
+  REJECTED
+  COMPLETED
+  FAILED
+}
+
+enum IssueSeverity {
+  ERROR
+  WARNING
+  INFO
+}
+
+enum IssueType {
+  BOM
+  NBSP
+  ZERO_WIDTH
+  SMART_QUOTE
+  ENCODING
+  INVALID_FORMAT
+  DUPLICATE
+  MISSING_REQUIRED
+  OUT_OF_RANGE
+  CUSTOM
+}
+
+enum Resolution {
+  AUTO_FIXED
+  MANUAL_FIXED
+  REJECTED
+  IGNORED
+}
+
+enum RuleSetStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+enum RuleType {
+  MERIT
+  BONUS
+  LTI
+  PRORATION
+  CAP
+  FLOOR
+  ELIGIBILITY
+  CUSTOM
+}
+
+enum SimulationStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum CycleType {
+  MERIT
+  BONUS
+  LTI
+  COMBINED
+}
+
+enum CycleStatus {
+  DRAFT
+  PLANNING
+  ACTIVE
+  CALIBRATION
+  APPROVAL
+  COMPLETED
+  CANCELLED
+}
+
+enum RecommendationType {
+  MERIT_INCREASE
+  BONUS
+  LTI_GRANT
+  PROMOTION
+  ADJUSTMENT
+}
+
+enum RecommendationStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+  ESCALATED
+}
+
+enum PayrollStatus {
+  DRAFT
+  PROCESSING
+  REVIEW
+  APPROVED
+  FINALIZED
+  ERROR
+}
+
+enum AnomalyType {
+  NEGATIVE_NET
+  SPIKE
+  DROP
+  UNUSUAL_DEDUCTION
+  MISSING_COMPONENT
+  DUPLICATE
+  CUSTOM
+}
+
+enum AnomalySeverity {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+}
+
+// ─────────────────────────────────────────────────────────────
+// Tenancy & Auth
+// ─────────────────────────────────────────────────────────────
+
+model Tenant {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  plan      String   @default("free")
+  settings  Json     @default("{}")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users               User[]
+  employees           Employee[]
+  importJobs          ImportJob[]
+  ruleSets            RuleSet[]
+  simulationRuns      SimulationRun[]
+  compCycles          CompCycle[]
+  payrollRuns         PayrollRun[]
+  auditLogs           AuditLog[]
+  notifications       Notification[]
+
+  @@map("tenants")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  tenantId  String
+  email     String
+  name      String
+  role      UserRole @default(EMPLOYEE)
+  avatarUrl String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant              Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  importJobs          ImportJob[]
+  simulationRuns      SimulationRun[]
+  approvedRecs        CompRecommendation[]
+  auditLogs           AuditLog[]
+  notifications       Notification[]
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@map("users")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Employee Master
+// ─────────────────────────────────────────────────────────────
+
+model Employee {
+  id              String    @id @default(cuid())
+  tenantId        String
+  employeeCode    String
+  email           String
+  firstName       String
+  lastName        String
+  department      String
+  level           String
+  location        String?
+  managerId       String?
+  hireDate        DateTime
+  terminationDate DateTime?
+  currency        String    @default("USD")
+  baseSalary      Decimal   @default(0) @db.Decimal(12, 2)
+  totalComp       Decimal   @default(0) @db.Decimal(12, 2)
+  metadata        Json      @default("{}")
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  tenant          Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  manager         Employee? @relation("EmployeeManager", fields: [managerId], references: [id], onDelete: SetNull)
+  directReports   Employee[] @relation("EmployeeManager")
+
+  recommendations  CompRecommendation[]
+  cycleBudgets     CycleBudget[]
+  payrollLineItems PayrollLineItem[]
+  payrollAnomalies PayrollAnomaly[]
+
+  @@unique([tenantId, employeeCode])
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@index([tenantId, department])
+  @@index([managerId])
+  @@map("employees")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Data Hygiene (Module 3)
+// ─────────────────────────────────────────────────────────────
+
+model ImportJob {
+  id          String       @id @default(cuid())
+  tenantId    String
+  userId      String
+  fileName    String
+  fileSize    Int
+  encoding    String       @default("utf-8")
+  status      ImportStatus @default(PENDING)
+  totalRows   Int          @default(0)
+  cleanRows   Int          @default(0)
+  rejectRows  Int          @default(0)
+  settings    Json         @default("{}")
+  createdAt   DateTime     @default(now())
+  completedAt DateTime?
+  updatedAt   DateTime     @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  issues ImportIssue[]
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([tenantId, status])
+  @@map("import_jobs")
+}
+
+model ImportIssue {
+  id            String        @id @default(cuid())
+  importJobId   String
+  row           Int
+  column        Int?
+  fieldName     String
+  issueType     IssueType
+  severity      IssueSeverity
+  originalValue String?
+  cleanedValue  String?
+  resolution    Resolution?
+  createdAt     DateTime      @default(now())
+
+  importJob ImportJob @relation(fields: [importJobId], references: [id], onDelete: Cascade)
+
+  @@index([importJobId])
+  @@index([importJobId, severity])
+  @@map("import_issues")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Rules Engine (Module 2)
+// ─────────────────────────────────────────────────────────────
+
+model RuleSet {
+  id            String        @id @default(cuid())
+  tenantId      String
+  name          String
+  description   String?
+  version       Int           @default(1)
+  status        RuleSetStatus @default(DRAFT)
+  effectiveDate DateTime?
+  schema        Json          @default("{}")
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  rules          Rule[]
+  simulationRuns SimulationRun[]
+  testCases      TestCase[]
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@map("rule_sets")
+}
+
+model Rule {
+  id         String   @id @default(cuid())
+  ruleSetId  String
+  name       String
+  ruleType   RuleType
+  priority   Int      @default(0)
+  conditions Json     @default("{}")
+  actions    Json     @default("{}")
+  metadata   Json     @default("{}")
+  enabled    Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  ruleSet RuleSet @relation(fields: [ruleSetId], references: [id], onDelete: Cascade)
+
+  @@index([ruleSetId])
+  @@index([ruleSetId, ruleType])
+  @@map("rules")
+}
+
+model SimulationRun {
+  id            String           @id @default(cuid())
+  tenantId      String
+  ruleSetId     String
+  userId        String
+  status        SimulationStatus @default(PENDING)
+  parameters    Json             @default("{}")
+  impactSummary Json?
+  createdAt     DateTime         @default(now())
+  completedAt   DateTime?
+  updatedAt     DateTime         @updatedAt
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  ruleSet RuleSet @relation(fields: [ruleSetId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  results SimulationResult[]
+
+  @@index([tenantId])
+  @@index([ruleSetId])
+  @@map("simulation_runs")
+}
+
+model SimulationResult {
+  id              String  @id @default(cuid())
+  simulationRunId String
+  employeeId      String?
+  input           Json    @default("{}")
+  output          Json    @default("{}")
+  delta           Json?
+  createdAt       DateTime @default(now())
+
+  simulationRun SimulationRun @relation(fields: [simulationRunId], references: [id], onDelete: Cascade)
+
+  @@index([simulationRunId])
+  @@map("simulation_results")
+}
+
+model TestCase {
+  id             String  @id @default(cuid())
+  ruleSetId      String
+  name           String
+  input          Json    @default("{}")
+  expectedOutput Json    @default("{}")
+  actualOutput   Json?
+  passed         Boolean?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  ruleSet RuleSet @relation(fields: [ruleSetId], references: [id], onDelete: Cascade)
+
+  @@index([ruleSetId])
+  @@map("test_cases")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Compensation Cycle (Module 1)
+// ─────────────────────────────────────────────────────────────
+
+model CompCycle {
+  id          String      @id @default(cuid())
+  tenantId    String
+  name        String
+  cycleType   CycleType
+  status      CycleStatus @default(DRAFT)
+  budgetTotal Decimal     @default(0) @db.Decimal(14, 2)
+  currency    String      @default("USD")
+  startDate   DateTime
+  endDate     DateTime
+  settings    Json        @default("{}")
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  tenant              Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  budgets             CycleBudget[]
+  recommendations     CompRecommendation[]
+  calibrationSessions CalibrationSession[]
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@map("comp_cycles")
+}
+
+model CycleBudget {
+  id         String  @id @default(cuid())
+  cycleId    String
+  department String
+  managerId  String?
+  allocated  Decimal @default(0) @db.Decimal(14, 2)
+  spent      Decimal @default(0) @db.Decimal(14, 2)
+  remaining  Decimal @default(0) @db.Decimal(14, 2)
+  driftPct   Decimal @default(0) @db.Decimal(5, 2)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  cycle   CompCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+  manager Employee? @relation(fields: [managerId], references: [id], onDelete: SetNull)
+
+  @@index([cycleId])
+  @@index([cycleId, department])
+  @@map("cycle_budgets")
+}
+
+model CompRecommendation {
+  id             String               @id @default(cuid())
+  cycleId        String
+  employeeId     String
+  recType        RecommendationType
+  currentValue   Decimal              @default(0) @db.Decimal(12, 2)
+  proposedValue  Decimal              @default(0) @db.Decimal(12, 2)
+  justification  String?
+  status         RecommendationStatus @default(DRAFT)
+  approverUserId String?
+  approvedAt     DateTime?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  cycle    CompCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+  employee Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  approver User?     @relation(fields: [approverUserId], references: [id], onDelete: SetNull)
+
+  @@index([cycleId])
+  @@index([employeeId])
+  @@index([cycleId, status])
+  @@map("comp_recommendations")
+}
+
+model CalibrationSession {
+  id           String      @id @default(cuid())
+  cycleId      String
+  name         String
+  status       CycleStatus @default(DRAFT)
+  participants Json        @default("[]")
+  outcomes     Json        @default("{}")
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  cycle CompCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+
+  @@index([cycleId])
+  @@map("calibration_sessions")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Payroll (Module 9)
+// ─────────────────────────────────────────────────────────────
+
+model PayrollRun {
+  id            String        @id @default(cuid())
+  tenantId      String
+  period        String
+  status        PayrollStatus @default(DRAFT)
+  totalGross    Decimal       @default(0) @db.Decimal(14, 2)
+  totalNet      Decimal       @default(0) @db.Decimal(14, 2)
+  employeeCount Int           @default(0)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  tenant    Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  lineItems PayrollLineItem[]
+  anomalies PayrollAnomaly[]
+
+  @@index([tenantId])
+  @@index([tenantId, period])
+  @@map("payroll_runs")
+}
+
+model PayrollLineItem {
+  id             String  @id @default(cuid())
+  payrollRunId   String
+  employeeId     String
+  component      String
+  amount         Decimal @default(0) @db.Decimal(12, 2)
+  previousAmount Decimal @default(0) @db.Decimal(12, 2)
+  delta          Decimal @default(0) @db.Decimal(12, 2)
+  createdAt      DateTime @default(now())
+
+  payrollRun PayrollRun @relation(fields: [payrollRunId], references: [id], onDelete: Cascade)
+  employee   Employee   @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([payrollRunId])
+  @@index([employeeId])
+  @@map("payroll_line_items")
+}
+
+model PayrollAnomaly {
+  id           String          @id @default(cuid())
+  payrollRunId String
+  employeeId   String
+  anomalyType  AnomalyType
+  severity     AnomalySeverity
+  details      Json            @default("{}")
+  resolved     Boolean         @default(false)
+  resolvedBy   String?
+  resolvedAt   DateTime?
+  createdAt    DateTime        @default(now())
+
+  payrollRun PayrollRun @relation(fields: [payrollRunId], references: [id], onDelete: Cascade)
+  employee   Employee   @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([payrollRunId])
+  @@index([employeeId])
+  @@index([payrollRunId, resolved])
+  @@map("payroll_anomalies")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Shared
+// ─────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  tenantId   String
+  userId     String?
+  action     String
+  entityType String
+  entityId   String
+  changes    Json     @default("{}")
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User?  @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([tenantId, entityType, entityId])
+  @@index([tenantId, createdAt])
+  @@map("audit_logs")
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  tenantId  String
+  userId    String
+  type      String
+  title     String
+  body      String?
+  read      Boolean  @default(false)
+  metadata  Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([userId, read])
+  @@index([userId, createdAt])
+  @@map("notifications")
+}
