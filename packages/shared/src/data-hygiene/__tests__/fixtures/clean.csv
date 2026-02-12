@@ -1,0 +1,6 @@
+employee_id,email,currency,hire_date,salary,department
+EMP-001,john.doe@example.com,USD,2024-01-15,85000,Engineering
+EMP-002,jane.smith@example.com,EUR,2023-06-01,92000,Marketing
+EMP-003,bob.wilson@example.com,GBP,2022-11-20,78000,Sales
+EMP-004,alice.jones@example.com,USD,2024-03-10,95000,Engineering
+EMP-005,charlie.brown@example.com,CAD,2023-09-15,88000,HR

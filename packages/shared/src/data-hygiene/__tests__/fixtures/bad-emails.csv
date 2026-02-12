@@ -1,0 +1,7 @@
+employee_id,email,currency,hire_date,salary
+EMP-001,valid@example.com,USD,2024-01-15,85000
+EMP-002,missing-at-sign.com,EUR,2023-06-01,92000
+EMP-003,@no-local-part.com,GBP,2022-11-20,78000
+EMP-004,spaces in@email.com,USD,2024-03-10,95000
+EMP-005,,CAD,2023-09-15,88000
+EMP-006,double@@at.com,USD,2024-01-01,75000

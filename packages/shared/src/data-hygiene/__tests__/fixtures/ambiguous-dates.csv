@@ -1,0 +1,7 @@
+employee_id,email,hire_date
+EMP-001,a@example.com,01/02/2024
+EMP-002,b@example.com,13/01/2024
+EMP-003,c@example.com,2024-06-15
+EMP-004,d@example.com,15-Jan-24
+EMP-005,e@example.com,06/06/2024
+EMP-006,f@example.com,not-a-date
