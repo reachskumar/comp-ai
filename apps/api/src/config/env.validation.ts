@@ -1,5 +1,5 @@
 import { plainToInstance } from 'class-transformer';
-import { IsNotEmpty, IsNumber, IsOptional, IsString, validateSync } from 'class-validator';
+import { IsNotEmpty, IsNumber, IsOptional, IsString, IsIn, validateSync } from 'class-validator';
 
 export class EnvironmentVariables {
   @IsString()
@@ -21,6 +21,35 @@ export class EnvironmentVariables {
   @IsString()
   @IsOptional()
   NODE_ENV?: string = 'development';
+
+  // ---- Compport PHP Bridge ----
+
+  @IsString()
+  @IsOptional()
+  @IsIn(['shared_db', 'api_bridge', 'standalone'])
+  COMPPORT_MODE?: string = 'standalone';
+
+  @IsString()
+  @IsOptional()
+  COMPPORT_API_URL?: string;
+
+  @IsString()
+  @IsOptional()
+  COMPPORT_API_KEY?: string;
+
+  @IsString()
+  @IsOptional()
+  COMPPORT_DB_PREFIX?: string = 'compport_';
+
+  @IsString()
+  @IsOptional()
+  COMPPORT_SESSION_SECRET?: string;
+
+  // ---- Integration Hub ----
+
+  @IsString()
+  @IsOptional()
+  INTEGRATION_ENCRYPTION_KEY?: string;
 }
 
 export function validate(config: Record<string, unknown>): EnvironmentVariables {

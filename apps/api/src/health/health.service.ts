@@ -20,6 +20,7 @@ export class HealthService {
     ]);
 
     const status = dbHealthy && redisHealthy ? 'ok' : 'degraded';
+    const compportMode = this.configService.get<string>('COMPPORT_MODE') ?? 'standalone';
 
     return {
       status,
@@ -28,6 +29,10 @@ export class HealthService {
       services: {
         database: dbHealthy ? 'connected' : 'disconnected',
         redis: redisHealthy ? 'connected' : 'disconnected',
+        compportBridge: {
+          mode: compportMode,
+          loaded: true,
+        },
       },
     };
   }
