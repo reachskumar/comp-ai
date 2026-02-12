@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ChevronDown, ChevronRight, PanelLeftClose, PanelLeft } from "lucide-react";
+import { ChevronDown, ChevronRight, PanelLeftClose, PanelLeft, Sparkles } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import {
@@ -56,6 +56,11 @@ function NavGroupSection({ group, collapsed }: { group: NavGroup; collapsed?: bo
       >
         <group.icon className="h-4 w-4 shrink-0" aria-hidden="true" />
         <span className="flex-1 text-left">{group.title}</span>
+        {group.badge && (
+          <span className="inline-flex items-center rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
+            {group.badge}
+          </span>
+        )}
         {open ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />}
       </button>
       <div

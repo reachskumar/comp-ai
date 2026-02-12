@@ -1,5 +1,7 @@
 import {
   LayoutDashboard,
+  MessageSquareText,
+  Sparkles,
   Database,
   Upload,
   History,
@@ -47,28 +49,36 @@ export interface NavGroup {
   title: string;
   icon: LucideIcon;
   items: NavItem[];
+  /** Visual label shown next to the group title */
+  badge?: string;
 }
 
 export const mainNavItems: NavItem[] = [
   { title: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
+  { title: "AI Copilot", href: "/dashboard/ai-copilot", icon: MessageSquareText },
 ];
 
 export const navGroups: NavGroup[] = [
+  // ── AI-Powered Features ──────────────────────────────────
+  {
+    title: "AI Features",
+    icon: Sparkles,
+    badge: "AI",
+    items: [
+      { title: "Rules Copilot", href: "/dashboard/rules/rule-sets", icon: Cpu },
+      { title: "Simulator", href: "/dashboard/rules/simulator", icon: FlaskConical },
+      { title: "Test Cases", href: "/dashboard/rules/test-cases", icon: TestTubeDiagonal },
+      { title: "Pay Equity", href: "/dashboard/analytics/pay-equity", icon: Scale },
+      { title: "HR Dashboards", href: "/dashboard/analytics/hr-dashboards", icon: LayoutGrid },
+    ],
+  },
+  // ── Core Modules ─────────────────────────────────────────
   {
     title: "Data Hygiene",
     icon: Database,
     items: [
       { title: "Import Files", href: "/dashboard/data-hygiene/import", icon: Upload },
       { title: "Import History", href: "/dashboard/data-hygiene/history", icon: History },
-    ],
-  },
-  {
-    title: "Rules Copilot",
-    icon: Cpu,
-    items: [
-      { title: "Rule Sets", href: "/dashboard/rules/rule-sets", icon: BookOpen },
-      { title: "Simulator", href: "/dashboard/rules/simulator", icon: FlaskConical },
-      { title: "Test Cases", href: "/dashboard/rules/test-cases", icon: TestTubeDiagonal },
     ],
   },
   {
@@ -89,6 +99,7 @@ export const navGroups: NavGroup[] = [
       { title: "Reconciliation", href: "/dashboard/payroll/reconciliation", icon: FileCheck },
     ],
   },
+  // ── Benefits (Compport-managed) ──────────────────────────
   {
     title: "Benefits",
     icon: Heart,
@@ -102,15 +113,15 @@ export const navGroups: NavGroup[] = [
       { title: "Recognition & Rewards", href: "/dashboard/benefits/recognition", icon: Award },
     ],
   },
+  // ── Analytics ────────────────────────────────────────────
   {
     title: "Analytics",
     icon: PieChart,
     items: [
       { title: "Total Rewards", href: "/dashboard/analytics/total-rewards", icon: BarChart3 },
-      { title: "Pay Equity", href: "/dashboard/analytics/pay-equity", icon: Scale },
-      { title: "HR Dashboards", href: "/dashboard/analytics/hr-dashboards", icon: LayoutGrid },
     ],
   },
+  // ── Integrations ─────────────────────────────────────────
   {
     title: "Integrations",
     icon: Plug,
