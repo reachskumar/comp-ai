@@ -30,6 +30,8 @@ const GRAPH_MODEL_DEFAULTS: Record<string, Partial<ModelConfig>> = {
   'data-quality': { temperature: 0.1, maxTokens: 2048 },
   echo: { temperature: 0.7, maxTokens: 1024 },
   copilot: { temperature: 0.2, maxTokens: 4096 },
+  'report-builder': { temperature: 0.1, maxTokens: 4096 },
+  'pay-equity': { temperature: 0.1, maxTokens: 4096 },
 };
 
 /**

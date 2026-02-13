@@ -14,6 +14,7 @@ import {
   BarChart3,
   GitCompare,
   Shield,
+  ShieldCheck,
   Play,
   AlertTriangle,
   FileCheck,
@@ -36,6 +37,9 @@ import {
   AppWindow,
   RefreshCcw,
   Map,
+  FileBarChart,
+  FileText,
+  Zap,
   type LucideIcon,
 } from "lucide-react";
 
@@ -70,6 +74,9 @@ export const navGroups: NavGroup[] = [
       { title: "Test Cases", href: "/dashboard/rules/test-cases", icon: TestTubeDiagonal },
       { title: "Pay Equity", href: "/dashboard/analytics/pay-equity", icon: Scale },
       { title: "HR Dashboards", href: "/dashboard/analytics/hr-dashboards", icon: LayoutGrid },
+      { title: "Report Builder", href: "/dashboard/reports", icon: FileBarChart },
+      { title: "Comp Letters", href: "/dashboard/letters", icon: FileText },
+      { title: "Compliance", href: "/dashboard/compliance", icon: ShieldCheck },
     ],
   },
   // ── Core Modules ─────────────────────────────────────────
@@ -119,6 +126,7 @@ export const navGroups: NavGroup[] = [
     icon: PieChart,
     items: [
       { title: "Total Rewards", href: "/dashboard/analytics/total-rewards", icon: BarChart3 },
+      { title: "Simulations", href: "/dashboard/analytics/simulations", icon: Zap },
     ],
   },
   // ── Integrations ─────────────────────────────────────────
