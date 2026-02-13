@@ -5,6 +5,8 @@ import { apiClient } from "@/lib/api-client";
 
 // ─── Types ───────────────────────────────────────────────
 
+export type CycleType = "MERIT" | "BONUS" | "LTI" | "COMBINED";
+
 export type CycleStatus =
   | "DRAFT"
   | "PLANNING"
@@ -18,6 +20,7 @@ export interface Cycle {
   id: string;
   tenantId: string;
   name: string;
+  cycleType: CycleType;
   description?: string;
   status: CycleStatus;
   startDate: string;
@@ -222,7 +225,15 @@ export function useCreateCycleMutation() {
   return useMutation<
     Cycle,
     Error,
-    { name: string; description?: string; startDate: string; endDate: string }
+    {
+      name: string;
+      cycleType: CycleType;
+      startDate: string;
+      endDate: string;
+      budgetTotal?: number;
+      currency?: string;
+      settings?: Record<string, unknown>;
+    }
   >({
     mutationFn: (body) =>
       apiClient.fetch<Cycle>("/api/v1/cycles", {

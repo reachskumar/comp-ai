@@ -23,6 +23,7 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -52,6 +53,7 @@ import {
   useRunMonitorsMutation,
   useNudgeMutation,
   type Cycle,
+  type CycleType,
   type CycleStatus,
   type CycleAlert,
   type DepartmentProgress,
@@ -149,20 +151,20 @@ function CycleListView({
   const createMutation = useCreateCycleMutation();
 
   const [newName, setNewName] = React.useState("");
-  const [newDesc, setNewDesc] = React.useState("");
+  const [newCycleType, setNewCycleType] = React.useState<CycleType | "">("");
   const [newStart, setNewStart] = React.useState("");
   const [newEnd, setNewEnd] = React.useState("");
 
   const handleCreate = () => {
-    if (!newName.trim() || !newStart || !newEnd) return;
+    if (!newName.trim() || !newCycleType || !newStart || !newEnd) return;
     createMutation.mutate(
-      { name: newName, description: newDesc || undefined, startDate: newStart, endDate: newEnd },
+      { name: newName, cycleType: newCycleType, startDate: newStart, endDate: newEnd },
       {
         onSuccess: () => {
           toast({ title: "Cycle created", description: `${newName} is ready.` });
           onCreateClose();
           setNewName("");
-          setNewDesc("");
+          setNewCycleType("");
           setNewStart("");
           setNewEnd("");
         },
@@ -289,12 +291,18 @@ function CycleListView({
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="cycle-desc">Description (optional)</Label>
-              <Input
-                id="cycle-desc"
-                placeholder="Brief description of this cycle"
-                value={newDesc}
-                onChange={(e) => setNewDesc(e.target.value)}
+              <Label htmlFor="cycle-type">Cycle Type</Label>
+              <Select
+                id="cycle-type"
+                value={newCycleType}
+                onChange={(e) => setNewCycleType(e.target.value as CycleType)}
+                placeholder="Select cycle type"
+                options={[
+                  { value: "MERIT", label: "Merit" },
+                  { value: "BONUS", label: "Bonus" },
+                  { value: "LTI", label: "LTI" },
+                  { value: "COMBINED", label: "Combined" },
+                ]}
               />
             </div>
             <div className="grid grid-cols-2 gap-4">
@@ -324,7 +332,7 @@ function CycleListView({
             </Button>
             <Button
               onClick={handleCreate}
-              disabled={!newName.trim() || !newStart || !newEnd || createMutation.isPending}
+              disabled={!newName.trim() || !newCycleType || !newStart || !newEnd || createMutation.isPending}
             >
               {createMutation.isPending ? "Creating..." : "Create Cycle"}
             </Button>
