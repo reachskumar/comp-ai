@@ -1,0 +1,5 @@
+employee_id,email,department
+EMP-001,test@example.com,Engineering 
+EMP-002,jane@example.com,​Marketing
+EMP-003,bob@example.com,“Sales”
+EMP-004,alice@example.com,‘HR’
