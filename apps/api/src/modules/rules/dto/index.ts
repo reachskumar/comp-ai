@@ -1,4 +1,4 @@
-export { ConvertPolicyDto } from './convert-policy.dto';
+export { ConvertPolicyDto, UpdateConversionCountsDto } from './convert-policy.dto';
 export {
   CreateRuleSetDto,
   UpdateRuleSetDto,

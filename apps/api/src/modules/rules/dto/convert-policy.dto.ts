@@ -1,5 +1,5 @@
-import { IsString, IsNotEmpty, MinLength } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
+import { IsString, IsNotEmpty, MinLength, IsOptional, IsNumber, Min } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class ConvertPolicyDto {
   @ApiProperty({
@@ -12,5 +12,27 @@ export class ConvertPolicyDto {
   @IsNotEmpty()
   @MinLength(10)
   text!: string;
+
+  @ApiPropertyOptional({ description: 'Original file name (set automatically for file uploads)' })
+  @IsOptional()
+  @IsString()
+  fileName?: string;
+
+  @ApiPropertyOptional({ description: 'File MIME type (set automatically for file uploads)' })
+  @IsOptional()
+  @IsString()
+  fileType?: string;
+}
+
+export class UpdateConversionCountsDto {
+  @ApiProperty({ description: 'Number of accepted rules' })
+  @IsNumber()
+  @Min(0)
+  accepted!: number;
+
+  @ApiProperty({ description: 'Number of rejected rules' })
+  @IsNumber()
+  @Min(0)
+  rejected!: number;
 }
 

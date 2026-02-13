@@ -7,6 +7,7 @@
  *   2. extractRules — extract specific rules with conditions/actions per section
  *   3. mapToSchema — map extracted rules to the Rule schema with confidence scores
  *   4. validateRules — validate rules and flag low-confidence ones for review
+ *   5. calibrateConfidence — calibrate confidence scores against known patterns
  *
  * The graph compiles without an API key; LLM calls happen only at runtime.
  */
@@ -28,6 +29,40 @@ import type {
   RuleCondition,
   RuleAction,
 } from '@compensation/shared';
+import { z } from 'zod';
+
+// ─────────────────────────────────────────────────────────────
+// Zod Schemas for Structured Output Validation
+// ─────────────────────────────────────────────────────────────
+
+const PolicySectionSchema = z.object({
+  category: z.enum(['MERIT', 'BONUS', 'LTI', 'PRORATION', 'CAP', 'FLOOR', 'ELIGIBILITY', 'CUSTOM']),
+  text: z.string(),
+  lineNumbers: z.tuple([z.number(), z.number()]).optional(),
+});
+
+const RuleConditionSchema = z.object({
+  field: z.string(),
+  operator: z.enum(['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'in', 'notIn', 'between', 'contains', 'startsWith', 'matches']),
+  value: z.unknown(),
+});
+
+const RuleActionSchema = z.object({
+  type: z.enum(['setMerit', 'setBonus', 'setLTI', 'applyMultiplier', 'applyFloor', 'applyCap', 'flag', 'block']),
+  params: z.record(z.string(), z.unknown()),
+});
+
+const ExtractedRuleSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  ruleType: z.enum(['MERIT', 'BONUS', 'LTI', 'PRORATION', 'CAP', 'FLOOR', 'ELIGIBILITY', 'CUSTOM']),
+  conditions: z.array(RuleConditionSchema),
+  actions: z.array(RuleActionSchema),
+  priority: z.number(),
+  confidence: z.number().min(0).max(1),
+  needsReview: z.boolean().optional(),
+  sourceText: z.string(),
+});
 
 // ─────────────────────────────────────────────────────────────
 // Types
@@ -57,6 +92,7 @@ export interface ConversionResult {
   summary: string;
   needsReviewCount: number;
   totalRules: number;
+  conversionId?: string;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -86,14 +122,35 @@ type PolicyParserStateType = typeof PolicyParserState.State;
 // System Prompts
 // ─────────────────────────────────────────────────────────────
 
-const CLASSIFY_PROMPT = `You are a compensation policy analyst. Given a compensation policy document,
-classify it into sections by rule type. Each section should be categorized as one of:
-MERIT, BONUS, LTI, PRORATION, CAP, FLOOR, ELIGIBILITY, CUSTOM.
+const CLASSIFY_PROMPT = `You are a compensation policy analyst specializing in HR compensation structures.
+Given a compensation policy document, classify it into sections by rule type.
+
+Each section should be categorized as one of:
+- MERIT: Base salary increases tied to performance, tenure, or market adjustments
+- BONUS: Variable pay, incentive bonuses, spot bonuses, signing bonuses
+- LTI: Long-term incentives, stock options, RSUs, performance shares
+- PRORATION: Rules for partial-year employees, mid-cycle hires, transfers
+- CAP: Maximum limits on increases, total compensation caps
+- FLOOR: Minimum guaranteed increases, salary floors
+- ELIGIBILITY: Who qualifies — tenure requirements, employment status, performance thresholds
+- CUSTOM: Anything that doesn't fit the above categories
 
 Return a JSON array of objects with:
 - "category": the RuleType
 - "text": the relevant policy text for that section
 - "lineNumbers": optional [start, end] line numbers
+
+## Example
+
+Input: "All full-time employees with at least 6 months tenure are eligible for the annual merit cycle. Employees rated 4 or above receive 5-7% merit increase. Maximum total increase cannot exceed 15% of base salary. New hires within 90 days receive prorated increases."
+
+Output:
+[
+  {"category": "ELIGIBILITY", "text": "All full-time employees with at least 6 months tenure are eligible for the annual merit cycle."},
+  {"category": "MERIT", "text": "Employees rated 4 or above receive 5-7% merit increase."},
+  {"category": "CAP", "text": "Maximum total increase cannot exceed 15% of base salary."},
+  {"category": "PRORATION", "text": "New hires within 90 days receive prorated increases."}
+]
 
 Only return valid JSON. No markdown fences.`;
 
@@ -101,20 +158,62 @@ const EXTRACT_PROMPT = `You are a compensation rules extraction expert. Given cl
 extract specific rules with conditions, thresholds, and actions.
 
 For each rule, extract:
-- "name": short descriptive name
-- "description": what the rule does
+- "name": short descriptive name (e.g., "High Performer Merit Increase")
+- "description": what the rule does in plain English
 - "ruleType": matching the section category
 - "conditions": array of { "field": string, "operator": one of (eq|neq|gt|gte|lt|lte|in|notIn|between|contains|startsWith|matches), "value": any }
 - "actions": array of { "type": one of (setMerit|setBonus|setLTI|applyMultiplier|applyFloor|applyCap|flag|block), "params": object }
-- "priority": number (lower = higher priority)
+- "priority": number (lower = higher priority, start at 10 and increment by 10)
 - "confidence": 0-1 how confident you are in the extraction
 - "sourceText": the original policy text this was extracted from
+
+Common fields for conditions: department, level, title, location, baseSalary, performanceRating, hireDate, employeeCode, tenure, employmentType, jobFamily, compaRatio.
+
+## Example
+
+Input section: {"category": "MERIT", "text": "Employees rated 4 or above receive a 5% merit increase. Employees rated 5 (exceptional) receive 7%."}
+
+Output:
+[
+  {
+    "name": "High Performer Merit Increase",
+    "description": "Employees with performance rating of 4 or above receive a 5% merit increase",
+    "ruleType": "MERIT",
+    "conditions": [{"field": "performanceRating", "operator": "gte", "value": 4}],
+    "actions": [{"type": "setMerit", "params": {"percentage": 5}}],
+    "priority": 20,
+    "confidence": 0.95,
+    "sourceText": "Employees rated 4 or above receive a 5% merit increase."
+  },
+  {
+    "name": "Exceptional Performer Merit Increase",
+    "description": "Employees with exceptional rating of 5 receive a 7% merit increase",
+    "ruleType": "MERIT",
+    "conditions": [{"field": "performanceRating", "operator": "eq", "value": 5}],
+    "actions": [{"type": "setMerit", "params": {"percentage": 7}}],
+    "priority": 10,
+    "confidence": 0.95,
+    "sourceText": "Employees rated 5 (exceptional) receive 7%."
+  }
+]
 
 Only return valid JSON array. No markdown fences.`;
 
 // ─────────────────────────────────────────────────────────────
 // Node Factories (capture model via closure)
 // ─────────────────────────────────────────────────────────────
+
+/**
+ * Helper to safely parse JSON from LLM output, stripping markdown fences if present.
+ */
+function safeParseLLMJson(content: string): unknown {
+  let cleaned = content.trim();
+  // Strip markdown code fences
+  if (cleaned.startsWith('```')) {
+    cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
+  }
+  return JSON.parse(cleaned);
+}
 
 function createClassifySectionsNode(model: ChatOpenAI) {
   return async (state: PolicyParserStateType): Promise<{ sections: PolicySection[]; messages: BaseMessage[] }> => {
@@ -126,7 +225,9 @@ function createClassifySectionsNode(model: ChatOpenAI) {
     const content = typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
     let sections: PolicySection[];
     try {
-      sections = JSON.parse(content) as PolicySection[];
+      const parsed = safeParseLLMJson(content);
+      const validated = z.array(PolicySectionSchema).parse(parsed);
+      sections = validated as PolicySection[];
     } catch {
       sections = [{ category: 'CUSTOM' as RuleType, text: state.policyText }];
     }
@@ -146,7 +247,15 @@ function createExtractRulesNode(model: ChatOpenAI) {
     const content = typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
     let extractedRules: ExtractedRule[];
     try {
-      extractedRules = JSON.parse(content) as ExtractedRule[];
+      const parsed = safeParseLLMJson(content);
+      const validated = z.array(ExtractedRuleSchema).parse(parsed);
+      extractedRules = validated.map((r) => ({
+        ...r,
+        ruleType: r.ruleType as RuleType,
+        conditions: r.conditions as RuleCondition[],
+        actions: r.actions as RuleAction[],
+        needsReview: r.needsReview ?? r.confidence < 0.7,
+      }));
     } catch {
       extractedRules = [];
     }
@@ -219,6 +328,64 @@ function createValidateRulesNode() {
   };
 }
 
+/**
+ * Confidence calibration node — adjusts confidence scores based on
+ * structural quality signals (completeness, specificity, consistency).
+ */
+function createCalibrateConfidenceNode() {
+  return async (state: PolicyParserStateType): Promise<{ validatedRules: ExtractedRule[] }> => {
+    const calibrated = state.validatedRules.map((rule) => {
+      let confidence = rule.confidence;
+
+      // Boost: rule has both conditions and actions (well-formed)
+      if (rule.conditions.length > 0 && rule.actions.length > 0) {
+        confidence = Math.min(1, confidence + 0.05);
+      }
+
+      // Penalize: empty conditions or actions
+      if (rule.conditions.length === 0) {
+        confidence = Math.min(confidence, 0.4);
+      }
+      if (rule.actions.length === 0) {
+        confidence = Math.min(confidence, 0.4);
+      }
+
+      // Boost: has meaningful source text (>20 chars)
+      if (rule.sourceText && rule.sourceText.length > 20) {
+        confidence = Math.min(1, confidence + 0.03);
+      }
+
+      // Penalize: generic/vague names
+      if (rule.name.length < 5 || rule.name.toLowerCase().startsWith('rule ')) {
+        confidence = Math.min(confidence, 0.5);
+      }
+
+      // Boost: has description
+      if (rule.description && rule.description.length > 10) {
+        confidence = Math.min(1, confidence + 0.02);
+      }
+
+      // Penalize: conditions with empty values
+      for (const cond of rule.conditions) {
+        if (cond.value === '' || cond.value === null || cond.value === undefined) {
+          confidence = Math.min(confidence, 0.3);
+        }
+      }
+
+      // Clamp to [0, 1]
+      confidence = Math.max(0, Math.min(1, confidence));
+
+      return {
+        ...rule,
+        confidence,
+        needsReview: confidence < 0.7,
+      };
+    });
+
+    return { validatedRules: calibrated };
+  };
+}
+
 // ─────────────────────────────────────────────────────────────
 // Graph Builder
 // ─────────────────────────────────────────────────────────────
@@ -251,13 +418,15 @@ export async function buildPolicyParserGraph(options: CreateGraphOptions = {}) {
         extractRules: createExtractRulesNode(model),
         mapToSchema: createMapToSchemaNode(),
         validateRules: createValidateRulesNode(),
+        calibrateConfidence: createCalibrateConfidenceNode(),
       },
       edges: [
         [START, 'classifySections'],
         ['classifySections', 'extractRules'],
         ['extractRules', 'mapToSchema'],
         ['mapToSchema', 'validateRules'],
-        ['validateRules', END],
+        ['validateRules', 'calibrateConfidence'],
+        ['calibrateConfidence', END],
       ],
     },
     { ...options, config: aiConfig },

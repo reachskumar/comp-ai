@@ -9,8 +9,13 @@ import {
   Query,
   UseGuards,
   Request,
+  Req,
+  BadRequestException,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiBearerAuth, ApiConsumes } from '@nestjs/swagger';
+import { FastifyRequest } from 'fastify';
 import { JwtAuthGuard } from '../../auth';
 import { TenantGuard } from '../../common';
 import { PolicyConverterService } from './services/policy-converter.service';
@@ -20,6 +25,7 @@ import { TestGeneratorService } from './services/test-generator.service';
 import { TestRunnerService } from './services/test-runner.service';
 import {
   ConvertPolicyDto,
+  UpdateConversionCountsDto,
   CreateRuleSetDto,
   UpdateRuleSetDto,
   CreateRuleDto,
@@ -29,6 +35,10 @@ import {
 } from './dto';
 
 interface AuthRequest {
+  user: { userId: string; tenantId: string; email: string; role: string };
+}
+
+interface AuthenticatedFastifyRequest extends FastifyRequest {
   user: { userId: string; tenantId: string; email: string; role: string };
 }
 
@@ -51,7 +61,76 @@ export class RulesController {
   @Post('convert-policy')
   @ApiOperation({ summary: 'Convert a natural language policy document into structured rules' })
   async convertPolicy(@Body() dto: ConvertPolicyDto, @Request() req: AuthRequest) {
-    return this.policyConverter.convertPolicy(dto.text, req.user.tenantId, req.user.userId);
+    return this.policyConverter.convertPolicy(
+      dto.text,
+      req.user.tenantId,
+      req.user.userId,
+      dto.fileName,
+      dto.fileType,
+    );
+  }
+
+  @Post('convert-policy/upload')
+  @ApiOperation({ summary: 'Upload a PDF or TXT file and convert to structured rules' })
+  @ApiConsumes('multipart/form-data')
+  @HttpCode(HttpStatus.OK)
+  async convertPolicyUpload(@Req() req: AuthenticatedFastifyRequest) {
+    const data = await req.file();
+    if (!data) {
+      throw new BadRequestException('No file uploaded. Send a multipart form with a "file" field.');
+    }
+
+    const chunks: Buffer[] = [];
+    for await (const chunk of data.file) {
+      chunks.push(chunk as Buffer);
+    }
+    const fileBuffer = Buffer.concat(chunks);
+
+    if (fileBuffer.length === 0) {
+      throw new BadRequestException('Uploaded file is empty.');
+    }
+
+    const fileName = data.filename;
+    const mimeType = data.mimetype;
+
+    // Only allow PDF and text files
+    const allowedTypes = ['application/pdf', 'text/plain'];
+    const allowedExts = ['.pdf', '.txt'];
+    const ext = fileName.toLowerCase().slice(fileName.lastIndexOf('.'));
+    if (!allowedTypes.includes(mimeType) && !allowedExts.includes(ext)) {
+      throw new BadRequestException('Only PDF and TXT files are supported.');
+    }
+
+    const policyText = await this.policyConverter.extractText(fileBuffer, fileName, mimeType);
+
+    return this.policyConverter.convertPolicy(
+      policyText,
+      req.user.tenantId,
+      req.user.userId,
+      fileName,
+      mimeType,
+    );
+  }
+
+  @Get('conversion-history')
+  @ApiOperation({ summary: 'Get policy conversion history for the tenant' })
+  async getConversionHistory(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Request() req?: AuthRequest,
+  ) {
+    const pageNum = Math.max(1, parseInt(page ?? '1', 10) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit ?? '20', 10) || 20));
+    return this.policyConverter.getConversionHistory(req!.user.tenantId, pageNum, limitNum);
+  }
+
+  @Patch('conversions/:id/counts')
+  @ApiOperation({ summary: 'Update accepted/rejected counts for a conversion' })
+  async updateConversionCounts(
+    @Param('id') id: string,
+    @Body() dto: UpdateConversionCountsDto,
+  ) {
+    return this.policyConverter.updateConversionCounts(id, dto.accepted, dto.rejected);
   }
 
   // ─── Rule Set CRUD ────────────────────────────────────────────

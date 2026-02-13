@@ -61,14 +61,36 @@ interface ExtractedRule {
   name: string;
   description: string;
   type: string;
+  ruleType?: string;
   conditions: RuleCondition[];
   actions: RuleAction[];
-  confidence: "high" | "medium" | "low";
+  confidence: number;
+  needsReview?: boolean;
+  sourceText?: string;
+}
+
+type ConfidenceLevel = "high" | "medium" | "low";
+
+function getConfidenceLevel(score: number): ConfidenceLevel {
+  if (score >= 0.7) return "high";
+  if (score >= 0.4) return "medium";
+  return "low";
+}
+
+function getConfidenceBadgeVariant(level: ConfidenceLevel) {
+  switch (level) {
+    case "high": return "default" as const;
+    case "medium": return "secondary" as const;
+    case "low": return "destructive" as const;
+  }
 }
 
 interface ConvertResponse {
   rules: ExtractedRule[];
   summary: string;
+  conversionId?: string;
+  totalRules: number;
+  needsReviewCount: number;
 }
 
 interface SimulationResult {
@@ -237,7 +259,7 @@ export default function RuleSetDetailPage() {
   });
 
   const convertMutation = useMutation({
-    mutationFn: (body: { policyText: string }) =>
+    mutationFn: (body: { text: string }) =>
       apiClient.fetch<ConvertResponse>("/api/v1/rules/convert-policy", {
         method: "POST",
         body: JSON.stringify(body),
@@ -245,7 +267,7 @@ export default function RuleSetDetailPage() {
     onSuccess: (data) => {
       setExtractedRules(data.rules);
       setConvertSummary(data.summary);
-      toast({ title: "Policy converted", description: `${data.rules.length} rules extracted.` });
+      toast({ title: "Policy converted", description: `${data.rules.length} rules extracted. ${data.needsReviewCount} need review.` });
     },
     onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
   });
@@ -460,7 +482,7 @@ export default function RuleSetDetailPage() {
             setExtractedRules={setExtractedRules}
             convertSummary={convertSummary}
             isConverting={convertMutation.isPending}
-            onConvert={() => convertMutation.mutate({ policyText })}
+            onConvert={() => convertMutation.mutate({ text: policyText })}
             onAccept={acceptExtractedRule}
           />
         </TabsContent>
@@ -714,6 +736,8 @@ function PolicyConverterTab({
   onAccept: (rule: ExtractedRule) => void;
 }) {
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const [editingIdx, setEditingIdx] = React.useState<number | null>(null);
+  const [editForm, setEditForm] = React.useState<{ name: string; description: string } | null>(null);
 
   function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -725,92 +749,193 @@ function PolicyConverterTab({
     reader.readAsText(file);
   }
 
-  const confidenceColor = (c: string) => {
-    switch (c) {
-      case "high": return "default" as const;
-      case "medium": return "secondary" as const;
-      case "low": return "destructive" as const;
-      default: return "outline" as const;
-    }
-  };
+  function startEdit(idx: number) {
+    const rule = extractedRules[idx];
+    setEditingIdx(idx);
+    setEditForm({ name: rule.name, description: rule.description });
+  }
+
+  function saveEdit() {
+    if (editingIdx === null || !editForm) return;
+    const updated = [...extractedRules];
+    updated[editingIdx] = { ...updated[editingIdx], name: editForm.name, description: editForm.description };
+    setExtractedRules(updated);
+    setEditingIdx(null);
+    setEditForm(null);
+  }
+
+  function cancelEdit() {
+    setEditingIdx(null);
+    setEditForm(null);
+  }
+
+  const hasResults = extractedRules.length > 0 || convertSummary;
 
   return (
     <div className="space-y-4">
-      <Card>
-        <CardHeader>
-          <CardTitle>Paste Policy Text</CardTitle>
-          <CardDescription>Paste your compensation policy document or upload a text file. The AI will extract rules automatically.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <Textarea
-            value={policyText}
-            onChange={(e) => setPolicyText(e.target.value)}
-            placeholder="Paste your compensation policy text here..."
-            rows={10}
-          />
-          <div className="flex items-center gap-2">
-            <Button onClick={onConvert} disabled={!policyText.trim() || isConverting}>
-              <Wand2 className="mr-2 h-4 w-4" />
-              {isConverting ? "Converting..." : "Convert to Rules"}
-            </Button>
-            <Button variant="outline" onClick={() => fileInputRef.current?.click()}>
-              <Upload className="mr-2 h-4 w-4" />
-              Upload File
-            </Button>
-            <input ref={fileInputRef} type="file" accept=".txt,.md,.doc" className="hidden" onChange={handleFileUpload} />
+      {/* Side-by-side layout when results exist */}
+      <div className={hasResults ? "grid grid-cols-1 lg:grid-cols-2 gap-4" : ""}>
+        {/* Left: Policy Input */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Policy Text</CardTitle>
+            <CardDescription>
+              Paste your compensation policy document or upload a PDF/TXT file.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <Textarea
+              value={policyText}
+              onChange={(e) => setPolicyText(e.target.value)}
+              placeholder="Paste your compensation policy text here..."
+              rows={hasResults ? 16 : 10}
+            />
+            <div className="flex items-center gap-2">
+              <Button onClick={onConvert} disabled={!policyText.trim() || isConverting}>
+                <Wand2 className="mr-2 h-4 w-4" />
+                {isConverting ? "Converting..." : "Convert to Rules"}
+              </Button>
+              <Button variant="outline" onClick={() => fileInputRef.current?.click()}>
+                <Upload className="mr-2 h-4 w-4" />
+                Upload File
+              </Button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".txt,.pdf,application/pdf,text/plain"
+                className="hidden"
+                onChange={handleFileUpload}
+              />
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Right: Extracted Rules (shown only when results exist) */}
+        {hasResults && (
+          <div className="space-y-4">
+            {convertSummary && (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">Conversion Summary</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-sm text-muted-foreground">{convertSummary}</p>
+                </CardContent>
+              </Card>
+            )}
+
+            {extractedRules.length > 0 && (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">
+                    Extracted Rules ({extractedRules.length})
+                  </CardTitle>
+                  <CardDescription>
+                    Review each rule. Edit before accepting, or reject to discard.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3 max-h-[600px] overflow-y-auto">
+                  {extractedRules.map((rule, idx) => {
+                    const level = getConfidenceLevel(rule.confidence);
+                    const isEditing = editingIdx === idx;
+
+                    return (
+                      <div
+                        key={idx}
+                        className={`border rounded-lg p-4 space-y-2 ${
+                          level === "low" ? "border-destructive/30 bg-destructive/5" :
+                          level === "medium" ? "border-yellow-500/30 bg-yellow-50/50 dark:bg-yellow-900/10" :
+                          "border-green-500/30 bg-green-50/50 dark:bg-green-900/10"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            {isEditing ? (
+                              <Input
+                                value={editForm?.name ?? ""}
+                                onChange={(e) => setEditForm({ ...editForm!, name: e.target.value })}
+                                className="h-7 text-sm font-medium w-48"
+                              />
+                            ) : (
+                              <span className="font-medium">{rule.name}</span>
+                            )}
+                            <Badge variant={getConfidenceBadgeVariant(level)}>
+                              {level} ({Math.round(rule.confidence * 100)}%)
+                            </Badge>
+                            <Badge variant="outline">{rule.ruleType || rule.type}</Badge>
+                            {rule.needsReview && (
+                              <Badge variant="secondary">Needs Review</Badge>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1">
+                            {isEditing ? (
+                              <>
+                                <Button size="sm" variant="outline" onClick={cancelEdit}>Cancel</Button>
+                                <Button size="sm" onClick={saveEdit}>Save</Button>
+                              </>
+                            ) : (
+                              <>
+                                <Button size="sm" variant="ghost" onClick={() => startEdit(idx)}>
+                                  <Pencil className="h-3 w-3" />
+                                </Button>
+                                <Button size="sm" onClick={() => onAccept(rule)}>
+                                  <CheckCircle2 className="mr-1 h-4 w-4" /> Accept
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => setExtractedRules(extractedRules.filter((_, i) => i !== idx))}
+                                >
+                                  <XCircle className="mr-1 h-4 w-4" /> Reject
+                                </Button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+
+                        {isEditing ? (
+                          <Textarea
+                            value={editForm?.description ?? ""}
+                            onChange={(e) => setEditForm({ ...editForm!, description: e.target.value })}
+                            rows={2}
+                            className="text-sm"
+                          />
+                        ) : (
+                          <p className="text-sm text-muted-foreground">{rule.description}</p>
+                        )}
+
+                        <div className="text-xs text-muted-foreground">
+                          <span className="font-medium">Conditions:</span>{" "}
+                          {rule.conditions.length > 0
+                            ? rule.conditions.map((c) => `${c.field} ${c.operator} ${JSON.stringify(c.value)}`).join("; ")
+                            : "None"}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          <span className="font-medium">Actions:</span>{" "}
+                          {rule.actions.length > 0
+                            ? rule.actions.map((a) => `${a.type}(${JSON.stringify(a.params)})`).join("; ")
+                            : "None"}
+                        </div>
+
+                        {rule.sourceText && (
+                          <details className="text-xs">
+                            <summary className="text-muted-foreground cursor-pointer hover:text-foreground">
+                              Source text
+                            </summary>
+                            <p className="mt-1 p-2 bg-muted/50 rounded text-muted-foreground italic">
+                              {rule.sourceText}
+                            </p>
+                          </details>
+                        )}
+                      </div>
+                    );
+                  })}
+                </CardContent>
+              </Card>
+            )}
           </div>
-        </CardContent>
-      </Card>
-
-      {convertSummary && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Conversion Summary</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm text-muted-foreground">{convertSummary}</p>
-          </CardContent>
-        </Card>
-      )}
-
-      {extractedRules.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Extracted Rules ({extractedRules.length})</CardTitle>
-            <CardDescription>Review each extracted rule. Accept to add it to the rule set, or reject to discard.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {extractedRules.map((rule, idx) => (
-              <div key={idx} className="border rounded-lg p-4 space-y-2">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium">{rule.name}</span>
-                    <Badge variant={confidenceColor(rule.confidence)}>{rule.confidence} confidence</Badge>
-                    <Badge variant="outline">{rule.type}</Badge>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Button size="sm" onClick={() => onAccept(rule)}>
-                      <CheckCircle2 className="mr-1 h-4 w-4" /> Accept
-                    </Button>
-                    <Button size="sm" variant="outline" onClick={() => setExtractedRules(extractedRules.filter((_, i) => i !== idx))}>
-                      <XCircle className="mr-1 h-4 w-4" /> Reject
-                    </Button>
-                  </div>
-                </div>
-                <p className="text-sm text-muted-foreground">{rule.description}</p>
-                <div className="text-xs text-muted-foreground">
-                  <span className="font-medium">Conditions:</span>{" "}
-                  {rule.conditions.map((c) => `${c.field} ${c.operator} ${JSON.stringify(c.value)}`).join("; ")}
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  <span className="font-medium">Actions:</span>{" "}
-                  {rule.actions.map((a) => `${a.type}(${JSON.stringify(a.params)})`).join("; ")}
-                </div>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-      )}
+        )}
+      </div>
     </div>
   );
 }
