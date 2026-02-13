@@ -35,7 +35,7 @@ export class AuthService {
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-|-$/g, '');
 
-    const passwordHash = await bcrypt.hash(dto.password, 10);
+    const passwordHash = await bcrypt.hash(dto.password, 12);
 
     const tenant = await this.db.client.tenant.create({
       data: {
