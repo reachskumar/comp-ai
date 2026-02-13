@@ -111,6 +111,68 @@ class ApiClient {
   async getMe() {
     return this.fetch<{ userId: string; tenantId: string; email: string; role: string }>("/api/v1/auth/me");
   }
+
+  // Settings endpoints
+  async getTenantInfo() {
+    return this.fetch<{
+      id: string;
+      name: string;
+      slug: string;
+      plan: string;
+      createdAt: string;
+      updatedAt: string;
+      _count: { users: number; employees: number };
+    }>("/api/v1/settings/tenant");
+  }
+
+  async listUsers() {
+    return this.fetch<{
+      data: Array<{
+        id: string;
+        email: string;
+        name: string;
+        role: string;
+        avatarUrl: string | null;
+        createdAt: string;
+        updatedAt: string;
+      }>;
+      total: number;
+    }>("/api/v1/settings/users");
+  }
+
+  async listAuditLogs(params?: {
+    page?: number;
+    limit?: number;
+    action?: string;
+    userId?: string;
+    entityType?: string;
+  }) {
+    const searchParams = new URLSearchParams();
+    if (params?.page) searchParams.set("page", String(params.page));
+    if (params?.limit) searchParams.set("limit", String(params.limit));
+    if (params?.action) searchParams.set("action", params.action);
+    if (params?.userId) searchParams.set("userId", params.userId);
+    if (params?.entityType) searchParams.set("entityType", params.entityType);
+    const qs = searchParams.toString();
+    return this.fetch<{
+      data: Array<{
+        id: string;
+        tenantId: string;
+        userId: string | null;
+        action: string;
+        entityType: string;
+        entityId: string;
+        changes: Record<string, unknown>;
+        ipAddress: string | null;
+        createdAt: string;
+        user: { id: string; name: string; email: string } | null;
+      }>;
+      total: number;
+      page: number;
+      limit: number;
+      totalPages: number;
+    }>(`/api/v1/settings/audit-logs${qs ? `?${qs}` : ""}`);
+  }
 }
 
 export const apiClient = new ApiClient();
