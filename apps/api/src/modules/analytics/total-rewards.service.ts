@@ -1,4 +1,5 @@
 import { Injectable, Logger, ForbiddenException } from '@nestjs/common';
+import { DatabaseService } from '../../database';
 import { TotalRewardsView } from './dto';
 
 interface TotalRewardsResponse {
@@ -28,6 +29,8 @@ interface TeamOverviewResponse {
 export class TotalRewardsService {
   private readonly logger = new Logger(TotalRewardsService.name);
 
+  constructor(private readonly db: DatabaseService) {}
+
   async getPersonalRewards(
     tenantId: string,
     userId: string,
@@ -35,38 +38,67 @@ export class TotalRewardsService {
   ): Promise<TotalRewardsResponse> {
     this.logger.log(`Fetching total rewards for user=${userId} tenant=${tenantId}`);
 
-    // Mock data — will be replaced with real DB aggregation
     const currentYear = year ? parseInt(year, 10) : new Date().getFullYear();
+
+    // Find the employee linked to this user (by email match or first employee)
+    const user = await this.db.client.user.findUnique({ where: { id: userId } });
+    const employee = user
+      ? await this.db.client.employee.findFirst({
+          where: { tenantId, email: user.email },
+        })
+      : null;
+
+    if (!employee) {
+      return {
+        employee: { name: 'Unknown', title: 'N/A', department: 'N/A', employeeId: userId },
+        totalRewardsValue: 0,
+        previousYearTotal: 0,
+        breakdown: [],
+        marketComparison: [],
+        timeline: [],
+        year: currentYear,
+      };
+    }
+
+    const baseSalary = Number(employee.baseSalary);
+    const totalComp = Number(employee.totalComp);
+
+    // Get benefit enrollments for this employee
+    const enrollments = await this.db.client.benefitEnrollment.findMany({
+      where: { tenantId, employeeId: employee.id, status: 'ACTIVE' },
+    });
+    const benefitsValue = enrollments.reduce(
+      (sum, e) => sum + Number(e.employerPremium) * 12,
+      0,
+    );
+
+    // Estimate bonus as totalComp - baseSalary - benefits (if positive)
+    const bonusEstimate = Math.max(0, totalComp - baseSalary - benefitsValue);
+
+    const totalRewardsValue = Math.round(baseSalary + bonusEstimate + benefitsValue);
+
+    const breakdown: TotalRewardsResponse['breakdown'] = [
+      { category: 'Base Salary', value: Math.round(baseSalary), previousValue: 0 },
+    ];
+    if (bonusEstimate > 0) {
+      breakdown.push({ category: 'Bonus / Variable', value: Math.round(bonusEstimate), previousValue: 0 });
+    }
+    if (benefitsValue > 0) {
+      breakdown.push({ category: 'Benefits', value: Math.round(benefitsValue), previousValue: 0 });
+    }
+
     return {
       employee: {
-        name: 'Sarah Johnson',
-        title: 'Senior Software Engineer',
-        department: 'Engineering',
-        employeeId: userId,
+        name: `${employee.firstName} ${employee.lastName}`,
+        title: employee.level,
+        department: employee.department,
+        employeeId: employee.id,
       },
-      totalRewardsValue: 187500,
-      previousYearTotal: 172000,
-      breakdown: [
-        { category: 'Base Salary', value: 125000, previousValue: 118000 },
-        { category: 'Annual Bonus', value: 25000, previousValue: 22000 },
-        { category: 'Equity/LTI', value: 18000, previousValue: 15000 },
-        { category: 'Health Benefits', value: 12500, previousValue: 11500 },
-        { category: 'Retirement', value: 5000, previousValue: 4500 },
-        { category: 'Perks & Allowances', value: 2000, previousValue: 1000 },
-      ],
-      marketComparison: [
-        { percentile: 25, value: 145000 },
-        { percentile: 50, value: 170000 },
-        { percentile: 75, value: 195000 },
-        { percentile: 90, value: 225000 },
-      ],
-      timeline: [
-        { date: '2026-01-15', event: 'Annual Merit Increase', amount: 7000, type: 'raise' },
-        { date: '2025-12-01', event: 'Year-End Bonus', amount: 25000, type: 'bonus' },
-        { date: '2025-07-01', event: 'Equity Vest', amount: 6000, type: 'equity' },
-        { date: '2025-03-15', event: 'Promotion to Senior', amount: 12000, type: 'promotion' },
-        { date: '2025-01-15', event: 'Annual Merit Increase', amount: 5500, type: 'raise' },
-      ],
+      totalRewardsValue,
+      previousYearTotal: 0,
+      breakdown,
+      marketComparison: [],
+      timeline: [],
       year: currentYear,
     };
   }
@@ -76,32 +108,71 @@ export class TotalRewardsService {
     userId: string,
     userRole: string,
   ): Promise<TeamOverviewResponse> {
-    // Security: only managers, HR, and admins can see team data
-    const allowedRoles = ['manager', 'hr', 'admin', 'super_admin'];
+    const allowedRoles = ['manager', 'hr', 'admin', 'super_admin', 'ADMIN', 'HR', 'MANAGER'];
     if (!allowedRoles.includes(userRole)) {
       throw new ForbiddenException('Only managers and HR can view team rewards overview');
     }
 
     this.logger.log(`Fetching team overview for manager=${userId} tenant=${tenantId}`);
 
+    const employees = await this.db.client.employee.findMany({
+      where: { tenantId, terminationDate: null },
+      select: { baseSalary: true, totalComp: true, level: true, department: true },
+    });
+
+    if (employees.length === 0) {
+      return {
+        teamSize: 0,
+        avgTotalRewards: 0,
+        medianTotalRewards: 0,
+        departmentBreakdown: [],
+        headcountByLevel: [],
+      };
+    }
+
+    const comps = employees.map((e) => Number(e.totalComp) || Number(e.baseSalary));
+    const sorted = [...comps].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    const medianTotalRewards = sorted.length % 2 !== 0
+      ? sorted[mid]!
+      : Math.round(((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2);
+    const avgTotalRewards = Math.round(comps.reduce((s, v) => s + v, 0) / comps.length);
+
+    // Department breakdown: avg base salary per department
+    const deptMap = new Map<string, { total: number; count: number }>();
+    for (const emp of employees) {
+      const salary = Number(emp.baseSalary);
+      const existing = deptMap.get(emp.department) ?? { total: 0, count: 0 };
+      existing.total += salary;
+      existing.count += 1;
+      deptMap.set(emp.department, existing);
+    }
+    const departmentBreakdown = [...deptMap.entries()].map(([category, d]) => ({
+      category,
+      avgValue: Math.round(d.total / d.count),
+    }));
+
+    // Headcount by level
+    const levelMap = new Map<string, { total: number; count: number }>();
+    for (const emp of employees) {
+      const comp = Number(emp.totalComp) || Number(emp.baseSalary);
+      const existing = levelMap.get(emp.level) ?? { total: 0, count: 0 };
+      existing.total += comp;
+      existing.count += 1;
+      levelMap.set(emp.level, existing);
+    }
+    const headcountByLevel = [...levelMap.entries()].map(([level, d]) => ({
+      level,
+      count: d.count,
+      avgComp: Math.round(d.total / d.count),
+    }));
+
     return {
-      teamSize: 12,
-      avgTotalRewards: 165000,
-      medianTotalRewards: 158000,
-      departmentBreakdown: [
-        { category: 'Base Salary', avgValue: 110000 },
-        { category: 'Annual Bonus', avgValue: 22000 },
-        { category: 'Equity/LTI', avgValue: 15000 },
-        { category: 'Health Benefits', avgValue: 12000 },
-        { category: 'Retirement', avgValue: 4500 },
-        { category: 'Perks & Allowances', avgValue: 1500 },
-      ],
-      headcountByLevel: [
-        { level: 'Junior', count: 3, avgComp: 95000 },
-        { level: 'Mid', count: 5, avgComp: 145000 },
-        { level: 'Senior', count: 3, avgComp: 190000 },
-        { level: 'Lead', count: 1, avgComp: 230000 },
-      ],
+      teamSize: employees.length,
+      avgTotalRewards,
+      medianTotalRewards,
+      departmentBreakdown,
+      headcountByLevel,
     };
   }
 }

@@ -17,6 +17,7 @@ import { TenantGuard } from '../../common';
 import { TotalRewardsService } from './total-rewards.service';
 import { PayEquityService } from './pay-equity.service';
 import { SimulationService } from './simulation.service';
+import { HrDashboardService } from './hr-dashboard.service';
 import {
   TotalRewardsQueryDto,
   TotalRewardsView,
@@ -43,7 +44,17 @@ export class AnalyticsController {
     private readonly totalRewardsService: TotalRewardsService,
     private readonly payEquityService: PayEquityService,
     private readonly simulationService: SimulationService,
+    private readonly hrDashboardService: HrDashboardService,
   ) {}
+
+  /* ─── HR Dashboard Endpoint ─────────────────────────────── */
+
+  @Get('hr-dashboard')
+  @ApiOperation({ summary: 'Get HR dashboard stats: headcount, salary distribution, etc.' })
+  async getHrDashboard(@Request() req: AuthRequest) {
+    this.logger.log(`HR Dashboard request: user=${req.user.userId}`);
+    return this.hrDashboardService.getDashboard(req.user.tenantId);
+  }
 
   @Get('total-rewards')
   @ApiOperation({ summary: 'Get total rewards statement for the authenticated user' })
