@@ -97,8 +97,8 @@ export function ReportChart({ data, config }: ReportChartProps) {
               outerRadius={120}
               dataKey={yKey}
               nameKey={xKey}
-              label={({ name, percent }: { name: string; percent: number }) =>
-                `${name}: ${(percent * 100).toFixed(0)}%`
+              label={({ name, percent }: { name?: string; percent?: number }) =>
+                `${name ?? ''}: ${((percent ?? 0) * 100).toFixed(0)}%`
               }
             >
               {data.map((_, index) => (

@@ -69,9 +69,9 @@ export class ReportsService implements ReportBuilderDbAdapter {
         prompt: data.prompt,
         status: 'COMPLETED',
         queryType: data.queryType,
-        filters: data.filters ?? {},
+        filters: (data.filters ?? {}) as Prisma.InputJsonValue,
         results: data.results ?? [],
-        chartConfig: data.chartConfig ?? {},
+        chartConfig: (data.chartConfig ?? {}) as Prisma.InputJsonValue,
         narrative: data.narrative,
       },
     });

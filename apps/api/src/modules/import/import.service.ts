@@ -545,8 +545,10 @@ export class ImportService {
       if (colIdx < 0) continue;
       if (fix.row < 0 || fix.row >= rows.length) continue;
 
-      const before = rows[fix.row][colIdx] ?? '';
-      rows[fix.row][colIdx] = fix.suggestedValue;
+      const row = rows[fix.row];
+      if (!row) continue;
+      const before = row[colIdx] ?? '';
+      row[colIdx] = fix.suggestedValue;
       preview.push({ row: fix.row, column: fix.column, before, after: fix.suggestedValue });
       applied++;
     }

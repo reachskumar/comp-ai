@@ -751,6 +751,7 @@ function PolicyConverterTab({
 
   function startEdit(idx: number) {
     const rule = extractedRules[idx];
+    if (!rule) return;
     setEditingIdx(idx);
     setEditForm({ name: rule.name, description: rule.description });
   }
@@ -758,7 +759,9 @@ function PolicyConverterTab({
   function saveEdit() {
     if (editingIdx === null || !editForm) return;
     const updated = [...extractedRules];
-    updated[editingIdx] = { ...updated[editingIdx], name: editForm.name, description: editForm.description };
+    const existing = updated[editingIdx];
+    if (!existing) return;
+    updated[editingIdx] = { ...existing, name: editForm.name, description: editForm.description };
     setExtractedRules(updated);
     setEditingIdx(null);
     setEditForm(null);
