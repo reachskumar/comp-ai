@@ -4,6 +4,7 @@ import { PayrollController } from './payroll.controller';
 import { AnomalyDetectorService } from './services/anomaly-detector.service';
 import { TraceabilityService } from './services/traceability.service';
 import { ReconciliationService } from './services/reconciliation.service';
+import { AnomalyExplainerService } from './services/anomaly-explainer.service';
 import { ReconciliationProcessor } from './processors/reconciliation.processor';
 
 @Module({
@@ -15,9 +16,10 @@ import { ReconciliationProcessor } from './processors/reconciliation.processor';
     AnomalyDetectorService,
     TraceabilityService,
     ReconciliationService,
+    AnomalyExplainerService,
     ReconciliationProcessor,
   ],
-  exports: [AnomalyDetectorService, TraceabilityService, ReconciliationService],
+  exports: [AnomalyDetectorService, TraceabilityService, ReconciliationService, AnomalyExplainerService],
 })
 export class PayrollModule {}
 

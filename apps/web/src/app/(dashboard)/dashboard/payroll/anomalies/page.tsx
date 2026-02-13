@@ -11,6 +11,13 @@ import {
   ChevronRight,
   Shield,
   TrendingUp,
+  Sparkles,
+  Loader2,
+  ChevronDown,
+  ChevronUp,
+  ThumbsUp,
+  Flag,
+  Ban,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -28,9 +35,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   usePayrollRuns,
   useAnomalies,
+  useExplainAnomaly,
+  useBatchExplain,
   type PayrollAnomaly,
   type AnomalySeverity,
   type AnomalyType,
+  type AnomalyExplanation,
 } from "@/hooks/use-payroll";
 
 const SEVERITY_OPTIONS = [
@@ -90,12 +100,79 @@ function formatDate(dateStr: string) {
   });
 }
 
+function ConfidenceIndicator({ confidence }: { confidence: number }) {
+  const pct = Math.round(confidence * 100);
+  const color = pct >= 70 ? "text-green-600" : pct >= 40 ? "text-yellow-600" : "text-red-600";
+  const bg = pct >= 70 ? "bg-green-500/20" : pct >= 40 ? "bg-yellow-500/20" : "bg-red-500/20";
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${color} ${bg}`}>
+      {pct}% confidence
+    </span>
+  );
+}
+
+function ActionBadge({ action }: { action: string }) {
+  const config: Record<string, { icon: React.ReactNode; label: string; className: string }> = {
+    approve: { icon: <ThumbsUp className="h-3 w-3" />, label: "Approve", className: "bg-green-500/20 text-green-700" },
+    flag: { icon: <Flag className="h-3 w-3" />, label: "Flag for Review", className: "bg-yellow-500/20 text-yellow-700" },
+    block: { icon: <Ban className="h-3 w-3" />, label: "Block", className: "bg-red-500/20 text-red-700" },
+  };
+  const c = config[action] ?? config["flag"]!;
+  return (
+    <Badge variant="secondary" className={`gap-1 ${c.className}`}>
+      {c.icon} {c.label}
+    </Badge>
+  );
+}
+
+function ExplanationPanel({ explanation }: { explanation: AnomalyExplanation }) {
+  return (
+    <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Sparkles className="h-4 w-4 text-purple-500" />
+          <span className="text-sm font-semibold">AI Analysis</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <ConfidenceIndicator confidence={explanation.confidence} />
+          <ActionBadge action={explanation.recommendedAction} />
+        </div>
+      </div>
+      <div>
+        <p className="text-sm font-medium text-foreground">Explanation</p>
+        <p className="text-sm text-muted-foreground">{explanation.explanation}</p>
+      </div>
+      <div>
+        <p className="text-sm font-medium text-foreground">Root Cause</p>
+        <p className="text-sm text-muted-foreground">{explanation.rootCause}</p>
+      </div>
+      {explanation.contributingFactors.length > 0 && (
+        <div>
+          <p className="text-sm font-medium text-foreground">Contributing Factors</p>
+          <ul className="ml-4 list-disc text-sm text-muted-foreground">
+            {explanation.contributingFactors.map((f, i) => (
+              <li key={i}>{f}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <div>
+        <p className="text-sm font-medium text-foreground">Reasoning</p>
+        <p className="text-sm text-muted-foreground">{explanation.reasoning}</p>
+      </div>
+    </div>
+  );
+}
+
 export default function AnomaliesPage() {
   const [selectedRunId, setSelectedRunId] = React.useState("");
   const [page, setPage] = React.useState(1);
   const [severityFilter, setSeverityFilter] = React.useState("");
   const [typeFilter, setTypeFilter] = React.useState("");
   const [resolvedFilter, setResolvedFilter] = React.useState("");
+  const [expandedAnomalyId, setExpandedAnomalyId] = React.useState<string | null>(null);
+  const [explanations, setExplanations] = React.useState<Record<string, AnomalyExplanation>>({});
+  const [explaining, setExplaining] = React.useState<Record<string, boolean>>({});
   const limit = 20;
 
   // Load runs for the selector
@@ -123,6 +200,36 @@ export default function AnomaliesPage() {
 
   const anomalies = anomaliesQuery.data?.data ?? [];
   const pagination = anomaliesQuery.data?.pagination;
+
+  // AI Explain hooks
+  const explainMutation = useExplainAnomaly(selectedRunId);
+  const batchExplainMutation = useBatchExplain(selectedRunId);
+
+  const handleExplain = React.useCallback(async (anomalyId: string) => {
+    setExplaining((prev) => ({ ...prev, [anomalyId]: true }));
+    try {
+      const result = await explainMutation.mutateAsync(anomalyId);
+      setExplanations((prev) => ({ ...prev, [anomalyId]: result }));
+      setExpandedAnomalyId(anomalyId);
+    } finally {
+      setExplaining((prev) => ({ ...prev, [anomalyId]: false }));
+    }
+  }, [explainMutation]);
+
+  const handleBatchExplain = React.useCallback(async () => {
+    const unresolvedIds = anomalies.filter((a) => !a.resolved).map((a) => a.id);
+    if (unresolvedIds.length === 0) return;
+    try {
+      const results = await batchExplainMutation.mutateAsync(unresolvedIds);
+      const newExplanations: Record<string, AnomalyExplanation> = {};
+      for (const r of results) {
+        newExplanations[r.anomalyId] = r;
+      }
+      setExplanations((prev) => ({ ...prev, ...newExplanations }));
+    } catch {
+      // handled by mutation error state
+    }
+  }, [anomalies, batchExplainMutation]);
 
   // Compute summary counts from current page (best effort without a dedicated summary endpoint)
   const criticalCount = anomalies.filter((a) => a.severity === "CRITICAL").length;
@@ -295,12 +402,31 @@ export default function AnomaliesPage() {
       {/* Anomaly Table */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Shield className="h-5 w-5" /> Anomalies
-          </CardTitle>
-          <CardDescription>
-            {selectedRunId ? "Detected anomalies for the selected payroll run." : "Select a payroll run to view anomalies."}
-          </CardDescription>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <Shield className="h-5 w-5" /> Anomalies
+              </CardTitle>
+              <CardDescription>
+                {selectedRunId ? "Detected anomalies for the selected payroll run." : "Select a payroll run to view anomalies."}
+              </CardDescription>
+            </div>
+            {selectedRunId && anomalies.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleBatchExplain}
+                disabled={batchExplainMutation.isPending}
+              >
+                {batchExplainMutation.isPending ? (
+                  <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                ) : (
+                  <Sparkles className="mr-1 h-4 w-4" />
+                )}
+                Explain All
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
           {!selectedRunId ? (
@@ -337,26 +463,68 @@ export default function AnomaliesPage() {
                   <TableHead>Details</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Date</TableHead>
+                  <TableHead className="text-center">AI Explain</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {anomalies.map((a: PayrollAnomaly) => (
-                  <TableRow key={a.id}>
-                    <TableCell className="font-medium font-mono text-xs">{a.employeeId.slice(0, 8)}…</TableCell>
-                    <TableCell>{typeLabel(a.anomalyType)}</TableCell>
-                    <TableCell>{severityBadge(a.severity)}</TableCell>
-                    <TableCell className="max-w-[300px] truncate text-sm text-muted-foreground">
-                      {(a.details as { message?: string })?.message ?? JSON.stringify(a.details).slice(0, 80)}
-                    </TableCell>
-                    <TableCell>
-                      {a.resolved ? (
-                        <Badge variant="secondary" className="bg-green-500/20 text-green-700">Resolved</Badge>
-                      ) : (
-                        <Badge variant="outline" className="text-orange-600 border-orange-300">Open</Badge>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">{formatDate(a.createdAt)}</TableCell>
-                  </TableRow>
+                  <React.Fragment key={a.id}>
+                    <TableRow className={expandedAnomalyId === a.id ? "border-b-0" : ""}>
+                      <TableCell className="font-medium font-mono text-xs">{a.employeeId.slice(0, 8)}…</TableCell>
+                      <TableCell>{typeLabel(a.anomalyType)}</TableCell>
+                      <TableCell>{severityBadge(a.severity)}</TableCell>
+                      <TableCell className="max-w-[300px] truncate text-sm text-muted-foreground">
+                        {(a.details as { message?: string })?.message ?? JSON.stringify(a.details).slice(0, 80)}
+                      </TableCell>
+                      <TableCell>
+                        {a.resolved ? (
+                          <Badge variant="secondary" className="bg-green-500/20 text-green-700">Resolved</Badge>
+                        ) : (
+                          <Badge variant="outline" className="text-orange-600 border-orange-300">Open</Badge>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">{formatDate(a.createdAt)}</TableCell>
+                      <TableCell className="text-center">
+                        <div className="flex items-center justify-center gap-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleExplain(a.id)}
+                            disabled={explaining[a.id]}
+                            title="AI Explain"
+                          >
+                            {explaining[a.id] ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Sparkles className="h-4 w-4 text-purple-500" />
+                            )}
+                          </Button>
+                          {explanations[a.id] && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() =>
+                                setExpandedAnomalyId(expandedAnomalyId === a.id ? null : a.id)
+                              }
+                            >
+                              {expandedAnomalyId === a.id ? (
+                                <ChevronUp className="h-4 w-4" />
+                              ) : (
+                                <ChevronDown className="h-4 w-4" />
+                              )}
+                            </Button>
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                    {expandedAnomalyId === a.id && explanations[a.id] && (
+                      <TableRow>
+                        <TableCell colSpan={7} className="p-3">
+                          <ExplanationPanel explanation={explanations[a.id]!} />
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </React.Fragment>
                 ))}
               </TableBody>
             </Table>

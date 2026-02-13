@@ -218,3 +218,56 @@ export function useResolveAnomaly(runId: string) {
   });
 }
 
+// ─── AI Anomaly Explanation Hooks ────────────────────────
+
+export interface AnomalyExplanation {
+  id: string;
+  anomalyId: string;
+  explanation: string;
+  rootCause: string;
+  contributingFactors: string[];
+  recommendedAction: string;
+  confidence: number;
+  reasoning: string;
+  createdAt: string;
+}
+
+export function useAnomalyExplanation(runId: string | null, anomalyId: string | null) {
+  return useQuery<AnomalyExplanation | null>({
+    queryKey: ["anomaly-explanation", runId, anomalyId],
+    queryFn: () =>
+      apiClient.fetch<AnomalyExplanation | null>(
+        `/api/v1/payroll/${runId}/anomalies/${anomalyId}/explanation`,
+      ),
+    enabled: !!runId && !!anomalyId,
+  });
+}
+
+export function useExplainAnomaly(runId: string) {
+  const qc = useQueryClient();
+  return useMutation<AnomalyExplanation, Error, string>({
+    mutationFn: (anomalyId: string) =>
+      apiClient.fetch<AnomalyExplanation>(
+        `/api/v1/payroll/${runId}/anomalies/${anomalyId}/explain`,
+        { method: "POST" },
+      ),
+    onSuccess: (_data, anomalyId) => {
+      void qc.invalidateQueries({ queryKey: ["anomaly-explanation", runId, anomalyId] });
+    },
+  });
+}
+
+export function useBatchExplain(runId: string) {
+  const qc = useQueryClient();
+  return useMutation<AnomalyExplanation[], Error, string[]>({
+    mutationFn: (anomalyIds: string[]) =>
+      apiClient.fetch<AnomalyExplanation[]>(
+        `/api/v1/payroll/${runId}/anomalies/explain-batch`,
+        { method: "POST", body: JSON.stringify({ anomalyIds }) },
+      ),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["anomaly-explanation"] });
+    },
+  });
+}
+

@@ -18,6 +18,7 @@ import { JwtAuthGuard } from '../../auth';
 import { TenantGuard } from '../../common';
 import { ReconciliationService } from './services/reconciliation.service';
 import { AnomalyDetectorService } from './services/anomaly-detector.service';
+import { AnomalyExplainerService } from './services/anomaly-explainer.service';
 import { CreatePayrollDto } from './dto/create-payroll.dto';
 import { PayrollQueryDto, AnomalyQueryDto } from './dto/payroll-query.dto';
 import { ResolveAnomalyDto } from './dto/resolve-anomaly.dto';
@@ -35,6 +36,7 @@ export class PayrollController {
   constructor(
     private readonly reconciliation: ReconciliationService,
     private readonly anomalyDetector: AnomalyDetectorService,
+    private readonly anomalyExplainer: AnomalyExplainerService,
   ) {}
 
   // ─── Create Payroll Run ─────────────────────────────────────
@@ -131,6 +133,48 @@ export class PayrollController {
       .header('Content-Type', result.contentType)
       .header('Content-Disposition', `attachment; filename="${result.filename}"`)
       .send(result.content);
+  }
+
+  // ─── AI Anomaly Explanation ─────────────────────────────
+
+  @Post(':id/anomalies/:anomalyId/explain')
+  @ApiOperation({ summary: 'Generate AI explanation for an anomaly' })
+  @HttpCode(HttpStatus.OK)
+  async explainAnomaly(
+    @Param('id') _id: string,
+    @Param('anomalyId') anomalyId: string,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.anomalyExplainer.explainAnomaly(
+      anomalyId,
+      req.user.tenantId,
+      req.user.userId,
+    );
+  }
+
+  @Get(':id/anomalies/:anomalyId/explanation')
+  @ApiOperation({ summary: 'Get cached AI explanation for an anomaly' })
+  async getExplanation(
+    @Param('id') _id: string,
+    @Param('anomalyId') anomalyId: string,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.anomalyExplainer.getExplanation(anomalyId, req.user.tenantId);
+  }
+
+  @Post(':id/anomalies/explain-batch')
+  @ApiOperation({ summary: 'Batch explain multiple anomalies' })
+  @HttpCode(HttpStatus.OK)
+  async explainBatch(
+    @Param('id') _id: string,
+    @Body() body: { anomalyIds: string[] },
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.anomalyExplainer.explainBatch(
+      body.anomalyIds,
+      req.user.tenantId,
+      req.user.userId,
+    );
   }
 
   // ─── Legacy: Direct Anomaly Detection ──────────────────────
