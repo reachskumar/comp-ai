@@ -38,7 +38,7 @@ interface AuthRequest {
 @ApiTags('benefits')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, TenantGuard)
-@Controller('api/v1/benefits')
+@Controller('benefits')
 export class BenefitsController {
   constructor(private readonly benefitsService: BenefitsService) {}
 

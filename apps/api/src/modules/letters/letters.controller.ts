@@ -28,7 +28,7 @@ interface AuthRequest {
 @ApiTags('letters')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, TenantGuard)
-@Controller('api/v1/letters')
+@Controller('letters')
 export class LettersController {
   private readonly logger = new Logger(LettersController.name);
 

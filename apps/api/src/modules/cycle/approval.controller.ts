@@ -34,7 +34,7 @@ interface AuthRequest {
 @ApiTags('cycle-approvals')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, TenantGuard)
-@Controller('api/v1/cycles')
+@Controller('cycles')
 export class ApprovalController {
   constructor(
     private readonly approvalService: ApprovalService,

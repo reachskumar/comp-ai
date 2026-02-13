@@ -26,7 +26,7 @@ interface AuthRequest {
 @ApiTags('reports')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, TenantGuard)
-@Controller('api/v1/reports')
+@Controller('reports')
 export class ReportsController {
   private readonly logger = new Logger(ReportsController.name);
 

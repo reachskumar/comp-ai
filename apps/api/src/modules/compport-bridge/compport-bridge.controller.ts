@@ -29,7 +29,7 @@ interface AuthRequest {
  * - Audit logging on all sync operations
  */
 @ApiTags('compport-bridge')
-@Controller('api/v1/compport-bridge')
+@Controller('compport-bridge')
 export class CompportBridgeController {
   private readonly logger = new Logger(CompportBridgeController.name);
 

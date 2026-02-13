@@ -34,7 +34,7 @@ interface AuthRequest {
 @ApiTags('cycles')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, TenantGuard)
-@Controller('api/v1/cycles')
+@Controller('cycles')
 export class CycleController {
   constructor(private readonly cycleService: CycleService) {}
 

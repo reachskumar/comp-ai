@@ -25,7 +25,7 @@ interface AuthRequest {
 @ApiTags('compliance')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, TenantGuard)
-@Controller('api/v1/compliance')
+@Controller('compliance')
 export class ComplianceController {
   private readonly logger = new Logger(ComplianceController.name);
 

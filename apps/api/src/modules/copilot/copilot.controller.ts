@@ -24,7 +24,7 @@ interface AuthRequest {
 @ApiTags('copilot')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, TenantGuard)
-@Controller('api/v1/copilot')
+@Controller('copilot')
 export class CopilotController {
   private readonly logger = new Logger(CopilotController.name);
 

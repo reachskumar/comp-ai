@@ -28,7 +28,7 @@ interface AuthRequest {
 @ApiTags('cycle-monitors')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, TenantGuard)
-@Controller('api/v1/cycles/:cycleId/monitors')
+@Controller('cycles/:cycleId/monitors')
 export class MonitorsController {
   constructor(
     private readonly budgetDrift: BudgetDriftService,

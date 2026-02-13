@@ -45,7 +45,7 @@ interface AuthenticatedFastifyRequest extends FastifyRequest {
 @ApiTags('rules')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, TenantGuard)
-@Controller('api/v1/rules')
+@Controller('rules')
 export class RulesController {
   constructor(
     private readonly policyConverter: PolicyConverterService,
