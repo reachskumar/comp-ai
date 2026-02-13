@@ -139,5 +139,40 @@ export class ImportController {
       .header('Content-Disposition', `attachment; filename="rejects-${id}.csv"`)
       .send(stream);
   }
+
+  // ─── AI Data Quality Endpoints ──────────────────────────────
+
+  @Post(':id/ai-analyze')
+  @ApiOperation({ summary: 'Trigger AI-powered data quality analysis' })
+  @HttpCode(HttpStatus.OK)
+  async aiAnalyze(
+    @Param('id') id: string,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.importService.triggerAIAnalysis(id, req.user.tenantId, req.user.userId);
+  }
+
+  @Get(':id/ai-report')
+  @ApiOperation({ summary: 'Get AI quality report for an import job' })
+  async aiReport(
+    @Param('id') id: string,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.importService.getAIReport(id, req.user.tenantId);
+  }
+
+  @Post(':id/ai-fix')
+  @ApiOperation({ summary: 'Apply AI-suggested fixes to import data' })
+  @HttpCode(HttpStatus.OK)
+  async aiFix(
+    @Param('id') id: string,
+    @Body() body: { fixes: Array<{ row: number; column: string; suggestedValue: string }> },
+    @Req() req: AuthenticatedRequest,
+  ) {
+    if (!body.fixes || !Array.isArray(body.fixes)) {
+      throw new BadRequestException('Request body must include a "fixes" array');
+    }
+    return this.importService.applyAIFix(id, req.user.tenantId, body.fixes);
+  }
 }
 

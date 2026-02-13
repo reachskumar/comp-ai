@@ -11,6 +11,11 @@ import {
   type AnalysisReport,
   type CleaningResult,
 } from '@compensation/shared';
+import {
+  invokeDataQualityGraph,
+  type DataQualityDbAdapter,
+  type DataQualityReport,
+} from '@compensation/ai';
 import type { ImportQueryDto } from './dto/import-query.dto';
 
 const UPLOAD_ROOT = path.resolve(process.cwd(), 'uploads');
@@ -373,6 +378,185 @@ export class ImportService {
       throw new NotFoundException('Rejects file not found. Run cleaning first.');
     }
     return filePath;
+  }
+
+  // ─── AI Data Quality Analysis ──────────────────────────────
+
+  async triggerAIAnalysis(jobId: string, tenantId: string, userId: string) {
+    await this.findJob(jobId, tenantId);
+
+    // Create analysis record
+    const analysis = await this.db.client.importAIAnalysis.create({
+      data: {
+        tenantId,
+        userId,
+        importJobId: jobId,
+        status: 'RUNNING',
+        startedAt: new Date(),
+      },
+    });
+
+    // Build the DB adapter for the AI graph
+    const dbAdapter: DataQualityDbAdapter = {
+      getImportIssues: async (_tid, filters) => {
+        return this.db.client.importIssue.findMany({
+          where: {
+            importJobId: filters.importJobId,
+            ...(filters.severity ? { severity: filters.severity as never } : {}),
+            ...(filters.issueType ? { issueType: filters.issueType as never } : {}),
+          },
+          take: filters.limit ?? 100,
+        });
+      },
+      getSampleData: async (_tid, filters) => {
+        const job = await this.findJob(filters.importJobId, tenantId);
+        const filePath = path.join(this.uploadDir(tenantId, filters.importJobId), job.fileName);
+        const buffer = await this.readFileBuffer(filePath);
+        const text = buffer.toString('utf-8');
+        const { headers, rows } = parseCSV(text);
+        const start = filters.startRow ?? 0;
+        const end = filters.endRow ?? 10;
+        const sliced = rows.slice(start, end);
+        if (filters.columns?.length) {
+          const indices = filters.columns.map((c) => headers.indexOf(c)).filter((i) => i >= 0);
+          return {
+            headers: indices.map((i) => headers[i]),
+            rows: sliced.map((r) => indices.map((i) => r[i])),
+          };
+        }
+        return { headers, rows: sliced };
+      },
+      getFieldStats: async (_tid, filters) => {
+        const job = await this.findJob(filters.importJobId, tenantId);
+        const filePath = path.join(this.uploadDir(tenantId, filters.importJobId), job.fileName);
+        const buffer = await this.readFileBuffer(filePath);
+        const report = analyzeFile(buffer);
+        if (filters.fieldName) {
+          const field = report.fieldReports.find((f) => f.columnName === filters.fieldName);
+          return field ?? { error: `Field '${filters.fieldName}' not found` };
+        }
+        return report.fieldReports;
+      },
+      getHistoricalImports: async (_tid, filters) => {
+        return this.db.client.importJob.findMany({
+          where: {
+            tenantId,
+            ...(filters.status ? { status: filters.status as never } : {}),
+          },
+          take: filters.limit ?? 10,
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            fileName: true,
+            status: true,
+            totalRows: true,
+            cleanRows: true,
+            rejectRows: true,
+            createdAt: true,
+          },
+        });
+      },
+    };
+
+    try {
+      const result = await invokeDataQualityGraph(
+        { tenantId, userId, importJobId: jobId },
+        dbAdapter,
+      );
+
+      await this.db.client.importAIAnalysis.update({
+        where: { id: analysis.id },
+        data: {
+          status: 'COMPLETED',
+          qualityScore: result.report?.qualityScore ?? null,
+          summary: result.report?.summary ?? null,
+          report: (result.report as never) ?? {},
+          rawResponse: result.rawResponse,
+          completedAt: new Date(),
+        },
+      });
+
+      return {
+        id: analysis.id,
+        status: 'COMPLETED',
+        qualityScore: result.report?.qualityScore,
+        summary: result.report?.summary,
+        report: result.report,
+      };
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      this.logger.error(`AI analysis failed for job ${jobId}: ${errMsg}`);
+
+      await this.db.client.importAIAnalysis.update({
+        where: { id: analysis.id },
+        data: {
+          status: 'FAILED',
+          errorMsg: errMsg,
+          completedAt: new Date(),
+        },
+      });
+
+      throw new BadRequestException(`AI analysis failed: ${errMsg}`);
+    }
+  }
+
+  async getAIReport(jobId: string, tenantId: string) {
+    await this.findJob(jobId, tenantId);
+
+    const analysis = await this.db.client.importAIAnalysis.findFirst({
+      where: { importJobId: jobId, tenantId },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (!analysis) {
+      throw new NotFoundException('No AI analysis found for this import job. Trigger one first.');
+    }
+
+    return {
+      id: analysis.id,
+      status: analysis.status,
+      qualityScore: analysis.qualityScore,
+      summary: analysis.summary,
+      report: analysis.report as DataQualityReport | null,
+      createdAt: analysis.createdAt,
+      completedAt: analysis.completedAt,
+      errorMsg: analysis.errorMsg,
+    };
+  }
+
+  async applyAIFix(
+    jobId: string,
+    tenantId: string,
+    fixes: Array<{ row: number; column: string; suggestedValue: string }>,
+  ) {
+    const job = await this.findJob(jobId, tenantId);
+
+    // Read the current file
+    const filePath = path.join(this.uploadDir(tenantId, jobId), job.fileName);
+    const buffer = await this.readFileBuffer(filePath);
+    const text = buffer.toString('utf-8');
+    const { headers, rows } = parseCSV(text);
+
+    let applied = 0;
+    const preview: Array<{ row: number; column: string; before: string; after: string }> = [];
+
+    for (const fix of fixes) {
+      const colIdx = headers.indexOf(fix.column);
+      if (colIdx < 0) continue;
+      if (fix.row < 0 || fix.row >= rows.length) continue;
+
+      const before = rows[fix.row][colIdx] ?? '';
+      rows[fix.row][colIdx] = fix.suggestedValue;
+      preview.push({ row: fix.row, column: fix.column, before, after: fix.suggestedValue });
+      applied++;
+    }
+
+    // Save the updated file back
+    const dir = this.uploadDir(tenantId, jobId);
+    const updatedCsv = this.rowsToCsv(headers, rows);
+    await fs.writeFile(path.join(dir, job.fileName), updatedCsv, 'utf-8');
+
+    return { applied, total: fixes.length, preview };
   }
 
   // ─── Private Helpers ──────────────────────────────────────

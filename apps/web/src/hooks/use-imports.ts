@@ -263,3 +263,106 @@ export function useApproveMutation() {
   });
 }
 
+
+
+// ─── AI Data Quality Types ──────────────────────────────────
+
+export interface AIIssueFixSuggestion {
+  row: number;
+  column: string;
+  originalValue: string;
+  suggestedValue: string;
+  confidence: number;
+  explanation: string;
+}
+
+export interface AIIssueGroup {
+  groupName: string;
+  issueType: string;
+  severity: string;
+  count: number;
+  explanation: string;
+  suggestedFixes: AIIssueFixSuggestion[];
+}
+
+export interface AIBulkFix {
+  description: string;
+  affectedRows: number;
+  fixType: string;
+}
+
+export interface AIQualityReport {
+  qualityScore: number;
+  summary: string;
+  issueGroups: AIIssueGroup[];
+  bulkFixes: AIBulkFix[];
+  recommendations: string[];
+}
+
+export interface AIAnalysisResponse {
+  id: string;
+  status: "PENDING" | "RUNNING" | "COMPLETED" | "FAILED";
+  qualityScore?: number | null;
+  summary?: string | null;
+  report?: AIQualityReport | null;
+  createdAt?: string;
+  completedAt?: string | null;
+  errorMsg?: string | null;
+}
+
+export interface AIFixResponse {
+  applied: number;
+  total: number;
+  preview: Array<{ row: number; column: string; before: string; after: string }>;
+}
+
+// ─── AI Data Quality Hooks ──────────────────────────────────
+
+export function useAIAnalyzeMutation() {
+  const qc = useQueryClient();
+  return useMutation<AIAnalysisResponse, Error, string>({
+    mutationFn: (importJobId) =>
+      apiClient.fetch<AIAnalysisResponse>(
+        `/api/v1/imports/${importJobId}/ai-analyze`,
+        { method: "POST" },
+      ),
+    onSuccess: (_data, importJobId) => {
+      void qc.invalidateQueries({ queryKey: ["import-ai-report", importJobId] });
+    },
+  });
+}
+
+export function useAIReport(importJobId: string | undefined) {
+  return useQuery<AIAnalysisResponse>({
+    queryKey: ["import-ai-report", importJobId],
+    queryFn: () =>
+      apiClient.fetch<AIAnalysisResponse>(
+        `/api/v1/imports/${importJobId}/ai-report`,
+      ),
+    enabled: !!importJobId,
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      if (data?.status === "RUNNING" || data?.status === "PENDING") return 3000;
+      return false;
+    },
+  });
+}
+
+export function useAIFixMutation() {
+  const qc = useQueryClient();
+  return useMutation<
+    AIFixResponse,
+    Error,
+    { importJobId: string; fixes: Array<{ row: number; column: string; suggestedValue: string }> }
+  >({
+    mutationFn: ({ importJobId, fixes }) =>
+      apiClient.fetch<AIFixResponse>(
+        `/api/v1/imports/${importJobId}/ai-fix`,
+        { method: "POST", body: JSON.stringify({ fixes }) },
+      ),
+    onSuccess: (_data, { importJobId }) => {
+      void qc.invalidateQueries({ queryKey: ["import", importJobId] });
+      void qc.invalidateQueries({ queryKey: ["import-ai-report", importJobId] });
+    },
+  });
+}

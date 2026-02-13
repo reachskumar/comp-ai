@@ -11,6 +11,9 @@ import {
   Download,
   Loader2,
   XCircle,
+  Sparkles,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -39,9 +42,13 @@ import {
   useAnalysis,
   useCleanMutation,
   useApproveMutation,
+  useAIAnalyzeMutation,
+  useAIReport,
+  useAIFixMutation,
   triggerDownload,
   type UploadResponse,
   type CleanResponse,
+  type AIQualityReport,
 } from "@/hooks/use-imports";
 
 type Step = "upload" | "analysis" | "cleaning" | "review" | "approved";
@@ -62,6 +69,13 @@ export default function ImportFilesPage() {
   );
   const cleanMutation = useCleanMutation();
   const approveMutation = useApproveMutation();
+
+  // AI Data Quality hooks
+  const aiAnalyzeMutation = useAIAnalyzeMutation();
+  const aiReportQuery = useAIReport(jobId ?? undefined);
+  const aiFixMutation = useAIFixMutation();
+  const [aiPanelOpen, setAiPanelOpen] = useState(false);
+  const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set());
 
   // ─── Upload handlers ──────────────────────────────────
 
@@ -364,7 +378,7 @@ export default function ImportFilesPage() {
                 </CardContent>
               </Card>
 
-              {/* Action button */}
+              {/* Action buttons */}
               <div className="flex gap-3">
                 <Button variant="outline" onClick={() => setStep("upload")}>
                   Upload Different File
@@ -373,7 +387,67 @@ export default function ImportFilesPage() {
                   <FileText className="mr-2 h-4 w-4" />
                   Run Cleaning
                 </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    if (jobId) {
+                      aiAnalyzeMutation.mutate(jobId, {
+                        onSuccess: () => {
+                          setAiPanelOpen(true);
+                          toast({ title: "AI Analysis started", description: "Analyzing data quality with AI..." });
+                        },
+                        onError: (err) => {
+                          toast({ title: "AI Analysis failed", description: err.message, variant: "destructive" });
+                        },
+                      });
+                    }
+                  }}
+                  disabled={aiAnalyzeMutation.isPending}
+                >
+                  {aiAnalyzeMutation.isPending ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Sparkles className="mr-2 h-4 w-4" />
+                  )}
+                  AI Quality Report
+                </Button>
               </div>
+
+              {/* AI Quality Report Panel */}
+              {(aiPanelOpen || aiReportQuery.data) && (
+                <AIReportPanel
+                  report={aiReportQuery.data?.report as AIQualityReport | undefined}
+                  status={aiReportQuery.data?.status}
+                  errorMsg={aiReportQuery.data?.errorMsg}
+                  expandedGroups={expandedGroups}
+                  onToggleGroup={(idx) => {
+                    setExpandedGroups((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(idx)) next.delete(idx);
+                      else next.add(idx);
+                      return next;
+                    });
+                  }}
+                  onApplyFix={(fixes) => {
+                    if (!jobId) return;
+                    aiFixMutation.mutate(
+                      { importJobId: jobId, fixes },
+                      {
+                        onSuccess: (data) => {
+                          toast({
+                            title: "Fixes applied",
+                            description: `${data.applied} of ${data.total} fixes applied successfully`,
+                          });
+                        },
+                        onError: (err) => {
+                          toast({ title: "Fix failed", description: err.message, variant: "destructive" });
+                        },
+                      }
+                    );
+                  }}
+                  isFixing={aiFixMutation.isPending}
+                />
+              )}
             </>
           )}
         </>
@@ -583,3 +657,205 @@ export default function ImportFilesPage() {
   );
 }
 
+
+
+// ─── AI Report Panel Component ──────────────────────────────
+
+function AIReportPanel({
+  report,
+  status,
+  errorMsg,
+  expandedGroups,
+  onToggleGroup,
+  onApplyFix,
+  isFixing,
+}: {
+  report?: AIQualityReport;
+  status?: string;
+  errorMsg?: string | null;
+  expandedGroups: Set<number>;
+  onToggleGroup: (idx: number) => void;
+  onApplyFix: (fixes: Array<{ row: number; column: string; suggestedValue: string }>) => void;
+  isFixing: boolean;
+}) {
+  if (status === "RUNNING" || status === "PENDING") {
+    return (
+      <Card>
+        <CardContent className="flex items-center justify-center py-8">
+          <Loader2 className="h-6 w-6 animate-spin text-primary" />
+          <span className="ml-3 text-sm">AI is analyzing your data...</span>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (status === "FAILED") {
+    return (
+      <Card>
+        <CardContent className="py-6 text-center">
+          <XCircle className="mx-auto h-6 w-6 text-destructive" />
+          <p className="mt-2 text-sm text-destructive">
+            AI analysis failed: {errorMsg ?? "Unknown error"}
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (!report) return null;
+
+  const scoreColor =
+    report.qualityScore >= 80
+      ? "text-green-600"
+      : report.qualityScore >= 50
+        ? "text-yellow-600"
+        : "text-red-600";
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Sparkles className="h-5 w-5 text-primary" />
+            <CardTitle>AI Quality Report</CardTitle>
+          </div>
+          <div className={`text-3xl font-bold ${scoreColor}`}>
+            {report.qualityScore}/100
+          </div>
+        </div>
+        <CardDescription>{report.summary}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* Issue Groups */}
+        {report.issueGroups.map((group, idx) => (
+          <div key={idx} className="rounded-lg border">
+            <button
+              onClick={() => onToggleGroup(idx)}
+              className="flex w-full items-center justify-between p-3 text-left hover:bg-muted/50"
+            >
+              <div className="flex items-center gap-2">
+                <Badge
+                  variant={
+                    group.severity === "ERROR"
+                      ? "destructive"
+                      : group.severity === "WARNING"
+                        ? "outline"
+                        : "secondary"
+                  }
+                >
+                  {group.severity}
+                </Badge>
+                <span className="text-sm font-medium">{group.groupName}</span>
+                <span className="text-xs text-muted-foreground">({group.count} issues)</span>
+              </div>
+              {expandedGroups.has(idx) ? (
+                <ChevronUp className="h-4 w-4" />
+              ) : (
+                <ChevronDown className="h-4 w-4" />
+              )}
+            </button>
+
+            {expandedGroups.has(idx) && (
+              <div className="border-t p-3 space-y-3">
+                <p className="text-sm text-muted-foreground">{group.explanation}</p>
+
+                {group.suggestedFixes.length > 0 && (
+                  <>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Row</TableHead>
+                          <TableHead>Column</TableHead>
+                          <TableHead>Original</TableHead>
+                          <TableHead>Suggested Fix</TableHead>
+                          <TableHead>Confidence</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {group.suggestedFixes.slice(0, 10).map((fix, fIdx) => (
+                          <TableRow key={fIdx}>
+                            <TableCell className="font-mono text-xs">{fix.row}</TableCell>
+                            <TableCell className="text-xs">{fix.column}</TableCell>
+                            <TableCell className="max-w-[120px] truncate font-mono text-xs text-red-500">
+                              {fix.originalValue}
+                            </TableCell>
+                            <TableCell className="max-w-[120px] truncate font-mono text-xs text-green-600">
+                              {fix.suggestedValue}
+                            </TableCell>
+                            <TableCell>
+                              <Badge variant="secondary" className="text-xs">
+                                {Math.round(fix.confidence * 100)}%
+                              </Badge>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={isFixing}
+                      onClick={() =>
+                        onApplyFix(
+                          group.suggestedFixes.map((f) => ({
+                            row: f.row,
+                            column: f.column,
+                            suggestedValue: f.suggestedValue,
+                          }))
+                        )
+                      }
+                    >
+                      {isFixing ? (
+                        <Loader2 className="mr-2 h-3 w-3 animate-spin" />
+                      ) : (
+                        <CheckCircle2 className="mr-2 h-3 w-3" />
+                      )}
+                      Apply {group.suggestedFixes.length} Fixes
+                    </Button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+
+        {/* Recommendations */}
+        {report.recommendations.length > 0 && (
+          <div className="rounded-lg border p-3">
+            <h4 className="text-sm font-medium mb-2">Recommendations</h4>
+            <ul className="list-disc list-inside space-y-1">
+              {report.recommendations.map((rec, idx) => (
+                <li key={idx} className="text-sm text-muted-foreground">{rec}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Bulk Apply All */}
+        {report.issueGroups.some((g) => g.suggestedFixes.length > 0) && (
+          <Button
+            disabled={isFixing}
+            onClick={() => {
+              const allFixes = report.issueGroups.flatMap((g) =>
+                g.suggestedFixes.map((f) => ({
+                  row: f.row,
+                  column: f.column,
+                  suggestedValue: f.suggestedValue,
+                }))
+              );
+              onApplyFix(allFixes);
+            }}
+          >
+            {isFixing ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Sparkles className="mr-2 h-4 w-4" />
+            )}
+            Apply All AI Fixes
+          </Button>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
