@@ -13,10 +13,16 @@ import {
   MessageSquareText,
   Sparkles,
   ArrowRight,
+  Users,
+  ShieldCheck,
+  Clock,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useAuthStore } from "@/stores/auth-store";
+import { useDashboardSummary } from "@/hooks/use-dashboard";
+import type { ActivityEntry } from "@/hooks/use-dashboard";
 
 const modules = [
   {
@@ -66,9 +72,75 @@ const modules = [
   },
 ];
 
+const statCards = [
+  {
+    label: "Total Employees",
+    key: "totalEmployees" as const,
+    icon: Users,
+    color: "text-emerald-600 dark:text-emerald-400",
+    bg: "from-emerald-500/10 to-teal-500/10",
+    href: "/dashboard/data-hygiene/import",
+  },
+  {
+    label: "Active Comp Cycles",
+    key: "activeCycles" as const,
+    icon: RefreshCw,
+    color: "text-violet-600 dark:text-violet-400",
+    bg: "from-violet-500/10 to-purple-500/10",
+    href: "/dashboard/comp-cycles/active",
+  },
+  {
+    label: "Compliance Score",
+    key: "complianceScore" as const,
+    icon: ShieldCheck,
+    color: "text-blue-600 dark:text-blue-400",
+    bg: "from-blue-500/10 to-indigo-500/10",
+    href: "/dashboard/compliance",
+    format: (v: number | null) => (v != null ? `${v}%` : "N/A"),
+  },
+  {
+    label: "Pending Anomalies",
+    key: "pendingAnomalies" as const,
+    icon: AlertTriangle,
+    color: "text-amber-600 dark:text-amber-400",
+    bg: "from-amber-500/10 to-orange-500/10",
+    href: "/dashboard/payroll/runs",
+  },
+  {
+    label: "Recent Imports",
+    key: "recentImports" as const,
+    icon: Upload,
+    color: "text-primary",
+    bg: "from-primary/10 to-primary/5",
+    href: "/dashboard/data-hygiene/import",
+    subtitle: "Last 30 days",
+  },
+];
+
+function formatActivity(entry: ActivityEntry): string {
+  const actor = entry.userName ?? "System";
+  const action = entry.action.toLowerCase().replace(/_/g, " ");
+  const entity = entry.entityType.toLowerCase().replace(/_/g, " ");
+  return `${actor} ${action} a ${entity}`;
+}
+
+function timeAgo(dateStr: string): string {
+  const now = Date.now();
+  const then = new Date(dateStr).getTime();
+  const diffMs = now - then;
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
 export default function DashboardPage() {
   const user = useAuthStore((s) => s.user);
   const firstName = user?.name?.split(" ")[0] || "there";
+  const { data: summary, isLoading } = useDashboardSummary();
 
   return (
     <div className="space-y-8">
@@ -97,6 +169,81 @@ export default function DashboardPage() {
           </div>
         </div>
         <div className="absolute right-0 top-0 h-full w-1/3 bg-gradient-to-l from-primary/5 to-transparent" aria-hidden="true" />
+      </div>
+
+      {/* Summary stat cards */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        {statCards.map((stat) => {
+          const raw = summary?.[stat.key] ?? null;
+          const display = stat.format
+            ? stat.format(raw as number | null)
+            : (raw ?? 0).toString();
+
+          return (
+            <Link key={stat.key} href={stat.href}>
+              <Card className="transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 cursor-pointer group">
+                <CardContent className="p-4">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                      {stat.label}
+                    </p>
+                    <div className={`flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br ${stat.bg}`}>
+                      <stat.icon className={`h-4 w-4 ${stat.color}`} aria-hidden="true" />
+                    </div>
+                  </div>
+                  {isLoading ? (
+                    <Skeleton className="mt-2 h-8 w-16" />
+                  ) : (
+                    <p className="mt-2 text-2xl font-bold tracking-tight">{display}</p>
+                  )}
+                  {stat.subtitle && (
+                    <p className="mt-1 text-xs text-muted-foreground">{stat.subtitle}</p>
+                  )}
+                </CardContent>
+              </Card>
+            </Link>
+          );
+        })}
+      </div>
+
+      {/* Recent Activity */}
+      <div>
+        <h2 className="text-lg font-semibold mb-4">Recent Activity</h2>
+        <Card>
+          <CardContent className="p-0">
+            {isLoading ? (
+              <div className="divide-y">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <div key={i} className="flex items-center gap-3 px-4 py-3">
+                    <Skeleton className="h-8 w-8 rounded-full" />
+                    <div className="flex-1 space-y-1">
+                      <Skeleton className="h-4 w-3/4" />
+                      <Skeleton className="h-3 w-1/4" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : summary?.recentActivity && summary.recentActivity.length > 0 ? (
+              <div className="divide-y">
+                {summary.recentActivity.map((entry) => (
+                  <div key={entry.id} className="flex items-center gap-3 px-4 py-3">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-muted">
+                      <Clock className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm truncate">{formatActivity(entry)}</p>
+                      <p className="text-xs text-muted-foreground">{timeAgo(entry.createdAt)}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+                No recent activity yet. Start by importing data or creating a compensation cycle.
+              </div>
+            )}
+          </CardContent>
+        </Card>
       </div>
 
       {/* Quick start modules */}
