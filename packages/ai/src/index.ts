@@ -67,3 +67,105 @@ export {
   type CopilotGraphOutput,
 } from './graphs/copilot-graph.js';
 
+
+// Compliance tools
+export {
+  createComplianceTools,
+  type ComplianceDbAdapter,
+} from './tools/compliance-tools.js';
+
+// Compliance scanner graph
+export {
+  buildComplianceScannerGraph,
+  invokeComplianceScannerGraph,
+  type ComplianceScannerInput,
+  type ComplianceScannerOutput,
+  type ComplianceFinding,
+} from './graphs/compliance-scanner-graph.js';
+
+export {
+  buildAnomalyExplainerGraph,
+  invokeAnomalyExplainerGraph,
+  type AnomalyExplainerInput,
+  type AnomalyExplainerOutput,
+  type AnomalyExplainerResult,
+  type AnomalyData,
+} from './graphs/anomaly-explainer-graph.js';
+
+export {
+  buildFieldMappingGraph,
+  invokeFieldMappingGraph,
+  type FieldMappingGraphInput,
+  type FieldMappingGraphOutput,
+  type FieldSchema,
+  type SuggestedMapping,
+} from './graphs/field-mapping-graph.js';
+
+// Report Builder tools
+export {
+  createReportBuilderTools,
+  type ReportBuilderDbAdapter,
+} from './tools/report-builder-tools.js';
+
+// Report Builder graph
+export {
+  buildReportBuilderGraph,
+  invokeReportBuilderGraph,
+  type ReportBuilderGraphInput,
+  type ReportBuilderGraphOutput,
+} from './graphs/report-builder-graph.js';
+
+
+
+// Data Quality tools
+export {
+  createDataQualityTools,
+  type DataQualityDbAdapter,
+} from './tools/data-quality-tools.js';
+
+// Data Quality graph
+export {
+  buildDataQualityGraph,
+  invokeDataQualityGraph,
+  type DataQualityGraphInput,
+  type DataQualityGraphOutput,
+  type DataQualityReport,
+  type DataQualityIssueGroup,
+  type DataQualityIssueFixSuggestion,
+  type DataQualityBulkFix,
+} from './graphs/data-quality-graph.js';
+
+
+// Simulation tools
+export {
+  createSimulationTools,
+  type SimulationDbAdapter,
+} from './tools/simulation-tools.js';
+
+// Simulation graph
+export {
+  buildSimulationGraph,
+  invokeSimulationGraph,
+  type SimulationGraphInput,
+  type SimulationGraphOutput,
+} from './graphs/simulation-graph.js';
+
+// Letter Generator graph
+export {
+  buildLetterGeneratorGraph,
+  invokeLetterGenerator,
+  type LetterGeneratorInput,
+  type LetterGeneratorOutput,
+  type LetterType,
+  type LetterEmployeeData,
+  type LetterCompData,
+} from './graphs/letter-generator-graph.js';
+
+
+// Pay Equity graph
+export {
+  buildPayEquityGraph,
+  invokePayEquityGraph,
+  type PayEquityAnalysisInput,
+  type PayEquityAnalysisOutput,
+} from './graphs/pay-equity-graph.js';

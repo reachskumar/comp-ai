@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { DatabaseService } from '../../../database';
 import { CreateFieldMappingDto } from '../dto/create-field-mapping.dto';
+import { SuggestFieldMappingDto } from '../dto/suggest-field-mapping.dto';
 import type {
   FieldMappingResult,
   FieldMappingError,
@@ -16,6 +17,15 @@ import type {
   SplitTransformConfig,
   LookupTransformConfig,
 } from '@compensation/shared';
+import {
+  invokeFieldMappingGraph,
+  type FieldSchema,
+  type FieldMappingGraphOutput,
+} from '@compensation/ai';
+import {
+  getConnectorTemplate,
+  COMPPORT_TARGET_SCHEMA,
+} from '../connectors/connector-templates';
 
 @Injectable()
 export class FieldMappingService {
@@ -57,6 +67,43 @@ export class FieldMappingService {
     return this.db.client.fieldMapping.findMany({
       where: { connectorId, tenantId, enabled: true },
       orderBy: { createdAt: 'asc' },
+    });
+  }
+
+  async suggestMappings(
+    tenantId: string,
+    userId: string,
+    dto: SuggestFieldMappingDto,
+  ): Promise<FieldMappingGraphOutput> {
+    let sourceFields: FieldSchema[];
+    let connectorType: string;
+
+    if (dto.templateId) {
+      const template = getConnectorTemplate(dto.templateId);
+      if (!template) {
+        throw new BadRequestException(`Unknown template: ${dto.templateId}`);
+      }
+      sourceFields = template.sourceSchema;
+      connectorType = template.name;
+    } else if (dto.sourceFields && dto.sourceFields.length > 0) {
+      sourceFields = dto.sourceFields;
+      connectorType = dto.connectorType ?? 'Custom';
+    } else {
+      throw new BadRequestException(
+        'Either templateId or sourceFields must be provided',
+      );
+    }
+
+    this.logger.log(
+      `Suggesting mappings for ${connectorType} (${sourceFields.length} source fields)`,
+    );
+
+    return invokeFieldMappingGraph({
+      tenantId,
+      userId,
+      connectorType,
+      sourceFields,
+      targetFields: COMPPORT_TARGET_SCHEMA,
     });
   }
 
