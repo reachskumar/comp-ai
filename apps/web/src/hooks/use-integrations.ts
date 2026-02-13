@@ -89,6 +89,14 @@ export interface FieldMapping {
   createdAt: string;
 }
 
+interface PaginatedResponse<T> {
+  data: T[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
 // ─── Query Keys ─────────────────────────────────────────
 
 const KEYS = {
@@ -116,8 +124,12 @@ export function useConnectorTemplates() {
 export function useConnectors() {
   return useQuery<Connector[]>({
     queryKey: KEYS.connectors,
-    queryFn: () =>
-      apiClient.fetch<Connector[]>("/api/v1/integrations/connectors"),
+    queryFn: async () => {
+      const response = await apiClient.fetch<PaginatedResponse<Connector>>(
+        "/api/v1/integrations/connectors",
+      );
+      return response.data;
+    },
   });
 }
 
@@ -209,10 +221,12 @@ export function useCreateFieldMapping() {
 export function useSyncJobs(connectorId: string | null) {
   return useQuery<SyncJob[]>({
     queryKey: KEYS.syncJobs(connectorId ?? ""),
-    queryFn: () =>
-      apiClient.fetch<SyncJob[]>(
+    queryFn: async () => {
+      const response = await apiClient.fetch<PaginatedResponse<SyncJob>>(
         `/api/v1/integrations/connectors/${connectorId}/sync-jobs`,
-      ),
+      );
+      return response.data;
+    },
     enabled: !!connectorId,
   });
 }
