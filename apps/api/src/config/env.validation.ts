@@ -1,4 +1,4 @@
-import { plainToInstance } from 'class-transformer';
+import { plainToInstance, Transform } from 'class-transformer';
 import { IsNotEmpty, IsNumber, IsOptional, IsString, IsIn, validateSync } from 'class-validator';
 
 export class EnvironmentVariables {
@@ -14,6 +14,7 @@ export class EnvironmentVariables {
   @IsNotEmpty()
   REDIS_URL!: string;
 
+  @Transform(({ value }) => (value != null ? parseInt(String(value), 10) : value))
   @IsNumber()
   @IsOptional()
   API_PORT?: number = 4000;
