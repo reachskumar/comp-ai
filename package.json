@@ -29,6 +29,10 @@
       "@prisma/engines",
       "esbuild",
       "prisma"
-    ]
+    ],
+    "overrides": {
+      "glob@>=10.2.0 <10.5.0": ">=10.5.0",
+      "@fastify/middie@<=9.0.3": ">=9.1.0"
+    }
   }
 }
