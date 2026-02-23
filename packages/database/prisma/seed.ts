@@ -1331,7 +1331,7 @@ async function main() {
     update: {},
     create: {
       id: 'seed-calibration-sales',
-      cycleId: 'seed-cycle-bonus',
+      cycleId: 'seed-cycle-bonus-q4',
       name: 'Sales Q4 Bonus Calibration',
       status: CycleStatus.COMPLETED,
       participants: [
