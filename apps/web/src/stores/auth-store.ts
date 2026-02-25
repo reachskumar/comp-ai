@@ -37,6 +37,8 @@ export const useAuthStore = create<AuthState>((set) => ({
     localStorage.setItem("accessToken", data.accessToken);
     localStorage.setItem("refreshToken", data.refreshToken);
     localStorage.setItem("user", JSON.stringify(data.user));
+    // Mirror token to cookie so Next.js middleware can detect auth
+    document.cookie = `accessToken=${data.accessToken}; path=/; max-age=${60 * 60 * 24 * 7}; SameSite=Lax`;
     set({ user: data.user, isAuthenticated: true, isLoading: false });
   },
 
@@ -48,6 +50,8 @@ export const useAuthStore = create<AuthState>((set) => ({
     if (data.tenant) {
       localStorage.setItem("tenant", JSON.stringify(data.tenant));
     }
+    // Mirror token to cookie so Next.js middleware can detect auth
+    document.cookie = `accessToken=${data.accessToken}; path=/; max-age=${60 * 60 * 24 * 7}; SameSite=Lax`;
     set({ user: data.user, tenant: data.tenant, isAuthenticated: true, isLoading: false });
   },
 
@@ -55,6 +59,8 @@ export const useAuthStore = create<AuthState>((set) => ({
     apiClient.clearTokens();
     localStorage.removeItem("user");
     localStorage.removeItem("tenant");
+    // Clear the auth cookie
+    document.cookie = "accessToken=; path=/; max-age=0";
     set({ user: null, tenant: null, isAuthenticated: false, isLoading: false });
     if (typeof window !== "undefined") {
       window.location.href = "/login";
