@@ -12,5 +12,11 @@ export class HealthController {
   getHealth() {
     return this.healthService.check();
   }
+
+  @Get('deep')
+  @ApiOperation({ summary: 'Deep health check — tests DB and Redis connectivity' })
+  getDeepHealth() {
+    return this.healthService.deepCheck();
+  }
 }
 

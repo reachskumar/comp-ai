@@ -37,6 +37,27 @@ export class HealthService {
     };
   }
 
+  /**
+   * Deep health check — actively tests DB (SELECT 1) and Redis (PING).
+   * Returns a flat response suitable for load balancer probes.
+   */
+  async deepCheck() {
+    const [dbHealthy, redisHealthy] = await Promise.all([
+      this.checkDatabase(),
+      this.checkRedis(),
+    ]);
+
+    const status = dbHealthy && redisHealthy ? 'ok' : 'degraded';
+
+    return {
+      status,
+      db: dbHealthy ? 'connected' : 'disconnected',
+      redis: redisHealthy ? 'connected' : 'disconnected',
+      uptime: Math.floor((Date.now() - this.startTime) / 1000),
+      version: process.env['npm_package_version'] ?? '1.0.0',
+    };
+  }
+
   private async checkDatabase(): Promise<boolean> {
     return this.db.isHealthy();
   }
