@@ -23,6 +23,20 @@ export class EnvironmentVariables {
   @IsOptional()
   NODE_ENV?: string = 'development';
 
+  // ---- Logging ----
+
+  @IsString()
+  @IsOptional()
+  @IsIn(['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'silent'])
+  LOG_LEVEL?: string;
+
+  // ---- Lifecycle ----
+
+  @Transform(({ value }) => (value != null ? parseInt(String(value), 10) : value))
+  @IsNumber()
+  @IsOptional()
+  SHUTDOWN_TIMEOUT?: number = 30000;
+
   // ---- Compport PHP Bridge ----
 
   @IsString()
