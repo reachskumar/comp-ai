@@ -1,0 +1,6 @@
+employee_id,name,email,department,salary,currency
+EMP001,John Smith,john@test.com,Engineering,120000,USD
+EMP002,Jane Doe,jane@test.com,Marketing,95000,USD
+EMP003,Bob Wilson,bob@test.com,Engineering,110000,USD
+EMP004,Alice Brown,alice@test.com,HR,85000,USD
+EMP005,Charlie Davis,charlie@test.com,Engineering,130000,USD

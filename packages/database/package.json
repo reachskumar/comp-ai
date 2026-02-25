@@ -2,10 +2,11 @@
   "name": "@compensation/database",
   "version": "0.0.0",
   "private": true,
+  "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "prisma generate && tsc --project tsconfig.build.json",
+    "build": "prisma generate && tsc --project tsconfig.build.json && node fix-esm-imports.cjs",
     "lint": "eslint .",
     "test": "echo \"No tests yet\"",
     "db:migrate": "prisma migrate dev",
@@ -20,6 +21,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
+    "@types/bcryptjs": "^3.0.0",
     "@types/node": "^22.19.11",
     "@types/pg": "^8.16.0",
     "dotenv": "^17.2.4",
@@ -32,6 +34,7 @@
   "dependencies": {
     "@prisma/adapter-pg": "^7.4.0",
     "@prisma/client": "^7.4.0",
+    "bcryptjs": "^3.0.3",
     "pg": "^8.18.0",
     "prisma": "^7.4.0"
   }

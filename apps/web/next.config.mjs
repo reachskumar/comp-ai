@@ -1,5 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  output: 'standalone',
   transpilePackages: ['@compensation/ui', '@compensation/shared'],
   async headers() {
     return [

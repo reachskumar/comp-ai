@@ -6,6 +6,9 @@ node_modules/
 dist/
 build/
 out/
+.next/
+.turbo/
+*.tsbuildinfo
 
 # IDE
 .idea/
@@ -25,3 +28,10 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+
+# Docker volumes
+postgres_data/
+redis_data/
+
+# Coverage
+coverage/

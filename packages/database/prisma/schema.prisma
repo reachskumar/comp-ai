@@ -273,7 +273,8 @@ model Employee {
   payrollAnomalies   PayrollAnomaly[]
   benefitEnrollments BenefitEnrollment[]
   benefitDependents  BenefitDependent[]
-  lifeEvents         LifeEvent[]
+  lifeEvents            LifeEvent[]
+  compensationLetters   CompensationLetter[]
 
   @@unique([tenantId, employeeCode])
   @@unique([tenantId, email])
@@ -306,6 +307,7 @@ model ImportJob {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   issues ImportIssue[]
+  aiAnalyses ImportAIAnalysis[]
 
   @@index([tenantId])
   @@index([userId])
@@ -575,13 +577,32 @@ model PayrollAnomaly {
   resolvedAt   DateTime?
   createdAt    DateTime        @default(now())
 
-  payrollRun PayrollRun @relation(fields: [payrollRunId], references: [id], onDelete: Cascade)
-  employee   Employee   @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  payrollRun  PayrollRun          @relation(fields: [payrollRunId], references: [id], onDelete: Cascade)
+  employee    Employee            @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  explanation AnomalyExplanation?
 
   @@index([payrollRunId])
   @@index([employeeId])
   @@index([payrollRunId, resolved])
   @@map("payroll_anomalies")
+}
+
+model AnomalyExplanation {
+  id                  String   @id @default(cuid())
+  anomalyId           String   @unique
+  explanation         String   @db.Text
+  rootCause           String   @db.Text
+  contributingFactors Json     @default("[]")
+  recommendedAction   String   @default("flag")
+  confidence          Float    @default(0)
+  reasoning           String   @db.Text
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  anomaly PayrollAnomaly @relation(fields: [anomalyId], references: [id], onDelete: Cascade)
+
+  @@index([anomalyId])
+  @@map("anomaly_explanations")
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -928,4 +949,268 @@ model Notification {
   @@index([userId, read])
   @@index([userId, createdAt])
   @@map("notifications")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Reports — AI-generated natural language reports
+// ─────────────────────────────────────────────────────────────
+
+enum ReportStatus {
+  GENERATING
+  COMPLETED
+  FAILED
+}
+
+model SavedReport {
+  id          String       @id @default(cuid())
+  tenantId    String
+  userId      String
+  title       String
+  prompt      String
+  status      ReportStatus @default(GENERATING)
+  queryType   String?
+  filters     Json         @default("{}")
+  results     Json         @default("[]")
+  chartConfig Json         @default("{}")
+  narrative   String?
+  errorMsg    String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@index([tenantId])
+  @@index([tenantId, userId])
+  @@index([tenantId, createdAt])
+  @@map("saved_reports")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Policy Conversions — AI policy-to-rules conversion history
+// ─────────────────────────────────────────────────────────────
+
+enum PolicyConversionStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model PolicyConversion {
+  id              String                  @id @default(cuid())
+  tenantId        String
+  userId          String
+  fileName        String?
+  fileType        String?
+  policyText      String
+  status          PolicyConversionStatus  @default(PENDING)
+  rulesExtracted  Int                     @default(0)
+  rulesAccepted   Int                     @default(0)
+  rulesRejected   Int                     @default(0)
+  result          Json                    @default("{}")
+  summary         String?
+  errorMessage    String?
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+
+  @@index([tenantId])
+  @@index([tenantId, userId])
+  @@index([tenantId, createdAt])
+  @@map("policy_conversions")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Compliance — AI Audit & Compliance Scanner
+// ─────────────────────────────────────────────────────────────
+
+enum ComplianceScanStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum ComplianceFindingSeverity {
+  CRITICAL
+  WARNING
+  INFO
+}
+
+enum ComplianceFindingCategory {
+  FLSA_OVERTIME
+  PAY_EQUITY
+  POLICY_VIOLATION
+  BENEFITS_ELIGIBILITY
+  REGULATORY_GAP
+  DATA_QUALITY
+}
+
+model ComplianceScan {
+  id              String               @id @default(cuid())
+  tenantId        String
+  userId          String
+  status          ComplianceScanStatus @default(PENDING)
+  overallScore    Int?
+  riskSummary     Json                 @default("{}")
+  scanConfig      Json                 @default("{}")
+  aiReport        String?
+  errorMsg        String?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+
+  findings ComplianceFinding[]
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([tenantId, createdAt])
+  @@map("compliance_scans")
+}
+
+model ComplianceFinding {
+  id            String                    @id @default(cuid())
+  scanId        String
+  category      ComplianceFindingCategory
+  severity      ComplianceFindingSeverity
+  title         String
+  description   String
+  explanation   String?
+  remediation   String?
+  affectedScope Json                      @default("{}")
+  metadata      Json                      @default("{}")
+  resolved      Boolean                   @default(false)
+  createdAt     DateTime                  @default(now())
+
+  scan ComplianceScan @relation(fields: [scanId], references: [id], onDelete: Cascade)
+
+  @@index([scanId])
+  @@index([scanId, severity])
+  @@index([scanId, category])
+  @@map("compliance_findings")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Compensation Letters — AI-generated compensation letters
+// ─────────────────────────────────────────────────────────────
+
+enum LetterType {
+  OFFER
+  RAISE
+  PROMOTION
+  BONUS
+  TOTAL_COMP_SUMMARY
+}
+
+enum LetterStatus {
+  DRAFT
+  GENERATING
+  REVIEW
+  APPROVED
+  SENT
+  FAILED
+}
+
+model CompensationLetter {
+  id            String       @id @default(cuid())
+  tenantId      String
+  userId        String
+  employeeId    String
+  letterType    LetterType
+  status        LetterStatus @default(DRAFT)
+  subject       String
+  content       String       @db.Text
+  compData      Json         @default("{}")
+  tone          String       @default("professional")
+  language      String       @default("en")
+  pdfUrl        String?
+  batchId       String?
+  metadata      Json         @default("{}")
+  errorMsg      String?
+  generatedAt   DateTime?
+  approvedAt    DateTime?
+  sentAt        DateTime?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([tenantId, employeeId])
+  @@index([tenantId, status])
+  @@index([tenantId, batchId])
+  @@index([tenantId, createdAt])
+  @@map("compensation_letters")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Import AI Analysis — AI-powered data quality analysis results
+// ─────────────────────────────────────────────────────────────
+
+enum ImportAIAnalysisStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+model ImportAIAnalysis {
+  id            String                  @id @default(cuid())
+  tenantId      String
+  userId        String
+  importJobId   String
+  status        ImportAIAnalysisStatus  @default(PENDING)
+  qualityScore  Int?
+  summary       String?
+  report        Json                    @default("{}")
+  rawResponse   String?                 @db.Text
+  errorMsg      String?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+
+  importJob ImportJob @relation(fields: [importJobId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([importJobId])
+  @@index([tenantId, importJobId])
+  @@index([tenantId, createdAt])
+  @@map("import_ai_analyses")
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// Simulation Scenarios — AI-powered compensation what-if analysis
+// ─────────────────────────────────────────────────────────────
+
+enum SimulationScenarioStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+model SimulationScenario {
+  id              String                    @id @default(cuid())
+  tenantId        String
+  userId          String
+  name            String?
+  prompt          String                    @db.Text
+  status          SimulationScenarioStatus  @default(PENDING)
+  affectedCount   Int?
+  totalCostDelta  Float?
+  budgetImpactPct Float?
+  results         Json                      @default("{}")
+  comparison      Json                      @default("{}")
+  response        String?                   @db.Text
+  errorMsg        String?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime                  @default(now())
+  updatedAt       DateTime                  @updatedAt
+
+  @@index([tenantId])
+  @@index([tenantId, userId])
+  @@index([tenantId, status])
+  @@index([tenantId, createdAt])
+  @@map("simulation_scenarios")
 }
