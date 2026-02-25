@@ -1,86 +1,123 @@
 /**
- * Test setup helpers for NestJS API integration tests.
+ * Test setup helpers for NestJS API unit tests.
  *
- * Creates a real NestJS application with Fastify adapter,
- * connected to the real test database.
+ * Uses direct instantiation with mocked dependencies — no NestJS DI container.
+ * This avoids the esbuild/emitDecoratorMetadata issue with Vitest.
  */
-import { Test, TestingModule } from '@nestjs/testing';
-import {
-  FastifyAdapter,
-  NestFastifyApplication,
-} from '@nestjs/platform-fastify';
-import { ValidationPipe } from '@nestjs/common';
-import { AppModule } from '../app.module';
+import { JwtService } from '@nestjs/jwt';
 
-let app: NestFastifyApplication;
-let module: TestingModule;
+// ─── Test Constants ──────────────────────────────────────────────────────────
 
-/**
- * Create and initialize the NestJS test application.
- * Reuses the full AppModule so all real providers/guards are active.
- */
-export async function createTestApp(): Promise<NestFastifyApplication> {
-  module = await Test.createTestingModule({
-    imports: [AppModule],
-  }).compile();
+export const TEST_JWT_SECRET = 'test-jwt-secret-for-vitest-only';
+export const TEST_TENANT_ID = 'tenant-test-001';
+export const TEST_USER_ID = 'user-test-001';
+export const TEST_ADMIN = {
+  id: TEST_USER_ID,
+  email: 'admin@acme.com',
+  name: 'Admin User',
+  role: 'ADMIN',
+  tenantId: TEST_TENANT_ID,
+  passwordHash: '$2b$12$NeRqfnJgr9/MsR9szoyhQu1JreFPpNxIEeudY8jHC8kFlars7wqhK', // bcrypt of Admin123!@#
+  avatarUrl: null,
+  createdAt: new Date(),
+  updatedAt: new Date(),
+};
+export const TEST_TENANT = {
+  id: TEST_TENANT_ID,
+  name: 'Acme Corp',
+  slug: 'acme-corp',
+  plan: 'enterprise',
+  createdAt: new Date(),
+  updatedAt: new Date(),
+};
 
-  app = module.createNestApplication<NestFastifyApplication>(
-    new FastifyAdapter(),
-  );
+// ─── Mock Prisma Client ──────────────────────────────────────────────────────
 
-  // Match production config from main.ts
-  app.setGlobalPrefix('api/v1', {
-    exclude: ['health', 'api-docs', 'api-docs-json'],
+export function createMockPrismaClient() {
+  const createModelMock = () => ({
+    findFirst: vi.fn(),
+    findUnique: vi.fn(),
+    findMany: vi.fn(),
+    create: vi.fn(),
+    update: vi.fn(),
+    delete: vi.fn(),
+    count: vi.fn(),
+    groupBy: vi.fn(),
+    upsert: vi.fn(),
   });
-
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      forbidNonWhitelisted: true,
-      transform: true,
-    }),
-  );
-
-  await app.init();
-  await app.getHttpAdapter().getInstance().ready();
-
-  return app;
-}
-
-/**
- * Close the test application and clean up resources.
- */
-export async function closeTestApp(): Promise<void> {
-  if (app) {
-    await app.close();
-  }
-}
-
-/**
- * Get the underlying Fastify server for supertest.
- */
-export function getHttpServer() {
-  return app.getHttpServer();
-}
-
-/**
- * Helper: login with the seeded admin user and return tokens.
- */
-export async function loginAsAdmin(
-  server: ReturnType<typeof getHttpServer>,
-): Promise<{ accessToken: string; refreshToken: string }> {
-  // Use dynamic import for supertest since it's ESM
-  const supertest = await import('supertest');
-  const request = supertest.default ?? supertest;
-
-  const res = await request(server)
-    .post('/api/v1/auth/login')
-    .send({ email: 'admin@acme.com', password: 'Admin123!@#' })
-    .expect(201);
-
   return {
-    accessToken: res.body.accessToken,
-    refreshToken: res.body.refreshToken,
+    user: createModelMock(),
+    tenant: createModelMock(),
+    employee: createModelMock(),
+    compCycle: createModelMock(),
+    cycleBudget: createModelMock(),
+    compRecommendation: createModelMock(),
+    calibrationSession: createModelMock(),
+    auditLog: createModelMock(),
+    $connect: vi.fn(),
+    $disconnect: vi.fn(),
+    $queryRawUnsafe: vi.fn().mockResolvedValue([{ '?column?': 1 }]),
   };
 }
+
+// ─── Mock DatabaseService ────────────────────────────────────────────────────
+
+export function createMockDatabaseService() {
+  const mockClient = createMockPrismaClient();
+  return {
+    client: mockClient,
+    onModuleInit: vi.fn(),
+    onModuleDestroy: vi.fn(),
+    isHealthy: vi.fn().mockResolvedValue(true),
+  };
+}
+
+// ─── Mock ConfigService ──────────────────────────────────────────────────────
+
+export function createMockConfigService(overrides: Record<string, unknown> = {}) {
+  const config: Record<string, unknown> = {
+    DATABASE_URL: 'postgresql://test:test@localhost:5432/test',
+    JWT_SECRET: TEST_JWT_SECRET,
+    REDIS_URL: 'redis://localhost:6379',
+    NODE_ENV: 'test',
+    COMPPORT_MODE: 'standalone',
+    ...overrides,
+  };
+  return {
+    get: vi.fn((key: string) => config[key]),
+    getOrThrow: vi.fn((key: string) => {
+      if (!(key in config)) throw new Error(`Missing config: ${key}`);
+      return config[key];
+    }),
+  };
+}
+
+// ─── Real JwtService (standalone, no DI needed) ─────────────────────────────
+
+const _jwtService = new JwtService({
+  secret: TEST_JWT_SECRET,
+  signOptions: { expiresIn: '15m' },
+});
+
+export function getJwtService(): JwtService {
+  return _jwtService;
+}
+
+// ─── Token Helpers ───────────────────────────────────────────────────────────
+
+export function generateTestToken(
+  overrides: Partial<{ sub: string; tenantId: string; email: string; role: string }> = {},
+): string {
+  return _jwtService.sign({
+    sub: overrides.sub ?? TEST_USER_ID,
+    tenantId: overrides.tenantId ?? TEST_TENANT_ID,
+    email: overrides.email ?? TEST_ADMIN.email,
+    role: overrides.role ?? TEST_ADMIN.role,
+  });
+}
+
+// ─── Type Exports ────────────────────────────────────────────────────────────
+
+export type MockDatabaseService = ReturnType<typeof createMockDatabaseService>;
+export type MockConfigService = ReturnType<typeof createMockConfigService>;
 

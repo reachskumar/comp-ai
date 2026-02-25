@@ -1,11 +1,15 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { LoggerModule } from 'nestjs-pino';
+import { randomUUID } from 'crypto';
+import { IncomingMessage } from 'http';
 import { ConfigModule } from './config';
 import { DatabaseModule } from './database';
 import { AuthModule } from './auth';
 import { HealthModule } from './health';
 import { QueueModule } from './queue';
+import { ShutdownService } from './common/lifecycle';
 import { ImportModule } from './modules/import';
 import { RulesModule } from './modules/rules';
 import { PayrollModule } from './modules/payroll';
@@ -21,6 +25,8 @@ import { ReportsModule } from './modules/reports';
 import { DashboardModule } from './modules/dashboard';
 import { SettingsModule } from './modules/settings';
 
+const isProduction = process.env['NODE_ENV'] === 'production';
+
 @Module({
   imports: [
     ConfigModule,
@@ -32,6 +38,48 @@ import { SettingsModule } from './modules/settings';
         limit: 60,
       },
     ]),
+    LoggerModule.forRoot({
+      pinoHttp: {
+        level: process.env['LOG_LEVEL'] || (isProduction ? 'info' : 'debug'),
+        // Use X-Request-Id header or generate a UUID for correlation
+        genReqId: (req: IncomingMessage) => {
+          const existing = req.headers['x-request-id'];
+          return (Array.isArray(existing) ? existing[0] : existing) || randomUUID();
+        },
+        // PII masking — never log sensitive fields
+        redact: {
+          paths: [
+            'req.headers.authorization',
+            'req.headers.cookie',
+            'password',
+            'passwordHash',
+            'ssn',
+            'token',
+            'apiKey',
+            'secret',
+            '*.password',
+            '*.passwordHash',
+            '*.ssn',
+            '*.token',
+            '*.apiKey',
+            '*.secret',
+          ],
+          censor: '[REDACTED]',
+        },
+        // Pretty-print in development, JSON in production
+        transport: isProduction
+          ? undefined
+          : {
+              target: 'pino-pretty',
+              options: {
+                colorize: true,
+                singleLine: false,
+                translateTime: 'SYS:HH:MM:ss.l',
+                ignore: 'pid,hostname',
+              },
+            },
+      },
+    }),
     AuthModule,
     HealthModule,
     QueueModule,
@@ -55,6 +103,7 @@ import { SettingsModule } from './modules/settings';
       provide: APP_GUARD,
       useClass: ThrottlerGuard,
     },
+    ShutdownService,
   ],
 })
 export class AppModule {}

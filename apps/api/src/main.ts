@@ -1,18 +1,31 @@
 import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, NestFastifyApplication } from '@nestjs/platform-fastify';
-import { ValidationPipe, Logger } from '@nestjs/common';
+import { ValidationPipe } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
-import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 
 async function bootstrap() {
-  const logger = new Logger('Bootstrap');
-
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
     new FastifyAdapter(),
+    { bufferLogs: true },
   );
+
+  // Use Pino logger for all NestJS logging
+  const logger = app.get(Logger);
+  app.useLogger(logger);
+
+  // Enable NestJS shutdown lifecycle hooks (OnModuleDestroy, BeforeApplicationShutdown)
+  app.enableShutdownHooks();
+
+  // Response compression (before other plugins for maximum coverage)
+  await app.register(import('@fastify/compress') as never, {
+    global: true,
+    encodings: ['br', 'gzip', 'deflate'],
+    threshold: 1024, // compress responses > 1KB
+  });
 
   // Security headers
   await app.register(import('@fastify/helmet') as never, {
@@ -53,9 +66,6 @@ async function bootstrap() {
   // Global exception filter
   app.useGlobalFilters(new AllExceptionsFilter());
 
-  // Global logging interceptor
-  app.useGlobalInterceptors(new LoggingInterceptor());
-
   // Swagger setup — disabled in production
   if (process.env['NODE_ENV'] !== 'production') {
     const swaggerConfig = new DocumentBuilder()
@@ -75,6 +85,34 @@ async function bootstrap() {
   const port = process.env['API_PORT'] || 4000;
   await app.listen(port as number, '0.0.0.0');
   logger.log(`API running on http://localhost:${port}`);
+
+  // Graceful shutdown on SIGTERM / SIGINT
+  const shutdownTimeout = parseInt(process.env['SHUTDOWN_TIMEOUT'] ?? '30000', 10);
+
+  const handleShutdown = (signal: string) => {
+    logger.log(`Received ${signal} — starting graceful shutdown (timeout: ${shutdownTimeout}ms)`);
+
+    // Force-kill safety net: if graceful shutdown hangs, exit hard
+    const forceKillTimer = setTimeout(() => {
+      logger.error(`Graceful shutdown timed out after ${shutdownTimeout}ms — forcing exit`);
+      process.exit(1);
+    }, shutdownTimeout);
+
+    // Allow the process to exit even if the timer is still pending
+    forceKillTimer.unref();
+
+    // NestJS app.close() triggers BeforeApplicationShutdown → OnModuleDestroy
+    app.close().then(() => {
+      logger.log('Application closed successfully');
+      process.exit(0);
+    }).catch((err) => {
+      logger.error('Error during shutdown', err);
+      process.exit(1);
+    });
+  };
+
+  process.on('SIGTERM', () => handleShutdown('SIGTERM'));
+  process.on('SIGINT', () => handleShutdown('SIGINT'));
 }
 
 bootstrap();

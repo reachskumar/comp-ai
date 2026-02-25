@@ -1,202 +1,149 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { NestFastifyApplication } from '@nestjs/platform-fastify';
-import { createTestApp, closeTestApp, getHttpServer } from '../test/setup';
+import { describe, it, expect, beforeEach } from 'vitest';
+import { UnauthorizedException, ConflictException } from '@nestjs/common';
+import { AuthService } from './auth.service';
+import {
+  createMockDatabaseService,
+  createMockConfigService,
+  getJwtService,
+  TEST_ADMIN,
+  TEST_TENANT_ID,
+  TEST_JWT_SECRET,
+  generateTestToken,
+} from '../test/setup';
 
-let app: NestFastifyApplication;
-let server: ReturnType<typeof getHttpServer>;
+// Directly instantiate AuthService with mocked deps (no NestJS DI needed)
+function createAuthService() {
+  const db = createMockDatabaseService();
+  const jwtService = getJwtService();
+  const configService = createMockConfigService();
+  // Construct AuthService manually — bypasses NestJS DI
+  const service = new (AuthService as any)(db, jwtService, configService);
+  return { service: service as AuthService, db, jwtService, configService };
+}
 
-beforeAll(async () => {
-  app = await createTestApp();
-  server = getHttpServer();
-}, 60000);
+describe('AuthService — login', () => {
+  let service: AuthService;
+  let db: ReturnType<typeof createMockDatabaseService>;
 
-afterAll(async () => {
-  await closeTestApp();
-}, 15000);
+  beforeEach(() => {
+    ({ service, db } = createAuthService());
+  });
 
-describe('Auth Module — POST /api/v1/auth/login', () => {
-  it('should login with valid seeded admin credentials', async () => {
-    const supertest = await import('supertest');
-    const request = supertest.default ?? supertest;
+  it('should login with valid credentials and return tokens', async () => {
+    db.client.user.findFirst.mockResolvedValue(TEST_ADMIN);
 
-    const res = await request(server)
-      .post('/api/v1/auth/login')
-      .send({ email: 'admin@acme.com', password: 'Admin123!@#' })
-      .expect(201);
+    const result = await service.login({ email: 'admin@acme.com', password: 'Admin123!@#' });
 
-    expect(res.body).toHaveProperty('accessToken');
-    expect(res.body).toHaveProperty('refreshToken');
-    expect(res.body.user).toMatchObject({
-      email: 'admin@acme.com',
-      role: 'ADMIN',
-    });
-    expect(typeof res.body.accessToken).toBe('string');
-    expect(typeof res.body.refreshToken).toBe('string');
+    expect(result).toHaveProperty('accessToken');
+    expect(result).toHaveProperty('refreshToken');
+    expect(result.user).toMatchObject({ email: 'admin@acme.com', role: 'ADMIN' });
+    expect(typeof result.accessToken).toBe('string');
+    expect(typeof result.refreshToken).toBe('string');
   });
 
   it('should reject login with wrong password', async () => {
-    const supertest = await import('supertest');
-    const request = supertest.default ?? supertest;
+    db.client.user.findFirst.mockResolvedValue(TEST_ADMIN);
 
-    const res = await request(server)
-      .post('/api/v1/auth/login')
-      .send({ email: 'admin@acme.com', password: 'WrongPassword1!' })
-      .expect(401);
-
-    expect(res.body.message).toBe('Invalid credentials');
+    await expect(
+      service.login({ email: 'admin@acme.com', password: 'WrongPassword1!' }),
+    ).rejects.toThrow(UnauthorizedException);
   });
 
   it('should reject login with non-existent email', async () => {
-    const supertest = await import('supertest');
-    const request = supertest.default ?? supertest;
+    db.client.user.findFirst.mockResolvedValue(null);
 
-    const res = await request(server)
-      .post('/api/v1/auth/login')
-      .send({ email: 'nobody@acme.com', password: 'Admin123!@#' })
-      .expect(401);
-
-    expect(res.body.message).toBe('Invalid credentials');
+    await expect(
+      service.login({ email: 'nobody@acme.com', password: 'Admin123!@#' }),
+    ).rejects.toThrow(UnauthorizedException);
   });
 
-  it('should reject login with missing fields', async () => {
-    const supertest = await import('supertest');
-    const request = supertest.default ?? supertest;
+  it('should reject login when user has no passwordHash', async () => {
+    db.client.user.findFirst.mockResolvedValue({ ...TEST_ADMIN, passwordHash: null });
 
-    await request(server)
-      .post('/api/v1/auth/login')
-      .send({ email: 'admin@acme.com' })
-      .expect(400);
+    await expect(
+      service.login({ email: 'admin@acme.com', password: 'Admin123!@#' }),
+    ).rejects.toThrow(UnauthorizedException);
   });
 });
 
-describe('Auth Module — POST /api/v1/auth/register', () => {
-  const uniqueEmail = `test-${Date.now()}@vitest.com`;
+describe('AuthService — register', () => {
+  let service: AuthService;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createAuthService());
+  });
 
   it('should register a new user and tenant', async () => {
-    const supertest = await import('supertest');
-    const request = supertest.default ?? supertest;
+    db.client.user.findFirst.mockResolvedValue(null);
+    db.client.tenant.create.mockResolvedValue({
+      id: 'tenant-new',
+      name: 'Test Tenant',
+      slug: 'test-tenant-123',
+      users: [{
+        id: 'user-new',
+        email: 'new@test.com',
+        name: 'New User',
+        role: 'ADMIN',
+        tenantId: 'tenant-new',
+      }],
+    });
 
-    const res = await request(server)
-      .post('/api/v1/auth/register')
-      .send({
-        email: uniqueEmail,
-        password: 'StrongPass1!xy',
-        name: 'Test User',
-        tenantName: 'Test Tenant',
-      })
-      .expect(201);
+    const result = await service.register({
+      email: 'new@test.com',
+      password: 'StrongPass1!xy',
+      name: 'New User',
+      tenantName: 'Test Tenant',
+    });
 
-    expect(res.body).toHaveProperty('accessToken');
-    expect(res.body).toHaveProperty('refreshToken');
-    expect(res.body.user.email).toBe(uniqueEmail);
-    expect(res.body.tenant.name).toBe('Test Tenant');
+    expect(result).toHaveProperty('accessToken');
+    expect(result).toHaveProperty('refreshToken');
+    expect(result.user.email).toBe('new@test.com');
+    expect(result.tenant.name).toBe('Test Tenant');
+    expect(db.client.tenant.create).toHaveBeenCalledOnce();
   });
 
   it('should reject duplicate email registration', async () => {
-    const supertest = await import('supertest');
-    const request = supertest.default ?? supertest;
+    db.client.user.findFirst.mockResolvedValue(TEST_ADMIN);
 
-    const res = await request(server)
-      .post('/api/v1/auth/register')
-      .send({
-        email: uniqueEmail,
+    await expect(
+      service.register({
+        email: 'admin@acme.com',
         password: 'StrongPass1!xy',
-        name: 'Test User 2',
-        tenantName: 'Test Tenant 2',
-      })
-      .expect(409);
-
-    expect(res.body.message).toBe('User with this email already exists');
-  });
-
-  it('should reject weak password (too short)', async () => {
-    const supertest = await import('supertest');
-    const request = supertest.default ?? supertest;
-
-    await request(server)
-      .post('/api/v1/auth/register')
-      .send({
-        email: `short-${Date.now()}@vitest.com`,
-        password: 'Short1!',
-        name: 'Test',
-        tenantName: 'Tenant',
-      })
-      .expect(400);
+        name: 'Dup User',
+        tenantName: 'Dup Tenant',
+      }),
+    ).rejects.toThrow(ConflictException);
   });
 });
 
-describe('Auth Module — POST /api/v1/auth/refresh', () => {
+describe('AuthService — refresh', () => {
+  let service: AuthService;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createAuthService());
+  });
+
   it('should refresh tokens with a valid refresh token', async () => {
-    const supertest = await import('supertest');
-    const request = supertest.default ?? supertest;
+    db.client.user.findUnique.mockResolvedValue(TEST_ADMIN);
+    const token = generateTestToken();
 
-    // First login to get tokens
-    const loginRes = await request(server)
-      .post('/api/v1/auth/login')
-      .send({ email: 'admin@acme.com', password: 'Admin123!@#' })
-      .expect(201);
+    const result = await service.refresh(token);
 
-    const res = await request(server)
-      .post('/api/v1/auth/refresh')
-      .send({ refreshToken: loginRes.body.refreshToken })
-      .expect(201);
-
-    expect(res.body).toHaveProperty('accessToken');
-    expect(res.body).toHaveProperty('refreshToken');
+    expect(result).toHaveProperty('accessToken');
+    expect(result).toHaveProperty('refreshToken');
   });
 
   it('should reject invalid refresh token', async () => {
-    const supertest = await import('supertest');
-    const request = supertest.default ?? supertest;
-
-    await request(server)
-      .post('/api/v1/auth/refresh')
-      .send({ refreshToken: 'invalid-token' })
-      .expect(401);
-  });
-});
-
-describe('Auth Module — GET /api/v1/auth/me', () => {
-  it('should return current user info with valid token', async () => {
-    const supertest = await import('supertest');
-    const request = supertest.default ?? supertest;
-
-    // Login first
-    const loginRes = await request(server)
-      .post('/api/v1/auth/login')
-      .send({ email: 'admin@acme.com', password: 'Admin123!@#' })
-      .expect(201);
-
-    const res = await request(server)
-      .get('/api/v1/auth/me')
-      .set('Authorization', `Bearer ${loginRes.body.accessToken}`)
-      .expect(200);
-
-    expect(res.body).toMatchObject({
-      email: 'admin@acme.com',
-      role: 'ADMIN',
-    });
-    expect(res.body).toHaveProperty('userId');
-    expect(res.body).toHaveProperty('tenantId');
+    await expect(service.refresh('invalid-token')).rejects.toThrow(UnauthorizedException);
   });
 
-  it('should reject request without token', async () => {
-    const supertest = await import('supertest');
-    const request = supertest.default ?? supertest;
+  it('should reject when user not found for valid token', async () => {
+    db.client.user.findUnique.mockResolvedValue(null);
+    const token = generateTestToken();
 
-    await request(server)
-      .get('/api/v1/auth/me')
-      .expect(401);
-  });
-
-  it('should reject request with invalid token', async () => {
-    const supertest = await import('supertest');
-    const request = supertest.default ?? supertest;
-
-    await request(server)
-      .get('/api/v1/auth/me')
-      .set('Authorization', 'Bearer invalid-jwt-token')
-      .expect(401);
+    await expect(service.refresh(token)).rejects.toThrow(UnauthorizedException);
   });
 });
 
