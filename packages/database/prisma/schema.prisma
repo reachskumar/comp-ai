@@ -238,6 +238,9 @@ model Tenant {
   rewardsStatements   RewardsStatement[]
   policyDocuments     PolicyDocument[]
   policyChunks        PolicyChunk[]
+  jobFamilies         JobFamily[]
+  jobLevels           JobLevel[]
+  careerLadders       CareerLadder[]
 
   @@map("tenants")
 }
@@ -314,6 +317,8 @@ model Employee {
   rewardsStatements     RewardsStatement[]
   equityGrants          EquityGrant[]
   attritionRiskScores   AttritionRiskScore[]
+  jobLevelId            String?
+  jobLevel              JobLevel?  @relation(fields: [jobLevelId], references: [id], onDelete: SetNull)
 
   @@unique([tenantId, employeeCode])
   @@unique([tenantId, email])
@@ -1682,4 +1687,75 @@ model PolicyChunk {
   @@index([documentId])
   @@index([tenantId, documentId])
   @@map("policy_chunks")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Job Architecture & Leveling
+// ─────────────────────────────────────────────────────────────
+
+model JobFamily {
+  id          String     @id @default(cuid())
+  tenantId    String
+  name        String
+  code        String
+  description String?
+  isActive    Boolean    @default(true)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  tenant      Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  jobLevels   JobLevel[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@index([tenantId, isActive])
+  @@map("job_families")
+}
+
+model JobLevel {
+  id            String     @id @default(cuid())
+  tenantId      String
+  jobFamilyId   String
+  name          String
+  code          String
+  grade         Int
+  description   String?
+  minSalary     Decimal    @default(0) @db.Decimal(12, 2)
+  midSalary     Decimal    @default(0) @db.Decimal(12, 2)
+  maxSalary     Decimal    @default(0) @db.Decimal(12, 2)
+  currency      String     @default("USD")
+  competencies  Json       @default("[]")
+  nextLevelId   String?    @unique
+  isActive      Boolean    @default(true)
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  tenant        Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  jobFamily     JobFamily  @relation(fields: [jobFamilyId], references: [id], onDelete: Cascade)
+  nextLevel     JobLevel?  @relation("JobLevelProgression", fields: [nextLevelId], references: [id], onDelete: SetNull)
+  previousLevel JobLevel?  @relation("JobLevelProgression")
+  employees     Employee[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@index([tenantId, jobFamilyId])
+  @@index([tenantId, grade])
+  @@map("job_levels")
+}
+
+model CareerLadder {
+  id          String   @id @default(cuid())
+  tenantId    String
+  name        String
+  description String?
+  tracks      Json     @default("[]")
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([tenantId, isActive])
+  @@map("career_ladders")
 }
