@@ -32,6 +32,7 @@ const GRAPH_MODEL_DEFAULTS: Record<string, Partial<ModelConfig>> = {
   copilot: { temperature: 0.2, maxTokens: 4096 },
   'report-builder': { temperature: 0.1, maxTokens: 4096 },
   'pay-equity': { temperature: 0.1, maxTokens: 4096 },
+  'attrition-predictor': { temperature: 0.2, maxTokens: 2048 },
 };
 
 /**
@@ -41,9 +42,7 @@ const GRAPH_MODEL_DEFAULTS: Record<string, Partial<ModelConfig>> = {
 export function loadAIConfig(): AIConfig {
   const apiKey = process.env['OPENAI_API_KEY'] ?? '';
   if (!apiKey) {
-    throw new Error(
-      'OPENAI_API_KEY environment variable is required. Set it in your .env file.',
-    );
+    throw new Error('OPENAI_API_KEY environment variable is required. Set it in your .env file.');
   }
 
   const model = process.env['OPENAI_MODEL'] ?? 'gpt-4o';
@@ -63,10 +62,7 @@ export function loadAIConfig(): AIConfig {
  * Resolve the model config for a specific graph type.
  * Merges default config with graph-specific overrides.
  */
-export function resolveModelConfig(
-  config: AIConfig,
-  graphType?: string,
-): ModelConfig {
+export function resolveModelConfig(config: AIConfig, graphType?: string): ModelConfig {
   const base = config.defaultModel;
   if (!graphType) return base;
 
@@ -78,4 +74,3 @@ export function resolveModelConfig(
     ...overrides,
   };
 }
-

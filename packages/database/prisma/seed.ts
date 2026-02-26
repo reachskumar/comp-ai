@@ -35,6 +35,8 @@ import {
   EquityGrantStatus,
   VestingScheduleType,
   VestingEventStatus,
+  AttritionRiskLevel,
+  AttritionRunStatus,
 } from '../src/generated/prisma/client.ts';
 import { PrismaPg } from '@prisma/adapter-pg';
 import pg from 'pg';
@@ -3576,6 +3578,456 @@ async function main() {
     },
   });
   console.log(`  ✅ Equity Grants: ${equityGrantData.length} created with vesting events`);
+
+  // ─── Policy RAG Seed Data ──────────────────────────────
+  console.log('\n📜 Seeding Policy Documents...');
+
+  const compensationPolicyContent = `Compensation Philosophy and Policy
+
+1. COMPENSATION PHILOSOPHY
+
+Our compensation philosophy is designed to attract, retain, and motivate top talent while ensuring internal equity and external competitiveness. We believe in paying for performance and rewarding employees who contribute to the company's success.
+
+Key Principles:
+- Market Competitive: We target the 50th to 75th percentile of market rates for base salary
+- Pay for Performance: Variable compensation is tied to individual and company performance
+- Internal Equity: We maintain fair pay relationships between jobs of similar value
+- Transparency: Employees understand how their compensation is determined
+
+2. BASE SALARY POLICY
+
+Base salaries are determined by job level, market data, and individual qualifications. Annual merit increases are typically 3-5% for meets expectations, 5-8% for exceeds expectations, and 8-12% for exceptional performance.
+
+Salary Bands:
+- Each position has a defined salary range with minimum, midpoint, and maximum
+- New hires are typically placed between minimum and midpoint
+- Employees at or above maximum may receive lump-sum bonuses instead of base increases
+- Compa-ratio targets: 0.90-1.10 for most positions
+
+3. BONUS STRUCTURE
+
+Annual bonuses are based on a combination of company performance (60%) and individual performance (40%).
+
+Target Bonus by Level:
+- Individual Contributor: 5-10% of base salary
+- Manager: 10-15% of base salary
+- Director: 15-25% of base salary
+- VP and above: 25-40% of base salary
+
+Bonus Payout Triggers:
+- Company must achieve at least 80% of revenue target for any bonus pool funding
+- Individual must have a performance rating of "meets expectations" or above
+- Pro-rated for employees with less than 12 months of service
+
+4. EQUITY COMPENSATION
+
+Stock options and RSUs are granted to eligible employees based on level and performance.
+
+Vesting Schedule:
+- Standard 4-year vesting with 1-year cliff
+- 25% vests after the first year, then monthly vesting for remaining 36 months
+- Refresh grants may be awarded annually based on performance
+
+Grant Guidelines by Level:
+- Senior Engineer: 5,000-15,000 shares
+- Staff Engineer: 15,000-30,000 shares
+- Principal Engineer: 30,000-50,000 shares
+- Director: 50,000-100,000 shares
+- VP: 100,000-200,000 shares
+
+5. MERIT INCREASE POLICY
+
+Annual merit increases are effective April 1st each year. The merit budget is typically 3-4% of total base salary spend.
+
+Performance Rating to Merit Increase Mapping:
+- Exceptional (5): 8-12% increase
+- Exceeds Expectations (4): 5-8% increase
+- Meets Expectations (3): 3-5% increase
+- Needs Improvement (2): 0-2% increase
+- Unsatisfactory (1): No increase, performance improvement plan required
+
+Compa-ratio adjustments may be applied in addition to merit increases for employees significantly below midpoint.`;
+
+  const benefitsPolicyContent = `Employee Benefits Policy
+
+1. HEALTH INSURANCE
+
+We offer comprehensive health insurance coverage to all full-time employees and their eligible dependents.
+
+Plan Options:
+- PPO Plan: Lower deductible ($500 individual / $1,000 family), higher premiums
+- HDHP Plan: Higher deductible ($2,000 individual / $4,000 family), lower premiums with HSA
+- Company contributes 80% of employee premium and 60% of dependent premium
+
+Eligibility:
+- Full-time employees (30+ hours/week) are eligible from date of hire
+- Coverage begins on the first day of the month following hire date
+- Open enrollment period is November 1-15 each year
+
+2. RETIREMENT BENEFITS
+
+401(k) Plan:
+- Company matches 100% of first 4% of salary contributed
+- Additional 50% match on next 2% (total company match up to 5%)
+- Immediate vesting on employee contributions
+- Company match vests over 3 years (33% per year)
+- Eligible after 90 days of employment
+
+3. PAID TIME OFF
+
+PTO Accrual by Tenure:
+- 0-2 years: 15 days per year
+- 3-5 years: 20 days per year
+- 6-10 years: 25 days per year
+- 10+ years: 30 days per year
+
+Additional Leave:
+- 10 paid holidays per year
+- 5 sick days per year (separate from PTO)
+- 12 weeks parental leave (birth or adoption)
+- 3 days bereavement leave
+
+4. WELLNESS BENEFITS
+
+- $500 annual wellness stipend (gym, fitness classes, mental health apps)
+- Employee Assistance Program (EAP) — free counseling sessions
+- Annual health screening covered at 100%
+- Ergonomic equipment allowance for remote workers ($500 one-time)`;
+
+  // Create policy documents with mock embeddings (zero vectors)
+  const zeroEmbedding = JSON.stringify(new Array(1536).fill(0));
+
+  const compPolicy = await prisma.policyDocument.create({
+    data: {
+      tenantId: tenant.id,
+      title: 'Compensation Philosophy and Policy',
+      fileName: 'compensation-policy.txt',
+      filePath: `uploads/policies/${tenant.id}/compensation-policy.txt`,
+      fileSize: Buffer.byteLength(compensationPolicyContent, 'utf-8'),
+      mimeType: 'text/plain',
+      status: 'READY',
+      chunkCount: 5,
+      uploadedBy: adminUser.id,
+    },
+  });
+
+  // Chunk the compensation policy
+  const compChunks = compensationPolicyContent.split(/\n\n(?=\d+\.\s)/);
+  for (let i = 0; i < compChunks.length; i++) {
+    await prisma.policyChunk.create({
+      data: {
+        documentId: compPolicy.id,
+        tenantId: tenant.id,
+        chunkIndex: i,
+        content: compChunks[i].trim(),
+        embedding: JSON.parse(zeroEmbedding),
+        metadata: { chunkIndex: i, totalChunks: compChunks.length, section: `Section ${i + 1}` },
+      },
+    });
+  }
+
+  const benefitsPolicy = await prisma.policyDocument.create({
+    data: {
+      tenantId: tenant.id,
+      title: 'Employee Benefits Policy',
+      fileName: 'benefits-policy.txt',
+      filePath: `uploads/policies/${tenant.id}/benefits-policy.txt`,
+      fileSize: Buffer.byteLength(benefitsPolicyContent, 'utf-8'),
+      mimeType: 'text/plain',
+      status: 'READY',
+      chunkCount: 4,
+      uploadedBy: adminUser.id,
+    },
+  });
+
+  const benefitsChunks = benefitsPolicyContent.split(/\n\n(?=\d+\.\s)/);
+  for (let i = 0; i < benefitsChunks.length; i++) {
+    await prisma.policyChunk.create({
+      data: {
+        documentId: benefitsPolicy.id,
+        tenantId: tenant.id,
+        chunkIndex: i,
+        content: benefitsChunks[i].trim(),
+        embedding: JSON.parse(zeroEmbedding),
+        metadata: {
+          chunkIndex: i,
+          totalChunks: benefitsChunks.length,
+          section: `Section ${i + 1}`,
+        },
+      },
+    });
+  }
+
+  console.log('  ✅ Policy Documents: 2 created with chunks');
+
+  // ─────────────────────────────────────────────────────────────
+  // Attrition Risk Scores & Analysis Runs
+  // ─────────────────────────────────────────────────────────────
+
+  // Pre-calculated risk scores for all employees
+  // Designed to produce: 2 CRITICAL, 3 HIGH, 5 MEDIUM, rest LOW
+  const riskScoreData: Array<{
+    empIdx: number;
+    score: number;
+    level: AttritionRiskLevel;
+    factors: Record<string, unknown>;
+    recommendation: string | null;
+  }> = [
+    // CRITICAL (2)
+    {
+      empIdx: 7,
+      score: 85,
+      level: AttritionRiskLevel.CRITICAL,
+      factors: {
+        compaRatioRisk: 30,
+        tenureRisk: 20,
+        performancePayGap: 25,
+        timeSinceIncrease: 10,
+        marketPosition: 0,
+        departmentTurnover: 0,
+        details: { compaRatio: 0.82, tenureYears: 2.1, performanceRating: 4.5, baseSalary: 95000 },
+      },
+      recommendation:
+        '[CRITICAL RISK] Recommendations:\n• Immediate market adjustment needed — salary 18% below band midpoint.\n• High performer (4.5 rating) severely underpaid — prioritize for emergency off-cycle increase.\n• Schedule retention conversation with manager within 1 week.\n• Consider spot bonus or equity grant as bridge while adjustment is processed.',
+    },
+    {
+      empIdx: 15,
+      score: 80,
+      level: AttritionRiskLevel.CRITICAL,
+      factors: {
+        compaRatioRisk: 30,
+        tenureRisk: 20,
+        performancePayGap: 25,
+        timeSinceIncrease: 0,
+        marketPosition: 10,
+        departmentTurnover: 0,
+        details: { compaRatio: 0.84, tenureYears: 1.8, performanceRating: 5.0, baseSalary: 88000 },
+      },
+      recommendation:
+        '[CRITICAL RISK] Recommendations:\n• Top performer with compa-ratio of 0.84 — immediate salary correction required.\n• In critical 1-3 year tenure window — highest flight risk period.\n• Recommend 15-20% adjustment to reach band P50.\n• Assign executive mentor and discuss accelerated career path.',
+    },
+    // HIGH (3)
+    {
+      empIdx: 3,
+      score: 65,
+      level: AttritionRiskLevel.HIGH,
+      factors: {
+        compaRatioRisk: 15,
+        tenureRisk: 20,
+        performancePayGap: 25,
+        timeSinceIncrease: 0,
+        marketPosition: 10,
+        departmentTurnover: 0,
+        details: { compaRatio: 0.91, tenureYears: 2.5, performanceRating: 4.0, baseSalary: 110000 },
+      },
+      recommendation:
+        '[HIGH RISK] Recommendations:\n• Performance-pay gap detected — rating of 4.0 with below-market compensation.\n• Schedule compensation review for next merit cycle with priority flag.\n• Consider retention bonus tied to 12-month commitment.\n• Discuss career development opportunities and growth path.',
+    },
+    {
+      empIdx: 22,
+      score: 55,
+      level: AttritionRiskLevel.HIGH,
+      factors: {
+        compaRatioRisk: 15,
+        tenureRisk: 20,
+        performancePayGap: 0,
+        timeSinceIncrease: 20,
+        marketPosition: 0,
+        departmentTurnover: 0,
+        details: { compaRatio: 0.93, tenureYears: 1.5, performanceRating: 3.0, baseSalary: 72000 },
+      },
+      recommendation:
+        '[HIGH RISK] Recommendations:\n• No compensation change in 24+ months — schedule immediate review.\n• In high-turnover tenure window (1-3 years).\n• Recommend 5-8% market adjustment.\n• Conduct stay interview to assess engagement.',
+    },
+    {
+      empIdx: 30,
+      score: 60,
+      level: AttritionRiskLevel.HIGH,
+      factors: {
+        compaRatioRisk: 15,
+        tenureRisk: 20,
+        performancePayGap: 25,
+        timeSinceIncrease: 0,
+        marketPosition: 0,
+        departmentTurnover: 0,
+        details: { compaRatio: 0.89, tenureYears: 2.8, performanceRating: 4.0, baseSalary: 105000 },
+      },
+      recommendation:
+        '[HIGH RISK] Recommendations:\n• Strong performer underpaid relative to market — compa-ratio 0.89.\n• Approaching 3-year tenure mark — critical retention window.\n• Recommend promotion consideration or title adjustment with pay increase.\n• Explore lateral move opportunities if vertical growth is limited.',
+    },
+    // MEDIUM (5)
+    {
+      empIdx: 1,
+      score: 35,
+      level: AttritionRiskLevel.MEDIUM,
+      factors: {
+        compaRatioRisk: 0,
+        tenureRisk: -10,
+        performancePayGap: 0,
+        timeSinceIncrease: 20,
+        marketPosition: 10,
+        departmentTurnover: 10,
+        details: { compaRatio: 0.97, tenureYears: 6.5, performanceRating: 3.0, baseSalary: 195000 },
+      },
+      recommendation: null,
+    },
+    {
+      empIdx: 5,
+      score: 40,
+      level: AttritionRiskLevel.MEDIUM,
+      factors: {
+        compaRatioRisk: 15,
+        tenureRisk: 20,
+        performancePayGap: 0,
+        timeSinceIncrease: 0,
+        marketPosition: 0,
+        departmentTurnover: 0,
+        details: { compaRatio: 0.94, tenureYears: 2.0, performanceRating: 2.0, baseSalary: 125000 },
+      },
+      recommendation: null,
+    },
+    {
+      empIdx: 10,
+      score: 30,
+      level: AttritionRiskLevel.MEDIUM,
+      factors: {
+        compaRatioRisk: 0,
+        tenureRisk: 20,
+        performancePayGap: 0,
+        timeSinceIncrease: 10,
+        marketPosition: 0,
+        departmentTurnover: 0,
+        details: { compaRatio: 1.02, tenureYears: 1.2, performanceRating: 3.0, baseSalary: 140000 },
+      },
+      recommendation: null,
+    },
+    {
+      empIdx: 18,
+      score: 45,
+      level: AttritionRiskLevel.MEDIUM,
+      factors: {
+        compaRatioRisk: 15,
+        tenureRisk: 20,
+        performancePayGap: 0,
+        timeSinceIncrease: 10,
+        marketPosition: 0,
+        departmentTurnover: 0,
+        details: { compaRatio: 0.92, tenureYears: 2.3, performanceRating: 3.0, baseSalary: 98000 },
+      },
+      recommendation: null,
+    },
+    {
+      empIdx: 25,
+      score: 30,
+      level: AttritionRiskLevel.MEDIUM,
+      factors: {
+        compaRatioRisk: 0,
+        tenureRisk: 10,
+        performancePayGap: 0,
+        timeSinceIncrease: 20,
+        marketPosition: 0,
+        departmentTurnover: 0,
+        details: { compaRatio: 1.05, tenureYears: 0.8, performanceRating: 3.0, baseSalary: 82000 },
+      },
+      recommendation: null,
+    },
+  ];
+
+  // Remaining employees get LOW scores
+  for (let i = 0; i < createdEmployees.length; i++) {
+    if (riskScoreData.some((r) => r.empIdx === i)) continue;
+    riskScoreData.push({
+      empIdx: i,
+      score: Math.floor(Math.random() * 20) + 5, // 5-24
+      level: AttritionRiskLevel.LOW,
+      factors: {
+        compaRatioRisk: 0,
+        tenureRisk: -10,
+        performancePayGap: 0,
+        timeSinceIncrease: 0,
+        marketPosition: 0,
+        departmentTurnover: 0,
+        details: {},
+      },
+      recommendation: null,
+    });
+  }
+
+  for (const rd of riskScoreData) {
+    const emp = createdEmployees[rd.empIdx];
+    if (!emp) continue;
+    const scoreId = `seed-attrition-${emp.code}`;
+    await prisma.attritionRiskScore.upsert({
+      where: { id: scoreId },
+      update: {},
+      create: {
+        id: scoreId,
+        tenantId: tenant.id,
+        employeeId: emp.id,
+        riskScore: rd.score,
+        riskLevel: rd.level,
+        factors: rd.factors,
+        recommendation: rd.recommendation,
+        calculatedAt: new Date('2026-02-25T10:00:00Z'),
+        expiresAt: new Date('2026-03-25T10:00:00Z'),
+      },
+    });
+  }
+  console.log(`  ✅ Attrition Risk Scores: ${riskScoreData.length} created`);
+
+  // Analysis runs
+  const attritionRuns = [
+    {
+      id: 'seed-attrition-run-1',
+      status: AttritionRunStatus.COMPLETED,
+      total: 50,
+      high: 3,
+      critical: 2,
+      avg: 28.5,
+      completedAt: new Date('2026-02-20T10:05:00Z'),
+      createdAt: new Date('2026-02-20T10:00:00Z'),
+    },
+    {
+      id: 'seed-attrition-run-2',
+      status: AttritionRunStatus.COMPLETED,
+      total: 50,
+      high: 3,
+      critical: 2,
+      avg: 27.8,
+      completedAt: new Date('2026-02-25T10:05:00Z'),
+      createdAt: new Date('2026-02-25T10:00:00Z'),
+    },
+    {
+      id: 'seed-attrition-run-3',
+      status: AttritionRunStatus.COMPLETED,
+      total: 50,
+      high: 3,
+      critical: 2,
+      avg: 28.1,
+      completedAt: new Date('2026-02-26T09:05:00Z'),
+      createdAt: new Date('2026-02-26T09:00:00Z'),
+    },
+  ];
+
+  for (const run of attritionRuns) {
+    await prisma.attritionAnalysisRun.upsert({
+      where: { id: run.id },
+      update: {},
+      create: {
+        id: run.id,
+        tenantId: tenant.id,
+        triggeredBy: admin.id,
+        status: run.status,
+        totalEmployees: run.total,
+        highRiskCount: run.high,
+        criticalCount: run.critical,
+        avgRiskScore: run.avg,
+        completedAt: run.completedAt,
+        createdAt: run.createdAt,
+      },
+    });
+  }
+  console.log(`  ✅ Attrition Analysis Runs: ${attritionRuns.length} created`);
 
   console.log('🎉 Seed complete!');
 }

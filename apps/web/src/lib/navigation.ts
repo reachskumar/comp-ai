@@ -44,6 +44,7 @@ import {
   Coins,
   Trophy,
   Briefcase,
+  UserX,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -82,6 +83,8 @@ export const navGroups: NavGroup[] = [
       { title: 'Report Builder', href: '/dashboard/reports', icon: FileBarChart },
       { title: 'Comp Letters', href: '/dashboard/letters', icon: FileText },
       { title: 'Compliance', href: '/dashboard/compliance', icon: ShieldCheck },
+      { title: 'Policy AI', href: '/dashboard/ai-policies', icon: BookOpen },
+      { title: 'Retention Risk', href: '/dashboard/attrition', icon: UserX },
     ],
   },
   // ── Core Modules ─────────────────────────────────────────
