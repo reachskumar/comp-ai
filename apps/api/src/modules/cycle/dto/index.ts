@@ -20,4 +20,4 @@ export {
   UpdateCalibrationSessionDto,
   CalibrationQueryDto,
 } from './calibration.dto';
-
+export { BudgetOptimizeDto, ApplyBudgetAllocationDto } from './budget-optimizer.dto';

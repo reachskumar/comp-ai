@@ -5,6 +5,7 @@ import { CycleService } from './cycle.service';
 import { ApprovalController } from './approval.controller';
 import { ApprovalService } from './services/approval.service';
 import { CalibrationService } from './services/calibration.service';
+import { BudgetOptimizerService } from './services/budget-optimizer.service';
 import { MonitorsController } from './monitors.controller';
 import {
   BudgetDriftService,
@@ -25,6 +26,7 @@ import {
     CycleService,
     ApprovalService,
     CalibrationService,
+    BudgetOptimizerService,
     BudgetDriftService,
     PolicyViolationService,
     OutlierDetectorService,
@@ -36,6 +38,7 @@ import {
     CycleService,
     ApprovalService,
     CalibrationService,
+    BudgetOptimizerService,
     BudgetDriftService,
     PolicyViolationService,
     OutlierDetectorService,
@@ -44,4 +47,3 @@ import {
   ],
 })
 export class CycleModule {}
-

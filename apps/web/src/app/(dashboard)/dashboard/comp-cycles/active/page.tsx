@@ -1,6 +1,6 @@
-"use client";
+'use client';
 
-import * as React from "react";
+import * as React from 'react';
 import {
   Plus,
   ListChecks,
@@ -16,16 +16,17 @@ import {
   Play,
   Bell,
   RefreshCw,
-} from "lucide-react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Progress } from "@/components/ui/progress";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
-import { ScrollArea } from "@/components/ui/scroll-area";
+  Sparkles,
+} from 'lucide-react';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Progress } from '@/components/ui/progress';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Select } from '@/components/ui/select';
+import { Skeleton } from '@/components/ui/skeleton';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   Dialog,
   DialogContent,
@@ -33,7 +34,7 @@ import {
   DialogTitle,
   DialogDescription,
   DialogFooter,
-} from "@/components/ui/dialog";
+} from '@/components/ui/dialog';
 import {
   Table,
   TableHeader,
@@ -41,8 +42,8 @@ import {
   TableRow,
   TableHead,
   TableCell,
-} from "@/components/ui/table";
-import { useToast } from "@/components/ui/toast";
+} from '@/components/ui/table';
+import { useToast } from '@/components/ui/toast';
 import {
   useCycleList,
   useCycleDetail,
@@ -57,47 +58,47 @@ import {
   type CycleStatus,
   type CycleAlert,
   type DepartmentProgress,
-} from "@/hooks/use-cycles";
+} from '@/hooks/use-cycles';
 
 // ─── Helpers ──────────────────────────────────────────────
 
 const STATUS_COLORS: Record<CycleStatus, string> = {
-  DRAFT: "secondary",
-  PLANNING: "outline",
-  ACTIVE: "default",
-  CALIBRATION: "outline",
-  APPROVAL: "outline",
-  COMPLETED: "secondary",
-  CANCELLED: "destructive",
+  DRAFT: 'secondary',
+  PLANNING: 'outline',
+  ACTIVE: 'default',
+  CALIBRATION: 'outline',
+  APPROVAL: 'outline',
+  COMPLETED: 'secondary',
+  CANCELLED: 'destructive',
 };
 
 const STATUS_ORDER: CycleStatus[] = [
-  "DRAFT",
-  "PLANNING",
-  "ACTIVE",
-  "CALIBRATION",
-  "APPROVAL",
-  "COMPLETED",
+  'DRAFT',
+  'PLANNING',
+  'ACTIVE',
+  'CALIBRATION',
+  'APPROVAL',
+  'COMPLETED',
 ];
 
 function statusBadgeVariant(status: CycleStatus) {
-  return STATUS_COLORS[status] as "default" | "secondary" | "outline" | "destructive";
+  return STATUS_COLORS[status] as 'default' | 'secondary' | 'outline' | 'destructive';
 }
 
 function formatCurrency(n: number) {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
     minimumFractionDigits: 0,
     maximumFractionDigits: 0,
   }).format(n);
 }
 
 function formatDate(d: string) {
-  return new Date(d).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
+  return new Date(d).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
   });
 }
 
@@ -114,12 +115,7 @@ export default function ActiveCyclesPage() {
   const [createOpen, setCreateOpen] = React.useState(false);
 
   if (selectedCycleId) {
-    return (
-      <CycleDetailView
-        cycleId={selectedCycleId}
-        onBack={() => setSelectedCycleId(null)}
-      />
-    );
+    return <CycleDetailView cycleId={selectedCycleId} onBack={() => setSelectedCycleId(null)} />;
   }
 
   return (
@@ -131,7 +127,6 @@ export default function ActiveCyclesPage() {
     />
   );
 }
-
 
 // ─── Cycle List View ──────────────────────────────────────
 
@@ -150,10 +145,10 @@ function CycleListView({
   const { data, isLoading, error } = useCycleList();
   const createMutation = useCreateCycleMutation();
 
-  const [newName, setNewName] = React.useState("");
-  const [newCycleType, setNewCycleType] = React.useState<CycleType | "">("");
-  const [newStart, setNewStart] = React.useState("");
-  const [newEnd, setNewEnd] = React.useState("");
+  const [newName, setNewName] = React.useState('');
+  const [newCycleType, setNewCycleType] = React.useState<CycleType | ''>('');
+  const [newStart, setNewStart] = React.useState('');
+  const [newEnd, setNewEnd] = React.useState('');
 
   const handleCreate = () => {
     if (!newName.trim() || !newCycleType || !newStart || !newEnd) return;
@@ -161,17 +156,17 @@ function CycleListView({
       { name: newName, cycleType: newCycleType, startDate: newStart, endDate: newEnd },
       {
         onSuccess: () => {
-          toast({ title: "Cycle created", description: `${newName} is ready.` });
+          toast({ title: 'Cycle created', description: `${newName} is ready.` });
           onCreateClose();
-          setNewName("");
-          setNewCycleType("");
-          setNewStart("");
-          setNewEnd("");
+          setNewName('');
+          setNewCycleType('');
+          setNewStart('');
+          setNewEnd('');
         },
         onError: (err) => {
-          toast({ title: "Error", description: err.message, variant: "destructive" });
+          toast({ title: 'Error', description: err.message, variant: 'destructive' });
         },
-      }
+      },
     );
   };
 
@@ -242,21 +237,15 @@ function CycleListView({
                   >
                     <TableCell className="font-medium">{cycle.name}</TableCell>
                     <TableCell>
-                      <Badge variant={statusBadgeVariant(cycle.status)}>
-                        {cycle.status}
-                      </Badge>
+                      <Badge variant={statusBadgeVariant(cycle.status)}>{cycle.status}</Badge>
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-2 min-w-[120px]">
                         <Progress value={cycle.progress} className="flex-1" />
-                        <span className="text-xs text-muted-foreground w-8">
-                          {cycle.progress}%
-                        </span>
+                        <span className="text-xs text-muted-foreground w-8">{cycle.progress}%</span>
                       </div>
                     </TableCell>
-                    <TableCell className="text-sm">
-                      {formatCurrency(cycle.budgetTotal)}
-                    </TableCell>
+                    <TableCell className="text-sm">{formatCurrency(cycle.budgetTotal)}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">
                       {formatDate(cycle.startDate)} – {formatDate(cycle.endDate)}
                     </TableCell>
@@ -298,10 +287,10 @@ function CycleListView({
                 onChange={(e) => setNewCycleType(e.target.value as CycleType)}
                 placeholder="Select cycle type"
                 options={[
-                  { value: "MERIT", label: "Merit" },
-                  { value: "BONUS", label: "Bonus" },
-                  { value: "LTI", label: "LTI" },
-                  { value: "COMBINED", label: "Combined" },
+                  { value: 'MERIT', label: 'Merit' },
+                  { value: 'BONUS', label: 'Bonus' },
+                  { value: 'LTI', label: 'LTI' },
+                  { value: 'COMBINED', label: 'Combined' },
                 ]}
               />
             </div>
@@ -332,9 +321,11 @@ function CycleListView({
             </Button>
             <Button
               onClick={handleCreate}
-              disabled={!newName.trim() || !newCycleType || !newStart || !newEnd || createMutation.isPending}
+              disabled={
+                !newName.trim() || !newCycleType || !newStart || !newEnd || createMutation.isPending
+              }
             >
-              {createMutation.isPending ? "Creating..." : "Create Cycle"}
+              {createMutation.isPending ? 'Creating...' : 'Create Cycle'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -345,13 +336,7 @@ function CycleListView({
 
 // ─── Cycle Detail View (Control Tower) ────────────────────
 
-function CycleDetailView({
-  cycleId,
-  onBack,
-}: {
-  cycleId: string;
-  onBack: () => void;
-}) {
+function CycleDetailView({ cycleId, onBack }: { cycleId: string; onBack: () => void }) {
   const { toast } = useToast();
   const { data: cycle, isLoading: cycleLoading } = useCycleDetail(cycleId);
   const { data: summary, isLoading: summaryLoading } = useCycleSummary(cycleId);
@@ -365,19 +350,19 @@ function CycleDetailView({
       { cycleId, targetStatus },
       {
         onSuccess: () => {
-          toast({ title: "Cycle updated", description: `Moved to ${targetStatus}` });
+          toast({ title: 'Cycle updated', description: `Moved to ${targetStatus}` });
         },
         onError: (err) => {
-          toast({ title: "Transition failed", description: err.message, variant: "destructive" });
+          toast({ title: 'Transition failed', description: err.message, variant: 'destructive' });
         },
-      }
+      },
     );
   };
 
   const handleRunMonitors = () => {
     runMonitorsMutation.mutate(cycleId, {
-      onSuccess: () => toast({ title: "Monitors triggered", description: "Running analysis..." }),
-      onError: (err) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+      onSuccess: () => toast({ title: 'Monitors triggered', description: 'Running analysis...' }),
+      onError: (err) => toast({ title: 'Error', description: err.message, variant: 'destructive' }),
     });
   };
 
@@ -385,9 +370,10 @@ function CycleDetailView({
     nudgeMutation.mutate(
       { cycleId },
       {
-        onSuccess: () => toast({ title: "Reminders sent" }),
-        onError: (err) => toast({ title: "Error", description: err.message, variant: "destructive" }),
-      }
+        onSuccess: () => toast({ title: 'Reminders sent' }),
+        onError: (err) =>
+          toast({ title: 'Error', description: err.message, variant: 'destructive' }),
+      },
     );
   };
 
@@ -438,17 +424,45 @@ function CycleDetailView({
           </p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={handleRunMonitors} disabled={runMonitorsMutation.isPending}>
-            {runMonitorsMutation.isPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <RefreshCw className="mr-1 h-3 w-3" />}
+          <a href="/dashboard/comp-cycles/budget-optimizer">
+            <Button variant="outline" size="sm">
+              <Sparkles className="mr-1 h-3 w-3" />
+              AI Optimize
+            </Button>
+          </a>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRunMonitors}
+            disabled={runMonitorsMutation.isPending}
+          >
+            {runMonitorsMutation.isPending ? (
+              <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+            ) : (
+              <RefreshCw className="mr-1 h-3 w-3" />
+            )}
             Run Monitors
           </Button>
-          <Button variant="outline" size="sm" onClick={handleNudge} disabled={nudgeMutation.isPending}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleNudge}
+            disabled={nudgeMutation.isPending}
+          >
             <Bell className="mr-1 h-3 w-3" />
             Nudge
           </Button>
           {nextStatus && (
-            <Button size="sm" onClick={() => handleTransition(nextStatus)} disabled={transitionMutation.isPending}>
-              {transitionMutation.isPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Play className="mr-1 h-3 w-3" />}
+            <Button
+              size="sm"
+              onClick={() => handleTransition(nextStatus)}
+              disabled={transitionMutation.isPending}
+            >
+              {transitionMutation.isPending ? (
+                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+              ) : (
+                <Play className="mr-1 h-3 w-3" />
+              )}
               Advance to {nextStatus}
             </Button>
           )}
@@ -460,17 +474,30 @@ function CycleDetailView({
 
       {/* Budget Cards */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <BudgetCard title="Total Budget" value={cycle.budgetTotal} icon={<DollarSign className="h-4 w-4" />} />
-        <BudgetCard title="Allocated" value={cycle.budgetAllocated} icon={<TrendingUp className="h-4 w-4" />} subtitle={`${cycle.budgetTotal > 0 ? Math.round((cycle.budgetAllocated / cycle.budgetTotal) * 100) : 0}% of total`} />
-        <BudgetCard title="Committed" value={cycle.budgetCommitted} icon={<Users className="h-4 w-4" />} subtitle={`${cycle.budgetTotal > 0 ? Math.round((cycle.budgetCommitted / cycle.budgetTotal) * 100) : 0}% of total`} />
+        <BudgetCard
+          title="Total Budget"
+          value={cycle.budgetTotal}
+          icon={<DollarSign className="h-4 w-4" />}
+        />
+        <BudgetCard
+          title="Allocated"
+          value={cycle.budgetAllocated}
+          icon={<TrendingUp className="h-4 w-4" />}
+          subtitle={`${cycle.budgetTotal > 0 ? Math.round((cycle.budgetAllocated / cycle.budgetTotal) * 100) : 0}% of total`}
+        />
+        <BudgetCard
+          title="Committed"
+          value={cycle.budgetCommitted}
+          icon={<Users className="h-4 w-4" />}
+          subtitle={`${cycle.budgetTotal > 0 ? Math.round((cycle.budgetCommitted / cycle.budgetTotal) * 100) : 0}% of total`}
+        />
         <BudgetCard
           title="Remaining"
           value={cycle.budgetRemaining}
           icon={<Clock className="h-4 w-4" />}
-          variant={cycle.budgetRemaining < 0 ? "destructive" : undefined}
+          variant={cycle.budgetRemaining < 0 ? 'destructive' : undefined}
         />
       </div>
-
 
       {/* Two-column layout: Alerts + Department Progress */}
       <div className="grid gap-6 lg:grid-cols-2">
@@ -481,7 +508,9 @@ function CycleDetailView({
               <AlertTriangle className="h-5 w-5" />
               Alerts
               {cycleAlerts.length > 0 && (
-                <Badge variant="destructive" className="ml-auto">{cycleAlerts.length}</Badge>
+                <Badge variant="destructive" className="ml-auto">
+                  {cycleAlerts.length}
+                </Badge>
               )}
             </CardTitle>
             <CardDescription>Policy violations, budget drift, and outliers</CardDescription>
@@ -496,17 +525,18 @@ function CycleDetailView({
               <ScrollArea className="max-h-[320px]">
                 <div className="space-y-3">
                   {cycleAlerts.map((alert) => (
-                    <div
-                      key={alert.id}
-                      className="flex items-start gap-3 rounded-lg border p-3"
-                    >
+                    <div key={alert.id} className="flex items-start gap-3 rounded-lg border p-3">
                       {SEVERITY_ICON[alert.severity]}
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium">{alert.message}</p>
                         <div className="flex items-center gap-2 mt-1">
-                          <Badge variant="outline" className="text-xs">{alert.type.replace(/_/g, " ")}</Badge>
+                          <Badge variant="outline" className="text-xs">
+                            {alert.type.replace(/_/g, ' ')}
+                          </Badge>
                           {alert.department && (
-                            <span className="text-xs text-muted-foreground">{alert.department}</span>
+                            <span className="text-xs text-muted-foreground">
+                              {alert.department}
+                            </span>
                           )}
                           <span className="text-xs text-muted-foreground ml-auto">
                             {formatDate(alert.createdAt)}
@@ -554,12 +584,14 @@ function CycleDetailView({
                 </TableHeader>
                 <TableBody>
                   {deptProgress.map((dept) => {
-                    const pct = dept.totalEmployees > 0
-                      ? Math.round((dept.completed / dept.totalEmployees) * 100)
-                      : 0;
-                    const budgetPct = dept.budgetAllocated > 0
-                      ? Math.round((dept.budgetUsed / dept.budgetAllocated) * 100)
-                      : 0;
+                    const pct =
+                      dept.totalEmployees > 0
+                        ? Math.round((dept.completed / dept.totalEmployees) * 100)
+                        : 0;
+                    const budgetPct =
+                      dept.budgetAllocated > 0
+                        ? Math.round((dept.budgetUsed / dept.budgetAllocated) * 100)
+                        : 0;
                     return (
                       <TableRow key={dept.department}>
                         <TableCell className="font-medium">{dept.department}</TableCell>
@@ -570,12 +602,14 @@ function CycleDetailView({
                           </div>
                         </TableCell>
                         <TableCell>
-                          <Badge variant={dept.pending > 0 ? "outline" : "secondary"}>
+                          <Badge variant={dept.pending > 0 ? 'outline' : 'secondary'}>
                             {dept.pending}
                           </Badge>
                         </TableCell>
                         <TableCell>
-                          <span className={budgetPct > 100 ? "text-red-600 font-medium" : "text-sm"}>
+                          <span
+                            className={budgetPct > 100 ? 'text-red-600 font-medium' : 'text-sm'}
+                          >
                             {budgetPct}%
                           </span>
                         </TableCell>
@@ -600,21 +634,23 @@ function CycleDetailView({
             {STATUS_ORDER.map((status, i) => {
               const isCurrent = cycle.status === status;
               const isPast = STATUS_ORDER.indexOf(cycle.status) > i;
-              const isCancelled = cycle.status === "CANCELLED";
+              const isCancelled = cycle.status === 'CANCELLED';
               return (
                 <React.Fragment key={status}>
                   {i > 0 && (
-                    <div className={`h-px w-8 flex-shrink-0 ${isPast ? "bg-primary" : "bg-border"}`} />
+                    <div
+                      className={`h-px w-8 flex-shrink-0 ${isPast ? 'bg-primary' : 'bg-border'}`}
+                    />
                   )}
                   <div
                     className={`flex items-center justify-center rounded-full px-3 py-1.5 text-xs font-medium flex-shrink-0 ${
                       isCancelled
-                        ? "bg-muted text-muted-foreground"
+                        ? 'bg-muted text-muted-foreground'
                         : isCurrent
-                          ? "bg-primary text-primary-foreground"
+                          ? 'bg-primary text-primary-foreground'
                           : isPast
-                            ? "bg-primary/20 text-primary"
-                            : "bg-muted text-muted-foreground"
+                            ? 'bg-primary/20 text-primary'
+                            : 'bg-muted text-muted-foreground'
                     }`}
                   >
                     {status}
@@ -622,7 +658,7 @@ function CycleDetailView({
                 </React.Fragment>
               );
             })}
-            {cycle.status === "CANCELLED" && (
+            {cycle.status === 'CANCELLED' && (
               <>
                 <div className="h-px w-8 flex-shrink-0 bg-border" />
                 <div className="flex items-center justify-center rounded-full px-3 py-1.5 text-xs font-medium flex-shrink-0 bg-destructive text-destructive-foreground">
@@ -650,7 +686,7 @@ function BudgetCard({
   value: number;
   icon: React.ReactNode;
   subtitle?: string;
-  variant?: "destructive";
+  variant?: 'destructive';
 }) {
   return (
     <Card>
@@ -659,12 +695,10 @@ function BudgetCard({
           {icon}
           {title}
         </CardDescription>
-        <CardTitle className={`text-2xl ${variant === "destructive" ? "text-red-600" : ""}`}>
+        <CardTitle className={`text-2xl ${variant === 'destructive' ? 'text-red-600' : ''}`}>
           {formatCurrency(value)}
         </CardTitle>
-        {subtitle && (
-          <p className="text-xs text-muted-foreground">{subtitle}</p>
-        )}
+        {subtitle && <p className="text-xs text-muted-foreground">{subtitle}</p>}
       </CardHeader>
     </Card>
   );

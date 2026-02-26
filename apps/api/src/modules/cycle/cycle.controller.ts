@@ -15,6 +15,7 @@ import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth';
 import { TenantGuard } from '../../common';
 import { CycleService } from './cycle.service';
+import { BudgetOptimizerService } from './services/budget-optimizer.service';
 import {
   CreateCycleDto,
   UpdateCycleDto,
@@ -25,6 +26,8 @@ import {
   UpdateRecommendationStatusDto,
   CycleQueryDto,
   RecommendationQueryDto,
+  BudgetOptimizeDto,
+  ApplyBudgetAllocationDto,
 } from './dto';
 
 interface AuthRequest {
@@ -36,7 +39,10 @@ interface AuthRequest {
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('cycles')
 export class CycleController {
-  constructor(private readonly cycleService: CycleService) {}
+  constructor(
+    private readonly cycleService: CycleService,
+    private readonly budgetOptimizerService: BudgetOptimizerService,
+  ) {}
 
   // ─── Cycle CRUD ─────────────────────────────────────────────────────
 
@@ -121,11 +127,7 @@ export class CycleController {
     @Body() dto: BulkCreateRecommendationDto,
     @Request() req: AuthRequest,
   ) {
-    return this.cycleService.bulkCreateRecommendations(
-      req.user.tenantId,
-      id,
-      dto,
-    );
+    return this.cycleService.bulkCreateRecommendations(req.user.tenantId, id, dto);
   }
 
   @Get(':id/recommendations')
@@ -159,11 +161,37 @@ export class CycleController {
 
   @Get(':id/summary')
   @ApiOperation({ summary: 'Get cycle summary with real-time budget and progress stats' })
-  async getCycleSummary(
-    @Param('id') id: string,
-    @Request() req: AuthRequest,
-  ) {
+  async getCycleSummary(@Param('id') id: string, @Request() req: AuthRequest) {
     return this.cycleService.getCycleSummary(req.user.tenantId, id);
   }
-}
 
+  // ─── AI Budget Optimizer ─────────────────────────────────────────────
+
+  @Post(':id/budget-optimize')
+  @ApiOperation({ summary: 'AI-powered budget optimization across departments' })
+  @HttpCode(HttpStatus.OK)
+  async budgetOptimize(
+    @Param('id') id: string,
+    @Body() dto: BudgetOptimizeDto,
+    @Request() req: AuthRequest,
+  ) {
+    return this.budgetOptimizerService.optimize(
+      req.user.tenantId,
+      req.user.userId,
+      id,
+      dto.totalBudget,
+      dto.constraints,
+    );
+  }
+
+  @Post(':id/budget-optimize/apply')
+  @ApiOperation({ summary: 'Apply AI-suggested budget allocation' })
+  @HttpCode(HttpStatus.OK)
+  async applyBudgetOptimization(
+    @Param('id') id: string,
+    @Body() dto: ApplyBudgetAllocationDto,
+    @Request() req: AuthRequest,
+  ) {
+    return this.budgetOptimizerService.applyAllocation(req.user.tenantId, id, dto.allocations);
+  }
+}
