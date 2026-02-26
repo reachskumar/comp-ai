@@ -42,6 +42,8 @@ import {
   FileText,
   Zap,
   Coins,
+  Trophy,
+  Briefcase,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -62,6 +64,7 @@ export interface NavGroup {
 export const mainNavItems: NavItem[] = [
   { title: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
   { title: 'AI Copilot', href: '/dashboard/ai-copilot', icon: MessageSquareText },
+  { title: 'My Rewards', href: '/dashboard/my-rewards', icon: Trophy },
 ];
 
 export const navGroups: NavGroup[] = [
@@ -123,6 +126,12 @@ export const navGroups: NavGroup[] = [
       { title: 'Leave Management', href: '/dashboard/benefits/leave', icon: CalendarDays },
       { title: 'Recognition & Rewards', href: '/dashboard/benefits/recognition', icon: Award },
     ],
+  },
+  // ── Equity ─────────────────────────────────────────────
+  {
+    title: 'Equity Plans',
+    icon: Briefcase,
+    items: [{ title: 'Overview', href: '/dashboard/equity', icon: PieChart }],
   },
   // ── Analytics ────────────────────────────────────────────
   {

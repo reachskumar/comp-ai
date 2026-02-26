@@ -30,6 +30,11 @@ import {
   DependentRelationship,
   ConflictStrategy,
   MarketDataProvider,
+  StatementStatus,
+  EquityGrantType,
+  EquityGrantStatus,
+  VestingScheduleType,
+  VestingEventStatus,
 } from '../src/generated/prisma/client.ts';
 import { PrismaPg } from '@prisma/adapter-pg';
 import pg from 'pg';
@@ -3222,6 +3227,355 @@ async function main() {
     });
   }
   console.log(`  ✅ Ad Hoc Increases: ${adHocRequests.length} created`);
+
+  // ── Rewards Statements ──────────────────────────────────────
+  const statementEmployees = await prisma.employee.findMany({
+    where: { tenantId: tenant.id },
+    take: 4,
+    orderBy: { employeeCode: 'asc' },
+  });
+
+  const statementData = [
+    { status: StatementStatus.GENERATED, year: 2026, daysAgo: 5 },
+    { status: StatementStatus.SENT, year: 2026, daysAgo: 10 },
+    { status: StatementStatus.GENERATED, year: 2025, daysAgo: 30 },
+    { status: StatementStatus.DRAFT, year: 2026, daysAgo: 1 },
+  ];
+
+  for (let i = 0; i < Math.min(statementEmployees.length, statementData.length); i++) {
+    const emp = statementEmployees[i]!;
+    const sd = statementData[i]!;
+    const genDate = new Date();
+    genDate.setDate(genDate.getDate() - sd.daysAgo);
+
+    await prisma.rewardsStatement.upsert({
+      where: { id: `stmt-seed-${i + 1}` },
+      update: {},
+      create: {
+        id: `stmt-seed-${i + 1}`,
+        tenantId: tenant.id,
+        employeeId: emp.id,
+        year: sd.year,
+        status: sd.status,
+        generatedAt: genDate,
+        pdfUrl:
+          sd.status !== StatementStatus.DRAFT
+            ? `/uploads/statements/${tenant.id}/statement-${emp.id}-${sd.year}.pdf`
+            : null,
+        emailSentAt: sd.status === StatementStatus.SENT ? genDate : null,
+        emailTo: sd.status === StatementStatus.SENT ? emp.email : null,
+        config: {
+          totalRewardsValue: Number(emp.totalComp),
+          breakdown: [
+            { category: 'Base Salary', value: Number(emp.baseSalary) },
+            {
+              category: 'Bonus / Variable',
+              value: Math.max(0, Number(emp.totalComp) - Number(emp.baseSalary)),
+            },
+          ],
+        },
+      },
+    });
+  }
+  console.log(
+    `  ✅ Rewards Statements: ${Math.min(statementEmployees.length, statementData.length)} created`,
+  );
+
+  // ── Equity Plans & Grants ──────────────────────────────────────────
+  const rsuPlan = await prisma.equityPlan.upsert({
+    where: { id: 'eq-plan-rsu-2026' },
+    update: {},
+    create: {
+      id: 'eq-plan-rsu-2026',
+      tenantId: tenant.id,
+      name: '2026 RSU Plan',
+      planType: EquityGrantType.RSU,
+      totalSharesAuthorized: 10000000,
+      sharesIssued: 0,
+      sharesAvailable: 10000000,
+      sharePrice: 42.5,
+      currency: 'USD',
+      effectiveDate: new Date('2026-01-01'),
+      expirationDate: new Date('2036-01-01'),
+      description: 'Company-wide RSU plan for all employees',
+      isActive: true,
+    },
+  });
+
+  const isoPlan = await prisma.equityPlan.upsert({
+    where: { id: 'eq-plan-iso-2026' },
+    update: {},
+    create: {
+      id: 'eq-plan-iso-2026',
+      tenantId: tenant.id,
+      name: '2026 ISO Plan',
+      planType: EquityGrantType.ISO,
+      totalSharesAuthorized: 5000000,
+      sharesIssued: 0,
+      sharesAvailable: 5000000,
+      sharePrice: 38.0,
+      currency: 'USD',
+      effectiveDate: new Date('2026-01-01'),
+      expirationDate: new Date('2036-01-01'),
+      description: 'Incentive Stock Option plan for US employees',
+      isActive: true,
+    },
+  });
+  console.log('  ✅ Equity Plans: 2 created (RSU + ISO)');
+
+  // Equity grants for various employees
+  const equityGrantData = [
+    {
+      empCode: 'ENG-001',
+      planId: rsuPlan.id,
+      type: EquityGrantType.RSU,
+      shares: 10000,
+      price: 42.5,
+      date: '2025-03-15',
+      schedule: VestingScheduleType.STANDARD_4Y_1Y_CLIFF,
+    },
+    {
+      empCode: 'ENG-002',
+      planId: rsuPlan.id,
+      type: EquityGrantType.RSU,
+      shares: 5000,
+      price: 42.5,
+      date: '2025-06-01',
+      schedule: VestingScheduleType.STANDARD_4Y_1Y_CLIFF,
+    },
+    {
+      empCode: 'ENG-003',
+      planId: isoPlan.id,
+      type: EquityGrantType.ISO,
+      shares: 8000,
+      price: 38.0,
+      date: '2025-01-15',
+      schedule: VestingScheduleType.STANDARD_4Y_1Y_CLIFF,
+    },
+    {
+      empCode: 'ENG-004',
+      planId: rsuPlan.id,
+      type: EquityGrantType.RSU,
+      shares: 3000,
+      price: 42.5,
+      date: '2025-09-01',
+      schedule: VestingScheduleType.QUARTERLY,
+    },
+    {
+      empCode: 'SAL-001',
+      planId: rsuPlan.id,
+      type: EquityGrantType.RSU,
+      shares: 7500,
+      price: 42.5,
+      date: '2025-04-01',
+      schedule: VestingScheduleType.STANDARD_4Y_1Y_CLIFF,
+    },
+    {
+      empCode: 'SAL-002',
+      planId: rsuPlan.id,
+      type: EquityGrantType.RSU,
+      shares: 4000,
+      price: 42.5,
+      date: '2025-07-15',
+      schedule: VestingScheduleType.MONTHLY,
+    },
+    {
+      empCode: 'HR-001',
+      planId: isoPlan.id,
+      type: EquityGrantType.ISO,
+      shares: 6000,
+      price: 38.0,
+      date: '2025-02-01',
+      schedule: VestingScheduleType.STANDARD_4Y_1Y_CLIFF,
+    },
+    {
+      empCode: 'FIN-001',
+      planId: rsuPlan.id,
+      type: EquityGrantType.RSU,
+      shares: 5500,
+      price: 42.5,
+      date: '2025-05-01',
+      schedule: VestingScheduleType.ANNUAL,
+    },
+    {
+      empCode: 'ENG-005',
+      planId: rsuPlan.id,
+      type: EquityGrantType.RSU,
+      shares: 2500,
+      price: 45.0,
+      date: '2026-01-15',
+      schedule: VestingScheduleType.STANDARD_4Y_1Y_CLIFF,
+    },
+    {
+      empCode: 'MKT-001',
+      planId: rsuPlan.id,
+      type: EquityGrantType.RSU,
+      shares: 3500,
+      price: 42.5,
+      date: '2025-08-01',
+      schedule: VestingScheduleType.QUARTERLY,
+    },
+  ];
+
+  let totalSharesIssued_rsu = 0;
+  let totalSharesIssued_iso = 0;
+
+  for (const g of equityGrantData) {
+    const emp = createdEmployees.find((e) => e.code === g.empCode);
+    if (!emp) continue;
+
+    const grantId = `eq-grant-${g.empCode.toLowerCase()}-${g.type.toLowerCase()}`;
+    const vestingStartDate = new Date(g.date);
+    const cliffMonths = g.schedule === VestingScheduleType.STANDARD_4Y_1Y_CLIFF ? 12 : 0;
+    const vestingMonths = 48;
+
+    await prisma.equityGrant.upsert({
+      where: { id: grantId },
+      update: {},
+      create: {
+        id: grantId,
+        tenantId: tenant.id,
+        employeeId: emp.id,
+        planId: g.planId,
+        grantType: g.type,
+        grantDate: new Date(g.date),
+        totalShares: g.shares,
+        vestedShares: 0,
+        exercisedShares: 0,
+        grantPrice: g.price,
+        currentPrice: 55.0, // current market price
+        vestingScheduleType: g.schedule,
+        vestingStartDate,
+        cliffMonths,
+        vestingMonths,
+        status: EquityGrantStatus.ACTIVE,
+      },
+    });
+
+    if (g.planId === rsuPlan.id) totalSharesIssued_rsu += g.shares;
+    else totalSharesIssued_iso += g.shares;
+
+    // Generate vesting events
+    const events: Array<{
+      grantId: string;
+      vestDate: Date;
+      sharesVested: number;
+      cumulativeVested: number;
+      status: VestingEventStatus;
+    }> = [];
+
+    if (g.schedule === VestingScheduleType.STANDARD_4Y_1Y_CLIFF) {
+      const cliffShares = Math.floor(g.shares * 0.25);
+      const remaining = g.shares - cliffShares;
+      const monthsAfterCliff = vestingMonths - cliffMonths;
+      const monthly = monthsAfterCliff > 0 ? Math.floor(remaining / monthsAfterCliff) : 0;
+      let cum = 0;
+      const cliffDate = new Date(vestingStartDate);
+      cliffDate.setMonth(cliffDate.getMonth() + cliffMonths);
+      cum += cliffShares;
+      events.push({
+        grantId,
+        vestDate: cliffDate,
+        sharesVested: cliffShares,
+        cumulativeVested: cum,
+        status: VestingEventStatus.SCHEDULED,
+      });
+      let alloc = cliffShares;
+      for (let m = 1; m <= monthsAfterCliff; m++) {
+        const vd = new Date(cliffDate);
+        vd.setMonth(vd.getMonth() + m);
+        const s = m === monthsAfterCliff ? g.shares - alloc : monthly;
+        alloc += s;
+        cum += s;
+        events.push({
+          grantId,
+          vestDate: vd,
+          sharesVested: s,
+          cumulativeVested: cum,
+          status: VestingEventStatus.SCHEDULED,
+        });
+      }
+    } else if (g.schedule === VestingScheduleType.QUARTERLY) {
+      const quarters = Math.floor(vestingMonths / 3);
+      const qShares = Math.floor(g.shares / quarters);
+      let cum = 0,
+        alloc = 0;
+      for (let q = 1; q <= quarters; q++) {
+        const vd = new Date(vestingStartDate);
+        vd.setMonth(vd.getMonth() + q * 3);
+        const s = q === quarters ? g.shares - alloc : qShares;
+        alloc += s;
+        cum += s;
+        events.push({
+          grantId,
+          vestDate: vd,
+          sharesVested: s,
+          cumulativeVested: cum,
+          status: VestingEventStatus.SCHEDULED,
+        });
+      }
+    } else if (g.schedule === VestingScheduleType.MONTHLY) {
+      const mShares = Math.floor(g.shares / vestingMonths);
+      let cum = 0,
+        alloc = 0;
+      for (let m = 1; m <= vestingMonths; m++) {
+        const vd = new Date(vestingStartDate);
+        vd.setMonth(vd.getMonth() + m);
+        const s = m === vestingMonths ? g.shares - alloc : mShares;
+        alloc += s;
+        cum += s;
+        events.push({
+          grantId,
+          vestDate: vd,
+          sharesVested: s,
+          cumulativeVested: cum,
+          status: VestingEventStatus.SCHEDULED,
+        });
+      }
+    } else if (g.schedule === VestingScheduleType.ANNUAL) {
+      const years = Math.floor(vestingMonths / 12);
+      const yShares = Math.floor(g.shares / years);
+      let cum = 0,
+        alloc = 0;
+      for (let y = 1; y <= years; y++) {
+        const vd = new Date(vestingStartDate);
+        vd.setFullYear(vd.getFullYear() + y);
+        const s = y === years ? g.shares - alloc : yShares;
+        alloc += s;
+        cum += s;
+        events.push({
+          grantId,
+          vestDate: vd,
+          sharesVested: s,
+          cumulativeVested: cum,
+          status: VestingEventStatus.SCHEDULED,
+        });
+      }
+    }
+
+    // Delete existing events for this grant and recreate
+    await prisma.vestingEvent.deleteMany({ where: { grantId } });
+    if (events.length > 0) {
+      await prisma.vestingEvent.createMany({ data: events });
+    }
+  }
+
+  // Update plan shares issued/available
+  await prisma.equityPlan.update({
+    where: { id: rsuPlan.id },
+    data: {
+      sharesIssued: totalSharesIssued_rsu,
+      sharesAvailable: rsuPlan.totalSharesAuthorized - totalSharesIssued_rsu,
+    },
+  });
+  await prisma.equityPlan.update({
+    where: { id: isoPlan.id },
+    data: {
+      sharesIssued: totalSharesIssued_iso,
+      sharesAvailable: isoPlan.totalSharesAuthorized - totalSharesIssued_iso,
+    },
+  });
+  console.log(`  ✅ Equity Grants: ${equityGrantData.length} created with vesting events`);
 
   console.log('🎉 Seed complete!');
 }
