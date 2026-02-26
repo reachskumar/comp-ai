@@ -42,13 +42,10 @@ export function encrypt(plaintext: string, key: Buffer): string {
  * Throws if the key is wrong or the data has been tampered with.
  */
 export function decrypt(ciphertext: string, key: Buffer): string {
-  const parts = ciphertext.split(':');
-  if (parts.length !== 3) {
+  const [ivB64, tagB64, dataB64] = ciphertext.split(':');
+  if (!ivB64 || !tagB64 || !dataB64) {
     throw new Error('Invalid encrypted format: expected iv:tag:data');
   }
-  const ivB64 = parts[0]!;
-  const tagB64 = parts[1]!;
-  const dataB64 = parts[2]!;
   const iv = Buffer.from(ivB64, 'base64');
   const tag = Buffer.from(tagB64, 'base64');
   const data = Buffer.from(dataB64, 'base64');

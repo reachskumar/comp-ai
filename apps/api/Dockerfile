@@ -65,7 +65,8 @@ COPY --from=builder /app/apps/web/package.json ./apps/web/package.json
 COPY --from=builder /app/packages/database/prisma/ ./packages/database/prisma/
 COPY --from=builder /app/packages/database/prisma.config.ts ./packages/database/prisma.config.ts
 
-RUN pnpm install --frozen-lockfile --prod
+RUN pnpm install --frozen-lockfile --prod --ignore-scripts && \
+    cd packages/database && pnpm exec prisma generate
 
 # Copy built artifacts
 COPY --from=builder /app/apps/api/dist/ ./apps/api/dist/
