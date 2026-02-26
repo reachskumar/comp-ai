@@ -16,6 +16,7 @@
     "@compensation/database": "workspace:*",
     "@compensation/shared": "workspace:*",
     "@fastify/compress": "^8.3.1",
+    "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^9.0.1",
     "@fastify/helmet": "^11.1.1",
     "@fastify/multipart": "^8.3.1",
