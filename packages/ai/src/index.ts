@@ -5,12 +5,7 @@
  */
 
 // Configuration
-export {
-  loadAIConfig,
-  resolveModelConfig,
-  type AIConfig,
-  type ModelConfig,
-} from './config.js';
+export { loadAIConfig, resolveModelConfig, type AIConfig, type ModelConfig } from './config.js';
 
 // Base state schema
 export {
@@ -47,10 +42,7 @@ export {
 } from './streaming.js';
 
 // Copilot tools
-export {
-  createCopilotTools,
-  type CopilotDbAdapter,
-} from './tools/index.js';
+export { createCopilotTools, type CopilotDbAdapter } from './tools/index.js';
 
 // Graphs
 export {
@@ -67,12 +59,8 @@ export {
   type CopilotGraphOutput,
 } from './graphs/copilot-graph.js';
 
-
 // Compliance tools
-export {
-  createComplianceTools,
-  type ComplianceDbAdapter,
-} from './tools/compliance-tools.js';
+export { createComplianceTools, type ComplianceDbAdapter } from './tools/compliance-tools.js';
 
 // Compliance scanner graph
 export {
@@ -115,13 +103,8 @@ export {
   type ReportBuilderGraphOutput,
 } from './graphs/report-builder-graph.js';
 
-
-
 // Data Quality tools
-export {
-  createDataQualityTools,
-  type DataQualityDbAdapter,
-} from './tools/data-quality-tools.js';
+export { createDataQualityTools, type DataQualityDbAdapter } from './tools/data-quality-tools.js';
 
 // Data Quality graph
 export {
@@ -135,12 +118,8 @@ export {
   type DataQualityBulkFix,
 } from './graphs/data-quality-graph.js';
 
-
 // Simulation tools
-export {
-  createSimulationTools,
-  type SimulationDbAdapter,
-} from './tools/simulation-tools.js';
+export { createSimulationTools, type SimulationDbAdapter } from './tools/simulation-tools.js';
 
 // Simulation graph
 export {
@@ -161,7 +140,6 @@ export {
   type LetterCompData,
 } from './graphs/letter-generator-graph.js';
 
-
 // Pay Equity graph
 export {
   buildPayEquityGraph,
@@ -169,3 +147,29 @@ export {
   type PayEquityAnalysisInput,
   type PayEquityAnalysisOutput,
 } from './graphs/pay-equity-graph.js';
+
+// Attrition Predictor tools
+export { createAttritionTools, type AttritionDbAdapter } from './tools/attrition-tools.js';
+
+// Attrition Predictor graph
+export {
+  buildAttritionPredictorGraph,
+  invokeAttritionPredictor,
+  type AttritionPredictorInput,
+  type AttritionPredictorOutput,
+} from './graphs/attrition-predictor-graph.js';
+
+// Policy RAG tools
+export {
+  createPolicyRagTools,
+  type PolicyRagDbAdapter,
+  type EmbedFunction,
+} from './tools/policy-rag-tools.js';
+
+// Policy RAG graph
+export {
+  buildPolicyRagGraph,
+  invokePolicyRagGraph,
+  type PolicyRagGraphInput,
+  type PolicyRagGraphOutput,
+} from './graphs/policy-rag-graph.js';

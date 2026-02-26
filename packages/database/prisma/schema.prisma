@@ -233,7 +233,11 @@ model Tenant {
   tenantCurrency      TenantCurrency?
   equityPlans         EquityPlan[]
   equityGrants        EquityGrant[]
+  attritionRiskScores AttritionRiskScore[]
+  attritionAnalysisRuns AttritionAnalysisRun[]
   rewardsStatements   RewardsStatement[]
+  policyDocuments     PolicyDocument[]
+  policyChunks        PolicyChunk[]
 
   @@map("tenants")
 }
@@ -309,6 +313,7 @@ model Employee {
   adHocIncreases        AdHocIncrease[]
   rewardsStatements     RewardsStatement[]
   equityGrants          EquityGrant[]
+  attritionRiskScores   AttritionRiskScore[]
 
   @@unique([tenantId, employeeCode])
   @@unique([tenantId, email])
@@ -1564,4 +1569,117 @@ model VestingEvent {
   @@index([grantId, status])
   @@index([grantId, vestDate])
   @@map("vesting_events")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Attrition Risk (Predictive Retention)
+// ─────────────────────────────────────────────────────────────
+
+enum AttritionRiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum AttritionRunStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+model AttritionRiskScore {
+  id              String             @id @default(cuid())
+  tenantId        String
+  employeeId      String
+  riskScore       Int                @default(0)
+  riskLevel       AttritionRiskLevel @default(LOW)
+  factors         Json               @default("{}")
+  recommendation  String?            @db.Text
+  calculatedAt    DateTime           @default(now())
+  expiresAt       DateTime?
+
+  tenant          Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  employee        Employee           @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([tenantId, employeeId])
+  @@index([tenantId, riskLevel])
+  @@index([tenantId, riskScore])
+  @@map("attrition_risk_scores")
+}
+
+model AttritionAnalysisRun {
+  id              String             @id @default(cuid())
+  tenantId        String
+  triggeredBy     String
+  status          AttritionRunStatus @default(PENDING)
+  totalEmployees  Int                @default(0)
+  highRiskCount   Int                @default(0)
+  criticalCount   Int                @default(0)
+  avgRiskScore    Decimal            @default(0) @db.Decimal(5, 2)
+  completedAt     DateTime?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  tenant          Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([tenantId, createdAt])
+  @@map("attrition_analysis_runs")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Policy RAG (AI Agent #11)
+// ─────────────────────────────────────────────────────────────
+
+enum PolicyDocumentStatus {
+  UPLOADING
+  PROCESSING
+  READY
+  FAILED
+}
+
+model PolicyDocument {
+  id            String                @id @default(cuid())
+  tenantId      String
+  title         String
+  fileName      String
+  filePath      String
+  fileSize      Int
+  mimeType      String
+  status        PolicyDocumentStatus  @default(UPLOADING)
+  chunkCount    Int                   @default(0)
+  uploadedBy    String
+  errorMessage  String?
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+
+  tenant        Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  chunks        PolicyChunk[]
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@map("policy_documents")
+}
+
+model PolicyChunk {
+  id            String          @id @default(cuid())
+  documentId    String
+  tenantId      String
+  chunkIndex    Int
+  content       String
+  embedding     Json            @default("[]")
+  metadata      Json            @default("{}")
+  createdAt     DateTime        @default(now())
+
+  document      PolicyDocument  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  tenant        Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([documentId])
+  @@index([tenantId, documentId])
+  @@map("policy_chunks")
 }
