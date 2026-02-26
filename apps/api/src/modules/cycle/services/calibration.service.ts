@@ -62,9 +62,7 @@ export class CalibrationService {
     });
 
     if (recommendations.length === 0) {
-      throw new BadRequestException(
-        'No recommendations found matching the criteria',
-      );
+      throw new BadRequestException('No recommendations found matching the criteria');
     }
 
     // Build participants JSON
@@ -114,11 +112,7 @@ export class CalibrationService {
   /**
    * List calibration sessions for a cycle.
    */
-  async listSessions(
-    tenantId: string,
-    cycleId: string,
-    query: CalibrationQueryDto,
-  ) {
+  async listSessions(tenantId: string, cycleId: string, query: CalibrationQueryDto) {
     await this.findCycleOrThrow(tenantId, cycleId);
 
     const page = query.page ?? 1;
@@ -149,19 +143,13 @@ export class CalibrationService {
     return this.findSessionOrThrow(cycleId, sessionId);
   }
 
-
   // ─── Lock / Unlock Recommendations ─────────────────────────────────────
 
   /**
    * Lock recommendations during calibration to prevent edits.
    * Sets recommendation status to ESCALATED to indicate they are locked.
    */
-  async lockRecommendations(
-    tenantId: string,
-    cycleId: string,
-    sessionId: string,
-    userId: string,
-  ) {
+  async lockRecommendations(tenantId: string, cycleId: string, sessionId: string, userId: string) {
     await this.findCycleOrThrow(tenantId, cycleId);
     const session = await this.findSessionOrThrow(cycleId, sessionId);
 
@@ -299,7 +287,7 @@ export class CalibrationService {
       const existingOutcomes = (session.outcomes ?? {}) as Record<string, unknown>;
       updateData['outcomes'] = {
         ...existingOutcomes,
-        ...(updateData['outcomes'] as Record<string, unknown> ?? {}),
+        ...((updateData['outcomes'] as Record<string, unknown>) ?? {}),
         _metadata: dto.metadata,
       } as never;
     }
@@ -325,6 +313,264 @@ export class CalibrationService {
 
     this.logger.log(`Updated calibration session ${sessionId}`);
     return updated;
+  }
+
+  // ─── AI Calibration Suggestions ─────────────────────────────────────────
+
+  /**
+   * Generate AI calibration suggestions for a session.
+   * Analyzes recommendations considering pay equity, retention risk,
+   * budget constraints, and performance-pay alignment.
+   */
+  async aiSuggest(tenantId: string, cycleId: string, sessionId: string, userId: string) {
+    await this.findCycleOrThrow(tenantId, cycleId);
+    const session = await this.findSessionOrThrow(cycleId, sessionId);
+
+    const participants = session.participants as Array<{
+      recommendationId: string;
+      employeeId: string;
+      currentValue: number;
+      proposedValue: number;
+    }>;
+
+    if (participants.length === 0) {
+      return { suggestions: [], response: 'No participants in this session.' };
+    }
+
+    const employeeIds = participants.map((p) => p.employeeId);
+    const recIds = participants.map((p) => p.recommendationId);
+
+    // Build the DB adapter for the AI graph
+    const dbAdapter = this.buildCalibrationDbAdapter(tenantId);
+
+    const { invokeCalibrationAssistant } = await import('@compensation/ai');
+
+    const result = await invokeCalibrationAssistant(
+      { tenantId, userId, cycleId, sessionId },
+      dbAdapter,
+    );
+
+    // Audit log
+    await this.db.client.auditLog.create({
+      data: {
+        tenantId,
+        userId,
+        action: 'CALIBRATION_AI_SUGGEST',
+        entityType: 'CalibrationSession',
+        entityId: sessionId,
+        changes: {
+          suggestionsCount: result.suggestions.length,
+          participantCount: participants.length,
+        } as never,
+      },
+    });
+
+    this.logger.log(
+      `AI generated ${result.suggestions.length} suggestions for session ${sessionId}`,
+    );
+
+    return result;
+  }
+
+  /**
+   * Apply selected AI suggestions to recommendations.
+   * Updates the proposedValue on each recommendation.
+   */
+  async applyAiSuggestions(
+    tenantId: string,
+    cycleId: string,
+    sessionId: string,
+    userId: string,
+    suggestions: Array<{ recommendationId: string; suggestedValue: number }>,
+  ) {
+    await this.findCycleOrThrow(tenantId, cycleId);
+    await this.findSessionOrThrow(cycleId, sessionId);
+
+    if (suggestions.length === 0) {
+      throw new BadRequestException('No suggestions provided to apply');
+    }
+
+    let applied = 0;
+    await this.db.client.$transaction(async (tx) => {
+      for (const suggestion of suggestions) {
+        await tx.compRecommendation.update({
+          where: { id: suggestion.recommendationId },
+          data: { proposedValue: suggestion.suggestedValue },
+        });
+        applied++;
+      }
+    });
+
+    // Audit log
+    await this.db.client.auditLog.create({
+      data: {
+        tenantId,
+        userId,
+        action: 'CALIBRATION_AI_SUGGESTIONS_APPLIED',
+        entityType: 'CalibrationSession',
+        entityId: sessionId,
+        changes: {
+          appliedCount: applied,
+          suggestions: suggestions.map((s) => ({
+            recommendationId: s.recommendationId,
+            suggestedValue: s.suggestedValue,
+          })),
+        } as never,
+      },
+    });
+
+    this.logger.log(`Applied ${applied} AI suggestions for session ${sessionId}`);
+
+    return { applied };
+  }
+
+  /**
+   * Build the CalibrationDbAdapter for the AI graph.
+   */
+  private buildCalibrationDbAdapter(tenantId: string) {
+    const db = this.db;
+
+    return {
+      async getSessionRecommendations(
+        _tenantId: string,
+        filters: { cycleId: string; sessionId: string },
+      ) {
+        const session = await db.client.calibrationSession.findFirst({
+          where: { id: filters.sessionId, cycleId: filters.cycleId },
+        });
+        if (!session) return [];
+
+        const participants = session.participants as Array<{ recommendationId: string }>;
+        const recIds = participants.map((p) => p.recommendationId);
+
+        return db.client.compRecommendation.findMany({
+          where: { id: { in: recIds } },
+          include: {
+            employee: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                department: true,
+                level: true,
+                baseSalary: true,
+                compaRatio: true,
+                performanceRating: true,
+                hireDate: true,
+                location: true,
+                jobFamily: true,
+              },
+            },
+          },
+        });
+      },
+
+      async getEmployeeDetails(_tenantId: string, filters: { employeeIds: string[] }) {
+        return db.client.employee.findMany({
+          where: { id: { in: filters.employeeIds }, tenantId },
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            department: true,
+            level: true,
+            baseSalary: true,
+            compaRatio: true,
+            performanceRating: true,
+            hireDate: true,
+            location: true,
+            jobFamily: true,
+            salaryBandId: true,
+          },
+        });
+      },
+
+      async getAttritionRiskScores(_tenantId: string, filters: { employeeIds: string[] }) {
+        return db.client.attritionRiskScore.findMany({
+          where: { tenantId, employeeId: { in: filters.employeeIds } },
+          select: {
+            employeeId: true,
+            riskScore: true,
+            riskLevel: true,
+            factors: true,
+            recommendation: true,
+          },
+        });
+      },
+
+      async getCycleBudget(_tenantId: string, filters: { cycleId: string; department?: string }) {
+        const cycle = await db.client.compCycle.findFirst({
+          where: { id: filters.cycleId, tenantId },
+          select: { budgetTotal: true, currency: true },
+        });
+
+        const budgetWhere: Record<string, unknown> = { cycleId: filters.cycleId };
+        if (filters.department) {
+          budgetWhere['employee'] = { department: filters.department };
+        }
+
+        const totalSpend = await db.client.compRecommendation.aggregate({
+          where: budgetWhere,
+          _sum: { proposedValue: true },
+        });
+
+        return {
+          budgetTotal: cycle ? Number(cycle.budgetTotal) : 0,
+          currency: cycle?.currency ?? 'USD',
+          totalProposed: Number(totalSpend._sum.proposedValue ?? 0),
+          remaining: cycle
+            ? Number(cycle.budgetTotal) - Number(totalSpend._sum.proposedValue ?? 0)
+            : 0,
+        };
+      },
+
+      async getDepartmentStats(
+        _tenantId: string,
+        filters: { department: string; cycleId: string },
+      ) {
+        const employees = await db.client.employee.findMany({
+          where: { tenantId, department: filters.department, terminationDate: null },
+          select: {
+            id: true,
+            baseSalary: true,
+            level: true,
+            compaRatio: true,
+            performanceRating: true,
+          },
+        });
+
+        const recs = await db.client.compRecommendation.findMany({
+          where: { cycleId: filters.cycleId, employee: { department: filters.department } },
+          select: { currentValue: true, proposedValue: true },
+        });
+
+        const salaries = employees.map((e) => Number(e.baseSalary));
+        const avgSalary =
+          salaries.length > 0 ? salaries.reduce((a, b) => a + b, 0) / salaries.length : 0;
+        const increases = recs.map((r) => {
+          const current = Number(r.currentValue);
+          return current > 0 ? ((Number(r.proposedValue) - current) / current) * 100 : 0;
+        });
+        const medianIncrease =
+          increases.length > 0
+            ? increases.sort((a, b) => a - b)[Math.floor(increases.length / 2)]
+            : 0;
+
+        const levelCounts: Record<string, number> = {};
+        for (const emp of employees) {
+          levelCounts[emp.level] = (levelCounts[emp.level] ?? 0) + 1;
+        }
+
+        return {
+          department: filters.department,
+          headcount: employees.length,
+          avgSalary,
+          medianIncrease,
+          levelBreakdown: levelCounts,
+          recommendationCount: recs.length,
+        };
+      },
+    };
   }
 
   // ─── Private Helpers ───────────────────────────────────────────────────

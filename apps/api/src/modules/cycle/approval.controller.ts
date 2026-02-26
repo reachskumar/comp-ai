@@ -16,11 +16,7 @@ import { JwtAuthGuard } from '../../auth';
 import { TenantGuard } from '../../common';
 import { ApprovalService } from './services/approval.service';
 import { CalibrationService } from './services/calibration.service';
-import {
-  BulkApprovalDto,
-  NudgeDto,
-  PendingApprovalQueryDto,
-} from './dto';
+import { BulkApprovalDto, NudgeDto, PendingApprovalQueryDto } from './dto';
 import {
   CreateCalibrationSessionDto,
   UpdateCalibrationSessionDto,
@@ -66,26 +62,14 @@ export class ApprovalController {
     @Body() dto: BulkApprovalDto,
     @Request() req: AuthRequest,
   ) {
-    return this.approvalService.bulkApproveReject(
-      req.user.tenantId,
-      cycleId,
-      req.user.userId,
-      dto,
-    );
+    return this.approvalService.bulkApproveReject(req.user.tenantId, cycleId, req.user.userId, dto);
   }
 
   @Post(':id/approvals/escalate')
   @ApiOperation({ summary: 'Schedule escalation for pending approvals' })
   @HttpCode(HttpStatus.OK)
-  async scheduleEscalation(
-    @Param('id') cycleId: string,
-    @Request() req: AuthRequest,
-  ) {
-    return this.approvalService.scheduleEscalation(
-      req.user.tenantId,
-      cycleId,
-      req.user.userId,
-    );
+  async scheduleEscalation(@Param('id') cycleId: string, @Request() req: AuthRequest) {
+    return this.approvalService.scheduleEscalation(req.user.tenantId, cycleId, req.user.userId);
   }
 
   @Post(':id/nudge')
@@ -96,12 +80,7 @@ export class ApprovalController {
     @Body() dto: NudgeDto,
     @Request() req: AuthRequest,
   ) {
-    return this.approvalService.sendNudge(
-      req.user.tenantId,
-      cycleId,
-      req.user.userId,
-      dto,
-    );
+    return this.approvalService.sendNudge(req.user.tenantId, cycleId, req.user.userId, dto);
   }
 
   @Get(':id/approvals/chain')
@@ -121,12 +100,7 @@ export class ApprovalController {
     @Body() dto: CreateCalibrationSessionDto,
     @Request() req: AuthRequest,
   ) {
-    return this.calibrationService.createSession(
-      req.user.tenantId,
-      cycleId,
-      req.user.userId,
-      dto,
-    );
+    return this.calibrationService.createSession(req.user.tenantId, cycleId, req.user.userId, dto);
   }
 
   @Get(':id/calibration')
@@ -136,13 +110,8 @@ export class ApprovalController {
     @Query() query: CalibrationQueryDto,
     @Request() req: AuthRequest,
   ) {
-    return this.calibrationService.listSessions(
-      req.user.tenantId,
-      cycleId,
-      query,
-    );
+    return this.calibrationService.listSessions(req.user.tenantId, cycleId, query);
   }
-
 
   @Get(':id/calibration/:sessionId')
   @ApiOperation({ summary: 'Get calibration session details' })
@@ -151,11 +120,7 @@ export class ApprovalController {
     @Param('sessionId') sessionId: string,
     @Request() req: AuthRequest,
   ) {
-    return this.calibrationService.getSession(
-      req.user.tenantId,
-      cycleId,
-      sessionId,
-    );
+    return this.calibrationService.getSession(req.user.tenantId, cycleId, sessionId);
   }
 
   @Patch(':id/calibration/:sessionId')
@@ -204,6 +169,42 @@ export class ApprovalController {
       cycleId,
       sessionId,
       req.user.userId,
+    );
+  }
+
+  // ─── AI Calibration Endpoints ───────────────────────────────────────────
+
+  @Post(':id/calibration/:sessionId/ai-suggest')
+  @ApiOperation({ summary: 'Generate AI calibration suggestions for a session' })
+  @HttpCode(HttpStatus.OK)
+  async aiSuggest(
+    @Param('id') cycleId: string,
+    @Param('sessionId') sessionId: string,
+    @Request() req: AuthRequest,
+  ) {
+    return this.calibrationService.aiSuggest(
+      req.user.tenantId,
+      cycleId,
+      sessionId,
+      req.user.userId,
+    );
+  }
+
+  @Post(':id/calibration/:sessionId/ai-suggest/apply')
+  @ApiOperation({ summary: 'Apply selected AI calibration suggestions' })
+  @HttpCode(HttpStatus.OK)
+  async applyAiSuggestions(
+    @Param('id') cycleId: string,
+    @Param('sessionId') sessionId: string,
+    @Body() body: { suggestions: Array<{ recommendationId: string; suggestedValue: number }> },
+    @Request() req: AuthRequest,
+  ) {
+    return this.calibrationService.applyAiSuggestions(
+      req.user.tenantId,
+      cycleId,
+      sessionId,
+      req.user.userId,
+      body.suggestions,
     );
   }
 }

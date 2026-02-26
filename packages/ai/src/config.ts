@@ -33,6 +33,8 @@ const GRAPH_MODEL_DEFAULTS: Record<string, Partial<ModelConfig>> = {
   'report-builder': { temperature: 0.1, maxTokens: 4096 },
   'pay-equity': { temperature: 0.1, maxTokens: 4096 },
   'attrition-predictor': { temperature: 0.2, maxTokens: 2048 },
+  'calibration-assistant': { temperature: 0.1, maxTokens: 4096 },
+  'budget-optimizer': { temperature: 0.1, maxTokens: 4096 },
 };
 
 /**

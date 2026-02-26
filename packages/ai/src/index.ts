@@ -173,3 +173,29 @@ export {
   type PolicyRagGraphInput,
   type PolicyRagGraphOutput,
 } from './graphs/policy-rag-graph.js';
+
+// Calibration Assistant tools
+export { createCalibrationTools, type CalibrationDbAdapter } from './tools/calibration-tools.js';
+
+// Calibration Assistant graph
+export {
+  buildCalibrationAssistantGraph,
+  invokeCalibrationAssistant,
+  type CalibrationAssistantInput,
+  type CalibrationAssistantOutput,
+  type CalibrationSuggestion,
+} from './graphs/calibration-assistant-graph.js';
+
+// Budget Optimizer tools
+export {
+  createBudgetOptimizerTools,
+  type BudgetOptimizerDbAdapter,
+} from './tools/budget-optimizer-tools.js';
+
+// Budget Optimizer graph
+export {
+  buildBudgetOptimizerGraph,
+  invokeBudgetOptimizer,
+  type BudgetOptimizerInput,
+  type BudgetOptimizerOutput,
+} from './graphs/budget-optimizer-graph.js';

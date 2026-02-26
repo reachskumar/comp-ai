@@ -13,3 +13,10 @@ export {
   type PolicyRagDbAdapter,
   type EmbedFunction,
 } from './policy-rag-tools.js';
+
+export {
+  createBudgetOptimizerTools,
+  type BudgetOptimizerDbAdapter,
+} from './budget-optimizer-tools.js';
+
+export { createCalibrationTools, type CalibrationDbAdapter } from './calibration-tools.js';
