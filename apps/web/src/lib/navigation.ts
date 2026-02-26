@@ -87,6 +87,7 @@ export const navGroups: NavGroup[] = [
       { title: 'Compliance', href: '/dashboard/compliance', icon: ShieldCheck },
       { title: 'Policy AI', href: '/dashboard/ai-policies', icon: BookOpen },
       { title: 'Retention Risk', href: '/dashboard/attrition', icon: UserX },
+      { title: 'AI Calibration', href: '/dashboard/comp-cycles/calibration', icon: GitCompare },
     ],
   },
   // ── Core Modules ─────────────────────────────────────────
