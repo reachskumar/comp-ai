@@ -1,4 +1,7 @@
-const API_BASE_URL = process.env["NEXT_PUBLIC_API_URL"] || "http://localhost:4000";
+const API_BASE_URL = process.env['NEXT_PUBLIC_API_URL'] || 'http://localhost:4000';
+
+/** HTTP methods that mutate state and require CSRF protection. */
+const MUTATION_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 interface ApiError {
   message: string;
@@ -6,24 +9,55 @@ interface ApiError {
 }
 
 class ApiClient {
+  private csrfToken: string | null = null;
+
   private getToken(): string | null {
-    if (typeof window === "undefined") return null;
-    return localStorage.getItem("accessToken");
+    if (typeof window === 'undefined') return null;
+    return localStorage.getItem('accessToken');
   }
 
   private getRefreshToken(): string | null {
-    if (typeof window === "undefined") return null;
-    return localStorage.getItem("refreshToken");
+    if (typeof window === 'undefined') return null;
+    return localStorage.getItem('refreshToken');
   }
 
   private setTokens(accessToken: string, refreshToken: string) {
-    localStorage.setItem("accessToken", accessToken);
-    localStorage.setItem("refreshToken", refreshToken);
+    localStorage.setItem('accessToken', accessToken);
+    localStorage.setItem('refreshToken', refreshToken);
   }
 
   clearTokens() {
-    localStorage.removeItem("accessToken");
-    localStorage.removeItem("refreshToken");
+    localStorage.removeItem('accessToken');
+    localStorage.removeItem('refreshToken');
+    this.csrfToken = null;
+  }
+
+  /** Fetch a CSRF token from the API (requires authentication). */
+  private async fetchCsrfToken(): Promise<string | null> {
+    const token = this.getToken();
+    if (!token) return null;
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/v1/csrf/token`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        credentials: 'include',
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      this.csrfToken = data.csrfToken;
+      return this.csrfToken;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Get a cached CSRF token, or fetch a new one. */
+  private async getCsrfToken(): Promise<string | null> {
+    if (this.csrfToken) return this.csrfToken;
+    return this.fetchCsrfToken();
   }
 
   private async refreshAccessToken(): Promise<boolean> {
@@ -32,8 +66,8 @@ class ApiClient {
 
     try {
       const res = await fetch(`${API_BASE_URL}/api/v1/auth/refresh`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ refreshToken }),
       });
       if (!res.ok) return false;
@@ -50,29 +84,46 @@ class ApiClient {
     const token = this.getToken();
 
     const headers: Record<string, string> = {
-      "Content-Type": "application/json",
+      'Content-Type': 'application/json',
       ...(options.headers as Record<string, string>),
     };
 
     if (token) {
-      headers["Authorization"] = `Bearer ${token}`;
+      headers['Authorization'] = `Bearer ${token}`;
     }
 
-    let res = await fetch(url, { ...options, headers });
+    // Include CSRF token on state-changing requests
+    const method = (options.method || 'GET').toUpperCase();
+    if (MUTATION_METHODS.has(method)) {
+      const csrf = await this.getCsrfToken();
+      if (csrf) {
+        headers['x-csrf-token'] = csrf;
+      }
+    }
+
+    let res = await fetch(url, { ...options, headers, credentials: 'include' });
 
     // If 401, try refreshing the token
     if (res.status === 401 && token) {
       const refreshed = await this.refreshAccessToken();
       if (refreshed) {
         const newToken = this.getToken();
-        headers["Authorization"] = `Bearer ${newToken}`;
-        res = await fetch(url, { ...options, headers });
+        headers['Authorization'] = `Bearer ${newToken}`;
+        // Refresh CSRF token after auth token refresh
+        if (MUTATION_METHODS.has(method)) {
+          this.csrfToken = null;
+          const csrf = await this.getCsrfToken();
+          if (csrf) {
+            headers['x-csrf-token'] = csrf;
+          }
+        }
+        res = await fetch(url, { ...options, headers, credentials: 'include' });
       } else {
         this.clearTokens();
-        if (typeof window !== "undefined") {
-          window.location.href = "/login";
+        if (typeof window !== 'undefined') {
+          window.location.href = '/login';
         }
-        throw new Error("Session expired. Please log in again.");
+        throw new Error('Session expired. Please log in again.');
       }
     }
 
@@ -90,8 +141,8 @@ class ApiClient {
       accessToken: string;
       refreshToken: string;
       user: { id: string; email: string; name: string; role: string };
-    }>("/api/v1/auth/login", {
-      method: "POST",
+    }>('/api/v1/auth/login', {
+      method: 'POST',
       body: JSON.stringify({ email, password }),
     });
   }
@@ -102,14 +153,16 @@ class ApiClient {
       refreshToken: string;
       user: { id: string; email: string; name: string; role: string };
       tenant: { id: string; name: string; slug: string };
-    }>("/api/v1/auth/register", {
-      method: "POST",
+    }>('/api/v1/auth/register', {
+      method: 'POST',
       body: JSON.stringify(data),
     });
   }
 
   async getMe() {
-    return this.fetch<{ userId: string; tenantId: string; email: string; role: string }>("/api/v1/auth/me");
+    return this.fetch<{ userId: string; tenantId: string; email: string; role: string }>(
+      '/api/v1/auth/me',
+    );
   }
 
   // Settings endpoints
@@ -122,7 +175,7 @@ class ApiClient {
       createdAt: string;
       updatedAt: string;
       _count: { users: number; employees: number };
-    }>("/api/v1/settings/tenant");
+    }>('/api/v1/settings/tenant');
   }
 
   async listUsers() {
@@ -137,7 +190,7 @@ class ApiClient {
         updatedAt: string;
       }>;
       total: number;
-    }>("/api/v1/settings/users");
+    }>('/api/v1/settings/users');
   }
 
   async listAuditLogs(params?: {
@@ -148,11 +201,11 @@ class ApiClient {
     entityType?: string;
   }) {
     const searchParams = new URLSearchParams();
-    if (params?.page) searchParams.set("page", String(params.page));
-    if (params?.limit) searchParams.set("limit", String(params.limit));
-    if (params?.action) searchParams.set("action", params.action);
-    if (params?.userId) searchParams.set("userId", params.userId);
-    if (params?.entityType) searchParams.set("entityType", params.entityType);
+    if (params?.page) searchParams.set('page', String(params.page));
+    if (params?.limit) searchParams.set('limit', String(params.limit));
+    if (params?.action) searchParams.set('action', params.action);
+    if (params?.userId) searchParams.set('userId', params.userId);
+    if (params?.entityType) searchParams.set('entityType', params.entityType);
     const qs = searchParams.toString();
     return this.fetch<{
       data: Array<{
@@ -171,9 +224,8 @@ class ApiClient {
       page: number;
       limit: number;
       totalPages: number;
-    }>(`/api/v1/settings/audit-logs${qs ? `?${qs}` : ""}`);
+    }>(`/api/v1/settings/audit-logs${qs ? `?${qs}` : ''}`);
   }
 }
 
 export const apiClient = new ApiClient();
-

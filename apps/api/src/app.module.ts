@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { CsrfGuard } from './common/guards/csrf.guard';
 import { LoggerModule } from 'nestjs-pino';
 import { randomUUID } from 'crypto';
 import { IncomingMessage } from 'http';
@@ -24,6 +25,7 @@ import { ComplianceModule } from './modules/compliance';
 import { ReportsModule } from './modules/reports';
 import { DashboardModule } from './modules/dashboard';
 import { SettingsModule } from './modules/settings';
+import { CsrfModule } from './csrf';
 
 const isProduction = process.env['NODE_ENV'] === 'production';
 
@@ -97,11 +99,16 @@ const isProduction = process.env['NODE_ENV'] === 'production';
     ReportsModule,
     DashboardModule,
     SettingsModule,
+    CsrfModule,
   ],
   providers: [
     {
       provide: APP_GUARD,
       useClass: ThrottlerGuard,
+    },
+    {
+      provide: APP_GUARD,
+      useClass: CsrfGuard,
     },
     ShutdownService,
   ],

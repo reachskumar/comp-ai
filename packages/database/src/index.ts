@@ -6,9 +6,18 @@
 import { PrismaClient } from './generated/prisma/client.js';
 import { PrismaPg } from '@prisma/adapter-pg';
 import pg from 'pg';
+import { createPiiEncryptionExtension, piiDeriveKey } from './encryption-middleware.js';
 
 export { PrismaClient } from './generated/prisma/client.js';
 export * from './generated/prisma/client.js';
+
+// Re-export PII encryption utilities for use by services
+export {
+  piiEncrypt,
+  piiDecrypt,
+  piiDeriveKey,
+  createPiiEncryptionExtension,
+} from './encryption-middleware.js';
 
 export interface PoolConfig {
   /** Minimum number of connections in the pool (default: 2) */
@@ -33,8 +42,11 @@ export interface PoolConfig {
 export function createPrismaClient(url?: string, poolConfig?: PoolConfig): PrismaClient {
   const min = poolConfig?.min ?? (parseInt(process.env['DB_POOL_MIN'] ?? '', 10) || 2);
   const max = poolConfig?.max ?? (parseInt(process.env['DB_POOL_MAX'] ?? '', 10) || 20);
-  const idleTimeoutMillis = poolConfig?.idleTimeoutMillis ?? (parseInt(process.env['DB_IDLE_TIMEOUT'] ?? '', 10) || 30000);
-  const connectionTimeoutMillis = poolConfig?.connectionTimeoutMillis ?? (parseInt(process.env['DB_CONNECT_TIMEOUT'] ?? '', 10) || 5000);
+  const idleTimeoutMillis =
+    poolConfig?.idleTimeoutMillis ?? (parseInt(process.env['DB_IDLE_TIMEOUT'] ?? '', 10) || 30000);
+  const connectionTimeoutMillis =
+    poolConfig?.connectionTimeoutMillis ??
+    (parseInt(process.env['DB_CONNECT_TIMEOUT'] ?? '', 10) || 5000);
   const sslEnabled = poolConfig?.ssl ?? process.env['DB_SSL'] === 'true';
 
   const poolOptions: pg.PoolConfig = {
@@ -56,9 +68,18 @@ export function createPrismaClient(url?: string, poolConfig?: PoolConfig): Prism
 
 const globalForPrisma = globalThis as unknown as { prisma: PrismaClient };
 
-export const prisma = globalForPrisma.prisma ?? createPrismaClient();
+function createDefaultClient(): PrismaClient {
+  const client = createPrismaClient();
+  const piiKey = process.env['PII_ENCRYPTION_KEY'];
+  if (piiKey) {
+    const encryptionKey = piiDeriveKey(piiKey);
+    return client.$extends(createPiiEncryptionExtension(encryptionKey)) as unknown as PrismaClient;
+  }
+  return client;
+}
+
+export const prisma = globalForPrisma.prisma ?? createDefaultClient();
 
 if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
 
 export default prisma;
-
