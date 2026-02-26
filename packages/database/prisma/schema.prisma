@@ -185,6 +185,12 @@ enum DependentRelationship {
   DOMESTIC_PARTNER
 }
 
+enum ExchangeRateSource {
+  MANUAL
+  ECB
+  OPENEXCHANGE
+}
+
 // ─────────────────────────────────────────────────────────────
 // Tenancy & Auth
 // ─────────────────────────────────────────────────────────────
@@ -215,6 +221,9 @@ model Tenant {
   meritMatrices       MeritMatrix[]
   salaryBands         SalaryBand[]
   marketDataSources   MarketDataSource[]
+  adHocIncreases      AdHocIncrease[]
+  exchangeRates       ExchangeRate[]
+  tenantCurrency      TenantCurrency?
 
   @@map("tenants")
 }
@@ -236,6 +245,8 @@ model User {
   approvedRecs        CompRecommendation[]
   auditLogs           AuditLog[]
   notifications       Notification[]
+  adHocRequested      AdHocIncrease[]    @relation("AdHocRequestedBy")
+  adHocApproved       AdHocIncrease[]    @relation("AdHocApprover")
 
   @@unique([tenantId, email])
   @@index([tenantId])
@@ -285,6 +296,7 @@ model Employee {
   lifeEvents            LifeEvent[]
   compensationLetters   CompensationLetter[]
   salaryBand            SalaryBand?   @relation(fields: [salaryBandId], references: [id], onDelete: SetNull)
+  adHocIncreases        AdHocIncrease[]
 
   @@unique([tenantId, employeeCode])
   @@unique([tenantId, email])
@@ -1309,4 +1321,94 @@ model MarketDataSource {
   @@index([tenantId])
   @@index([tenantId, provider])
   @@map("market_data_sources")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Ad Hoc / Off-Cycle Increases
+// ─────────────────────────────────────────────────────────────
+
+enum AdHocType {
+  SPOT_BONUS
+  RETENTION_BONUS
+  MARKET_ADJUSTMENT
+  PROMOTION
+  EQUITY_ADJUSTMENT
+  OTHER
+}
+
+enum AdHocStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  APPLIED
+}
+
+model AdHocIncrease {
+  id              String      @id @default(cuid())
+  tenantId        String
+  employeeId      String
+  requestedById   String
+  type            AdHocType
+  reason          String
+  currentValue    Decimal     @default(0) @db.Decimal(12, 2)
+  proposedValue   Decimal     @default(0) @db.Decimal(12, 2)
+  currency        String      @default("USD")
+  effectiveDate   DateTime
+  status          AdHocStatus @default(DRAFT)
+  approverUserId  String?
+  approvedAt      DateTime?
+  rejectionReason String?
+  appliedAt       DateTime?
+  metadata        Json        @default("{}")
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  employee    Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  requestedBy User      @relation("AdHocRequestedBy", fields: [requestedById], references: [id], onDelete: Cascade)
+  approver    User?     @relation("AdHocApprover", fields: [approverUserId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([employeeId])
+  @@index([requestedById])
+  @@map("ad_hoc_increases")
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// Multi-Currency
+// ─────────────────────────────────────────────────────────────
+
+model ExchangeRate {
+  id            String             @id @default(cuid())
+  tenantId      String
+  fromCurrency  String
+  toCurrency    String
+  rate          Decimal            @db.Decimal(10, 6)
+  effectiveDate DateTime           @default(now())
+  source        ExchangeRateSource @default(MANUAL)
+  createdAt     DateTime           @default(now())
+
+  tenant        Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([tenantId, fromCurrency, toCurrency])
+  @@map("exchange_rates")
+}
+
+model TenantCurrency {
+  id                  String   @id @default(cuid())
+  tenantId            String   @unique
+  baseCurrency        String   @default("USD")
+  supportedCurrencies String[] @default(["USD"])
+  displayFormat       Json     @default("{}")
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  tenant              Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("tenant_currencies")
 }
