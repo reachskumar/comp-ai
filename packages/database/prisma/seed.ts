@@ -3066,6 +3066,163 @@ async function main() {
     `  ✅ Notifications: ${additionalNotifications.length + 1} total (including welcome)`,
   );
 
+  // ─────────────────────────────────────────────────────────────
+  // Multi-Currency: Exchange Rates & Tenant Currency Settings
+  // ─────────────────────────────────────────────────────────────
+
+  const exchangeRates = [
+    { from: 'USD', to: 'EUR', rate: 0.9215 },
+    { from: 'USD', to: 'GBP', rate: 0.7892 },
+    { from: 'USD', to: 'INR', rate: 83.125 },
+    { from: 'USD', to: 'SGD', rate: 1.3428 },
+    { from: 'USD', to: 'AUD', rate: 1.5342 },
+    { from: 'USD', to: 'CAD', rate: 1.3586 },
+  ];
+
+  for (const er of exchangeRates) {
+    await prisma.exchangeRate.upsert({
+      where: { id: `seed-rate-${er.from}-${er.to}` },
+      update: { rate: er.rate },
+      create: {
+        id: `seed-rate-${er.from}-${er.to}`,
+        tenantId: tenant.id,
+        fromCurrency: er.from,
+        toCurrency: er.to,
+        rate: er.rate,
+        source: 'MANUAL',
+        effectiveDate: new Date('2026-02-01'),
+      },
+    });
+  }
+  console.log(`  ✅ Exchange rates: ${exchangeRates.length} created`);
+
+  await prisma.tenantCurrency.upsert({
+    where: { tenantId: tenant.id },
+    update: {},
+    create: {
+      tenantId: tenant.id,
+      baseCurrency: 'USD',
+      supportedCurrencies: ['USD', 'EUR', 'GBP', 'INR', 'SGD', 'AUD', 'CAD'],
+      displayFormat: {},
+    },
+  });
+  console.log('  ✅ Tenant currency settings created');
+
+  // ─────────────────────────────────────────────────────────────
+  // Ad Hoc / Off-Cycle Increases
+  // ─────────────────────────────────────────────────────────────
+  const adHocRequests = [
+    {
+      id: 'seed-adhoc-1',
+      empCode: 'ENG-003',
+      type: 'SPOT_BONUS' as const,
+      reason: 'Outstanding contribution to Q1 product launch — led critical migration effort.',
+      currentValue: 120000,
+      proposedValue: 125000,
+      effectiveDate: new Date('2026-03-01'),
+      status: 'DRAFT' as const,
+    },
+    {
+      id: 'seed-adhoc-2',
+      empCode: 'ENG-005',
+      type: 'RETENTION_BONUS' as const,
+      reason: 'Counter-offer retention — competing offer from major tech company.',
+      currentValue: 145000,
+      proposedValue: 165000,
+      effectiveDate: new Date('2026-03-15'),
+      status: 'DRAFT' as const,
+    },
+    {
+      id: 'seed-adhoc-3',
+      empCode: 'SAL-002',
+      type: 'MARKET_ADJUSTMENT' as const,
+      reason: 'Market data shows 12% below median for role and location.',
+      currentValue: 95000,
+      proposedValue: 106000,
+      effectiveDate: new Date('2026-04-01'),
+      status: 'PENDING_APPROVAL' as const,
+    },
+    {
+      id: 'seed-adhoc-4',
+      empCode: 'MKT-001',
+      type: 'PROMOTION' as const,
+      reason: 'Promotion from Marketing Manager to Senior Marketing Manager.',
+      currentValue: 110000,
+      proposedValue: 130000,
+      effectiveDate: new Date('2026-04-01'),
+      status: 'PENDING_APPROVAL' as const,
+    },
+    {
+      id: 'seed-adhoc-5',
+      empCode: 'FIN-002',
+      type: 'EQUITY_ADJUSTMENT' as const,
+      reason: 'Pay equity adjustment — internal analysis identified gap vs peers.',
+      currentValue: 88000,
+      proposedValue: 95000,
+      effectiveDate: new Date('2026-02-01'),
+      status: 'APPROVED' as const,
+    },
+    {
+      id: 'seed-adhoc-6',
+      empCode: 'ENG-001',
+      type: 'SPOT_BONUS' as const,
+      reason: 'Led successful architecture redesign reducing infrastructure costs by 30%.',
+      currentValue: 185000,
+      proposedValue: 195000,
+      effectiveDate: new Date('2026-02-15'),
+      status: 'APPROVED' as const,
+    },
+    {
+      id: 'seed-adhoc-7',
+      empCode: 'HR-001',
+      type: 'OTHER' as const,
+      reason: 'Role expansion — taking on additional compliance responsibilities.',
+      currentValue: 105000,
+      proposedValue: 115000,
+      effectiveDate: new Date('2026-01-15'),
+      status: 'REJECTED' as const,
+    },
+    {
+      id: 'seed-adhoc-8',
+      empCode: 'ENG-002',
+      type: 'MARKET_ADJUSTMENT' as const,
+      reason: 'Annual market adjustment based on updated salary survey data.',
+      currentValue: 155000,
+      proposedValue: 162000,
+      effectiveDate: new Date('2026-01-01'),
+      status: 'APPLIED' as const,
+    },
+  ];
+
+  for (const req of adHocRequests) {
+    const emp = createdEmployees.find((e) => e.code === req.empCode);
+    if (!emp) continue;
+    await prisma.adHocIncrease.upsert({
+      where: { id: req.id },
+      update: {},
+      create: {
+        id: req.id,
+        tenantId: tenant.id,
+        employeeId: emp.id,
+        requestedById: admin.id,
+        type: req.type,
+        reason: req.reason,
+        currentValue: req.currentValue,
+        proposedValue: req.proposedValue,
+        currency: 'USD',
+        effectiveDate: req.effectiveDate,
+        status: req.status,
+        approverUserId: ['APPROVED', 'REJECTED', 'APPLIED'].includes(req.status) ? admin.id : null,
+        approvedAt: ['APPROVED', 'APPLIED'].includes(req.status) ? new Date('2026-02-20') : null,
+        rejectionReason:
+          req.status === 'REJECTED' ? 'Budget constraints — defer to next cycle.' : null,
+        appliedAt: req.status === 'APPLIED' ? new Date('2026-02-25') : null,
+        metadata: {},
+      },
+    });
+  }
+  console.log(`  ✅ Ad Hoc Increases: ${adHocRequests.length} created`);
+
   console.log('🎉 Seed complete!');
 }
 

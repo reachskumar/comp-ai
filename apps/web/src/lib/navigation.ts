@@ -41,6 +41,7 @@ import {
   FileBarChart,
   FileText,
   Zap,
+  Coins,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -97,6 +98,7 @@ export const navGroups: NavGroup[] = [
       { title: 'Recommendations', href: '/dashboard/comp-cycles/recommendations', icon: BarChart3 },
       { title: 'Calibration', href: '/dashboard/comp-cycles/calibration', icon: GitCompare },
       { title: 'Merit Matrix', href: '/dashboard/comp-cycles/merit-matrix', icon: Grid3X3 },
+      { title: 'Ad Hoc Changes', href: '/dashboard/adhoc', icon: Zap },
     ],
   },
   {
@@ -151,5 +153,6 @@ export const settingsGroup: NavGroup = {
     { title: 'Tenant Settings', href: '/dashboard/settings/tenant', icon: Building2 },
     { title: 'Users & Roles', href: '/dashboard/settings/users', icon: Users },
     { title: 'Audit Log', href: '/dashboard/settings/audit-log', icon: ScrollText },
+    { title: 'Currency', href: '/dashboard/settings/currency', icon: Coins },
   ],
 };
