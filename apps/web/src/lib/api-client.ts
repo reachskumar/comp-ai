@@ -137,7 +137,7 @@ class ApiClient {
 
   // Auth endpoints
   async login(email: string, password: string) {
-    return this.fetch<{
+    const result = await this.fetch<{
       accessToken: string;
       refreshToken: string;
       user: { id: string; email: string; name: string; role: string };
@@ -145,10 +145,13 @@ class ApiClient {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     });
+    // Fetch CSRF token now that we're authenticated
+    await this.fetchCsrfToken();
+    return result;
   }
 
   async register(data: { email: string; password: string; name: string; tenantName: string }) {
-    return this.fetch<{
+    const result = await this.fetch<{
       accessToken: string;
       refreshToken: string;
       user: { id: string; email: string; name: string; role: string };
@@ -157,6 +160,9 @@ class ApiClient {
       method: 'POST',
       body: JSON.stringify(data),
     });
+    // Fetch CSRF token now that we're authenticated
+    await this.fetchCsrfToken();
+    return result;
   }
 
   async getMe() {

@@ -33,7 +33,7 @@ export class CsrfGuard implements CanActivate {
     }
 
     // Check excluded paths
-    const url = request.url.split('?')[0]; // strip query string
+    const url = (request.url ?? '').split('?')[0] ?? ''; // strip query string
     if (EXCLUDED_PATHS.some((p) => url === p || url.startsWith(p + '/'))) {
       return Promise.resolve(true);
     }
