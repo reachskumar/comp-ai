@@ -1170,7 +1170,7 @@ async function main() {
       id: 'seed-notification-1',
       tenantId: tenant.id,
       userId: admin.id,
-      type: 'system',
+      type: 'SYSTEM',
       title: 'Welcome to Compensation Platform',
       body: 'Your workspace is ready. Start by importing employee data or configuring compensation rules.',
       metadata: { category: 'onboarding' },
@@ -3004,57 +3004,112 @@ async function main() {
   console.log('  ✅ Calibration Sessions: 2 created');
 
   // ─────────────────────────────────────────────────────────────
-  // 17. Notifications (8 total including welcome)
+  // 17. Notifications (15 total including welcome)
   // ─────────────────────────────────────────────────────────────
   const additionalNotifications = [
     {
       id: 'seed-notification-2',
-      type: 'cycle',
+      type: 'CYCLE_UPDATE',
       title: 'Merit Cycle Started',
       body: 'The 2026 Annual Merit Review cycle is now active. Please submit recommendations by March 15.',
+      read: true,
       metadata: { category: 'comp-cycle', cycleId: meritCycle.id },
     },
     {
       id: 'seed-notification-3',
-      type: 'anomaly',
+      type: 'ANOMALY_DETECTED',
       title: 'Critical Payroll Anomaly',
       body: 'A negative net pay was detected in the February 2026 payroll run. Immediate review required.',
+      read: false,
       metadata: { category: 'payroll', anomalyId: 'seed-anomaly-2', severity: 'critical' },
     },
     {
       id: 'seed-notification-4',
-      type: 'rule',
+      type: 'SYSTEM',
       title: 'Rule Set Updated',
       body: 'Standard Merit Rules have been activated with 3 rules. Review the configuration.',
+      read: true,
       metadata: { category: 'rules-engine', ruleSetId: meritRuleSet.id },
     },
     {
       id: 'seed-notification-5',
-      type: 'compliance',
+      type: 'SYSTEM',
       title: 'Compliance Scan Complete',
       body: 'Your compliance scan scored 82/100. 3 warnings and 2 info findings require attention.',
+      read: false,
       metadata: { category: 'compliance', scanId: complianceScan.id },
     },
     {
       id: 'seed-notification-6',
-      type: 'benefits',
+      type: 'SYSTEM',
       title: 'Open Enrollment Reminder',
       body: '2026 Open Enrollment closes January 31. 8 employees have not yet made their elections.',
+      read: true,
       metadata: { category: 'benefits', windowId: 'seed-enrollment-window-2026' },
     },
     {
       id: 'seed-notification-7',
-      type: 'cycle',
+      type: 'CYCLE_UPDATE',
       title: 'Promotion Cycle Starting',
       body: 'The 2026 Promotion Review cycle will begin April 1. Budget allocations are being finalized.',
+      read: false,
       metadata: { category: 'comp-cycle', cycleId: 'seed-cycle-promo' },
     },
     {
       id: 'seed-notification-8',
-      type: 'report',
+      type: 'SYSTEM',
       title: 'Report Ready',
       body: 'Your Q1 2026 Compensation Summary report has been generated and is ready for review.',
+      read: true,
       metadata: { category: 'reports', reportId: 'seed-report-1' },
+    },
+    {
+      id: 'seed-notification-9',
+      type: 'APPROVAL_NEEDED',
+      title: 'Approval Required: Sarah Chen',
+      body: 'A compensation recommendation for Sarah Chen (Engineering) requires your approval. Proposed increase: 8.5%.',
+      read: false,
+      metadata: { category: 'approval', employeeName: 'Sarah Chen', department: 'Engineering' },
+    },
+    {
+      id: 'seed-notification-10',
+      type: 'APPROVAL_DECIDED',
+      title: 'Recommendation Approved',
+      body: 'Your compensation recommendation for James Wilson has been approved by the VP of Sales.',
+      read: false,
+      metadata: { category: 'approval', employeeName: 'James Wilson', decision: 'approved' },
+    },
+    {
+      id: 'seed-notification-11',
+      type: 'AD_HOC_REQUEST',
+      title: 'Ad Hoc Increase Request',
+      body: 'A new ad hoc salary increase request has been submitted for Maria Garcia (Marketing). Review required.',
+      read: false,
+      metadata: { category: 'adhoc', employeeName: 'Maria Garcia', department: 'Marketing' },
+    },
+    {
+      id: 'seed-notification-12',
+      type: 'RISK_ALERT',
+      title: 'Critical Attrition Risk',
+      body: 'Employee David Park (Senior Engineer) has been flagged as critical attrition risk. Immediate retention action recommended.',
+      read: false,
+      metadata: { category: 'attrition', employeeName: 'David Park', riskLevel: 'CRITICAL' },
+    },
+    {
+      id: 'seed-notification-13',
+      type: 'ANOMALY_DETECTED',
+      title: 'Payroll Variance Alert',
+      body: 'Unusual overtime spike detected in Operations department for March 2026. Variance exceeds 25% threshold.',
+      read: true,
+      metadata: { category: 'payroll', department: 'Operations', variance: '25%' },
+    },
+    {
+      id: 'seed-notification-14',
+      type: 'CYCLE_UPDATE',
+      title: 'Calibration Session Scheduled',
+      body: 'Engineering department calibration session has been scheduled for March 20, 2026. 12 recommendations to review.',
+      read: false,
+      metadata: { category: 'calibration', department: 'Engineering', recommendationCount: 12 },
     },
   ];
 
@@ -4028,6 +4083,434 @@ Additional Leave:
     });
   }
   console.log(`  ✅ Attrition Analysis Runs: ${attritionRuns.length} created`);
+
+  // ─────────────────────────────────────────────────────────────
+  // Job Architecture & Leveling
+  // ─────────────────────────────────────────────────────────────
+
+  const jobFamiliesData = [
+    {
+      id: 'jf-eng',
+      name: 'Engineering',
+      code: 'ENG',
+      description: 'Software engineering and technical roles',
+    },
+    {
+      id: 'jf-product',
+      name: 'Product',
+      code: 'PROD',
+      description: 'Product management and design roles',
+    },
+    {
+      id: 'jf-sales',
+      name: 'Sales',
+      code: 'SAL',
+      description: 'Sales and business development roles',
+    },
+    { id: 'jf-ops', name: 'Operations', code: 'OPS', description: 'Operations and support roles' },
+    { id: 'jf-hr', name: 'HR', code: 'HR', description: 'Human resources and people operations' },
+  ];
+
+  for (const jf of jobFamiliesData) {
+    await prisma.jobFamily.upsert({
+      where: { id: jf.id },
+      update: {},
+      create: {
+        id: jf.id,
+        tenantId: tenant.id,
+        name: jf.name,
+        code: jf.code,
+        description: jf.description,
+      },
+    });
+  }
+  console.log(`  ✅ Job Families: ${jobFamiliesData.length} created`);
+
+  // Job levels per family — 5-6 levels each
+  const jobLevelsData = [
+    // Engineering
+    {
+      id: 'jl-eng-1',
+      familyId: 'jf-eng',
+      name: 'Junior',
+      code: 'ENG-L1',
+      grade: 1,
+      min: 75000,
+      mid: 92000,
+      max: 110000,
+      competencies: ['Coding Fundamentals', 'Testing', 'Version Control'],
+    },
+    {
+      id: 'jl-eng-2',
+      familyId: 'jf-eng',
+      name: 'Mid',
+      code: 'ENG-L2',
+      grade: 2,
+      min: 110000,
+      mid: 138000,
+      max: 165000,
+      competencies: ['System Design Basics', 'Code Review', 'Debugging'],
+    },
+    {
+      id: 'jl-eng-3',
+      familyId: 'jf-eng',
+      name: 'Senior',
+      code: 'ENG-L3',
+      grade: 3,
+      min: 150000,
+      mid: 175000,
+      max: 200000,
+      competencies: ['System Design', 'Mentoring', 'Architecture'],
+    },
+    {
+      id: 'jl-eng-4',
+      familyId: 'jf-eng',
+      name: 'Staff',
+      code: 'ENG-L4',
+      grade: 4,
+      min: 190000,
+      mid: 220000,
+      max: 260000,
+      competencies: ['Technical Strategy', 'Cross-team Leadership', 'Innovation'],
+    },
+    {
+      id: 'jl-eng-5',
+      familyId: 'jf-eng',
+      name: 'Director',
+      code: 'ENG-L5',
+      grade: 5,
+      min: 200000,
+      mid: 240000,
+      max: 280000,
+      competencies: ['Org Design', 'Budget Management', 'Hiring'],
+    },
+    {
+      id: 'jl-eng-6',
+      familyId: 'jf-eng',
+      name: 'VP',
+      code: 'ENG-L6',
+      grade: 6,
+      min: 250000,
+      mid: 300000,
+      max: 380000,
+      competencies: ['Executive Leadership', 'Strategy', 'Board Communication'],
+    },
+    // Product
+    {
+      id: 'jl-prod-1',
+      familyId: 'jf-product',
+      name: 'Junior',
+      code: 'PROD-L1',
+      grade: 1,
+      min: 70000,
+      mid: 85000,
+      max: 100000,
+      competencies: ['User Research', 'Wireframing', 'Agile'],
+    },
+    {
+      id: 'jl-prod-2',
+      familyId: 'jf-product',
+      name: 'Mid',
+      code: 'PROD-L2',
+      grade: 2,
+      min: 100000,
+      mid: 125000,
+      max: 150000,
+      competencies: ['Roadmap Planning', 'Stakeholder Mgmt', 'Analytics'],
+    },
+    {
+      id: 'jl-prod-3',
+      familyId: 'jf-product',
+      name: 'Senior',
+      code: 'PROD-L3',
+      grade: 3,
+      min: 140000,
+      mid: 165000,
+      max: 190000,
+      competencies: ['Product Strategy', 'P&L Ownership', 'Team Leadership'],
+    },
+    {
+      id: 'jl-prod-4',
+      familyId: 'jf-product',
+      name: 'Director',
+      code: 'PROD-L4',
+      grade: 4,
+      min: 175000,
+      mid: 210000,
+      max: 250000,
+      competencies: ['Portfolio Management', 'Org Design', 'Executive Presence'],
+    },
+    {
+      id: 'jl-prod-5',
+      familyId: 'jf-product',
+      name: 'VP',
+      code: 'PROD-L5',
+      grade: 5,
+      min: 220000,
+      mid: 270000,
+      max: 340000,
+      competencies: ['Vision Setting', 'Board Reporting', 'M&A Evaluation'],
+    },
+    // Sales
+    {
+      id: 'jl-sal-1',
+      familyId: 'jf-sales',
+      name: 'Junior',
+      code: 'SAL-L1',
+      grade: 1,
+      min: 60000,
+      mid: 80000,
+      max: 100000,
+      competencies: ['Prospecting', 'CRM Usage', 'Cold Calling'],
+    },
+    {
+      id: 'jl-sal-2',
+      familyId: 'jf-sales',
+      name: 'Mid',
+      code: 'SAL-L2',
+      grade: 2,
+      min: 90000,
+      mid: 115000,
+      max: 140000,
+      competencies: ['Account Management', 'Negotiation', 'Pipeline Mgmt'],
+    },
+    {
+      id: 'jl-sal-3',
+      familyId: 'jf-sales',
+      name: 'Senior',
+      code: 'SAL-L3',
+      grade: 3,
+      min: 130000,
+      mid: 155000,
+      max: 180000,
+      competencies: ['Enterprise Sales', 'Strategic Accounts', 'Mentoring'],
+    },
+    {
+      id: 'jl-sal-4',
+      familyId: 'jf-sales',
+      name: 'Director',
+      code: 'SAL-L4',
+      grade: 4,
+      min: 160000,
+      mid: 195000,
+      max: 240000,
+      competencies: ['Territory Planning', 'Team Leadership', 'Revenue Forecasting'],
+    },
+    {
+      id: 'jl-sal-5',
+      familyId: 'jf-sales',
+      name: 'VP',
+      code: 'SAL-L5',
+      grade: 5,
+      min: 200000,
+      mid: 250000,
+      max: 320000,
+      competencies: ['Go-to-Market Strategy', 'Channel Partnerships', 'Board Reporting'],
+    },
+    // Operations
+    {
+      id: 'jl-ops-1',
+      familyId: 'jf-ops',
+      name: 'Junior',
+      code: 'OPS-L1',
+      grade: 1,
+      min: 55000,
+      mid: 70000,
+      max: 85000,
+      competencies: ['Process Documentation', 'Data Entry', 'Reporting'],
+    },
+    {
+      id: 'jl-ops-2',
+      familyId: 'jf-ops',
+      name: 'Mid',
+      code: 'OPS-L2',
+      grade: 2,
+      min: 80000,
+      mid: 100000,
+      max: 120000,
+      competencies: ['Process Improvement', 'Vendor Management', 'Analytics'],
+    },
+    {
+      id: 'jl-ops-3',
+      familyId: 'jf-ops',
+      name: 'Senior',
+      code: 'OPS-L3',
+      grade: 3,
+      min: 110000,
+      mid: 135000,
+      max: 160000,
+      competencies: ['Program Management', 'Cross-functional Leadership', 'Automation'],
+    },
+    {
+      id: 'jl-ops-4',
+      familyId: 'jf-ops',
+      name: 'Director',
+      code: 'OPS-L4',
+      grade: 4,
+      min: 145000,
+      mid: 175000,
+      max: 210000,
+      competencies: ['Operational Strategy', 'Budget Management', 'Org Design'],
+    },
+    {
+      id: 'jl-ops-5',
+      familyId: 'jf-ops',
+      name: 'VP',
+      code: 'OPS-L5',
+      grade: 5,
+      min: 185000,
+      mid: 225000,
+      max: 280000,
+      competencies: ['Enterprise Operations', 'Executive Leadership', 'Transformation'],
+    },
+    // HR
+    {
+      id: 'jl-hr-1',
+      familyId: 'jf-hr',
+      name: 'Junior',
+      code: 'HR-L1',
+      grade: 1,
+      min: 55000,
+      mid: 70000,
+      max: 85000,
+      competencies: ['Recruiting', 'Onboarding', 'HRIS'],
+    },
+    {
+      id: 'jl-hr-2',
+      familyId: 'jf-hr',
+      name: 'Mid',
+      code: 'HR-L2',
+      grade: 2,
+      min: 80000,
+      mid: 100000,
+      max: 120000,
+      competencies: ['Employee Relations', 'Benefits Admin', 'Compliance'],
+    },
+    {
+      id: 'jl-hr-3',
+      familyId: 'jf-hr',
+      name: 'Senior',
+      code: 'HR-L3',
+      grade: 3,
+      min: 110000,
+      mid: 138000,
+      max: 165000,
+      competencies: ['Talent Strategy', 'Compensation Design', 'L&D'],
+    },
+    {
+      id: 'jl-hr-4',
+      familyId: 'jf-hr',
+      name: 'Director',
+      code: 'HR-L4',
+      grade: 4,
+      min: 150000,
+      mid: 180000,
+      max: 215000,
+      competencies: ['People Strategy', 'Org Development', 'Executive Coaching'],
+    },
+    {
+      id: 'jl-hr-5',
+      familyId: 'jf-hr',
+      name: 'VP',
+      code: 'HR-L5',
+      grade: 5,
+      min: 190000,
+      mid: 230000,
+      max: 290000,
+      competencies: ['CHRO Functions', 'Board Reporting', 'Culture Transformation'],
+    },
+  ];
+
+  // Create levels with nextLevelId linking
+  for (const jl of jobLevelsData) {
+    // Find next level in same family
+    const sameFamilyLevels = jobLevelsData.filter((l) => l.familyId === jl.familyId);
+    const nextLevel = sameFamilyLevels.find((l) => l.grade === jl.grade + 1);
+
+    await prisma.jobLevel.upsert({
+      where: { id: jl.id },
+      update: {},
+      create: {
+        id: jl.id,
+        tenantId: tenant.id,
+        jobFamilyId: jl.familyId,
+        name: jl.name,
+        code: jl.code,
+        grade: jl.grade,
+        minSalary: jl.min,
+        midSalary: jl.mid,
+        maxSalary: jl.max,
+        currency: 'USD',
+        competencies: jl.competencies,
+        nextLevelId: nextLevel?.id ?? null,
+      },
+    });
+  }
+  console.log(`  ✅ Job Levels: ${jobLevelsData.length} created`);
+
+  // Career ladders
+  const careerLaddersData = [
+    {
+      id: 'cl-ic',
+      name: 'Individual Contributor Track',
+      description: 'Technical progression path for individual contributors across all families',
+      tracks: [
+        { trackName: 'Engineering IC', levels: ['ENG-L1', 'ENG-L2', 'ENG-L3', 'ENG-L4'] },
+        { trackName: 'Product IC', levels: ['PROD-L1', 'PROD-L2', 'PROD-L3'] },
+        { trackName: 'Sales IC', levels: ['SAL-L1', 'SAL-L2', 'SAL-L3'] },
+      ],
+    },
+    {
+      id: 'cl-mgmt',
+      name: 'Management Track',
+      description: 'Leadership progression path from Director to VP',
+      tracks: [
+        { trackName: 'Engineering Leadership', levels: ['ENG-L3', 'ENG-L5', 'ENG-L6'] },
+        { trackName: 'Product Leadership', levels: ['PROD-L3', 'PROD-L4', 'PROD-L5'] },
+        { trackName: 'Sales Leadership', levels: ['SAL-L3', 'SAL-L4', 'SAL-L5'] },
+        { trackName: 'HR Leadership', levels: ['HR-L3', 'HR-L4', 'HR-L5'] },
+        { trackName: 'Ops Leadership', levels: ['OPS-L3', 'OPS-L4', 'OPS-L5'] },
+      ],
+    },
+  ];
+
+  for (const cl of careerLaddersData) {
+    await prisma.careerLadder.upsert({
+      where: { id: cl.id },
+      update: {},
+      create: {
+        id: cl.id,
+        tenantId: tenant.id,
+        name: cl.name,
+        description: cl.description,
+        tracks: cl.tracks,
+      },
+    });
+  }
+  console.log(`  ✅ Career Ladders: ${careerLaddersData.length} created`);
+
+  // Assign employees to job levels by matching jobFamily + level name
+  const levelLookup = new Map<string, string>();
+  for (const jl of jobLevelsData) {
+    const family = jobFamiliesData.find((f) => f.id === jl.familyId);
+    if (family) {
+      levelLookup.set(`${family.name}-${jl.name}`, jl.id);
+    }
+  }
+
+  let jobLevelAssigned = 0;
+  for (const emp of createdEmployees) {
+    const key = `${emp.dept}-${emp.level}`;
+    const levelId = levelLookup.get(key);
+    if (levelId) {
+      await prisma.employee.update({
+        where: { id: emp.id },
+        data: { jobLevelId: levelId },
+      });
+      jobLevelAssigned++;
+    }
+  }
+  console.log(`  ✅ Job Level Assignments: ${jobLevelAssigned} employees assigned`);
 
   console.log('🎉 Seed complete!');
 }

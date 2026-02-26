@@ -45,6 +45,8 @@ import {
   Trophy,
   Briefcase,
   UserX,
+  Network,
+  Layers,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -129,6 +131,12 @@ export const navGroups: NavGroup[] = [
       { title: 'Leave Management', href: '/dashboard/benefits/leave', icon: CalendarDays },
       { title: 'Recognition & Rewards', href: '/dashboard/benefits/recognition', icon: Award },
     ],
+  },
+  // ── Organization ───────────────────────────────────────
+  {
+    title: 'Organization',
+    icon: Network,
+    items: [{ title: 'Job Architecture', href: '/dashboard/job-architecture', icon: Layers }],
   },
   // ── Equity ─────────────────────────────────────────────
   {

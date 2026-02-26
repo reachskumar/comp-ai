@@ -33,6 +33,9 @@ import { RewardsStatementModule } from './modules/rewards-statement';
 import { EquityModule } from './modules/equity';
 import { PolicyRagModule } from './modules/policy-rag';
 import { AttritionModule } from './modules/attrition';
+import { NotificationModule } from './modules/notifications';
+import { EmployeePortalModule } from './modules/employee-portal';
+import { JobArchitectureModule } from './modules/job-architecture';
 import { CsrfModule } from './csrf';
 
 const isProduction = process.env['NODE_ENV'] === 'production';
@@ -115,6 +118,9 @@ const isProduction = process.env['NODE_ENV'] === 'production';
     EquityModule,
     PolicyRagModule,
     AttritionModule,
+    NotificationModule,
+    EmployeePortalModule,
+    JobArchitectureModule,
     CsrfModule,
   ],
   providers: [
