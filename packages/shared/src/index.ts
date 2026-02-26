@@ -27,3 +27,6 @@ export * from './rules-engine/index.js';
 // Integration Hub Module
 export * from './integrations/index.js';
 
+// Encryption Module (AES-256-GCM for PII at rest)
+export { encrypt, decrypt, deriveKey } from './encryption/index.js';
+

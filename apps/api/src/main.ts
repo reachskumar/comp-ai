@@ -49,6 +49,11 @@ async function bootstrap() {
     secret: undefined, // unsigned cookies
   });
 
+  // CSRF protection (double-submit cookie pattern)
+  await app.register(import('@fastify/csrf-protection') as never, {
+    cookieOpts: { signed: false, httpOnly: true, sameSite: 'strict', path: '/' },
+  });
+
   // Enable multipart file uploads
   await app.register(import('@fastify/multipart') as never, {
     limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
