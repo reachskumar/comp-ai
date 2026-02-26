@@ -212,6 +212,9 @@ model Tenant {
   benefitEnrollments  BenefitEnrollment[]
   enrollmentWindows   EnrollmentWindow[]
   lifeEvents          LifeEvent[]
+  meritMatrices       MeritMatrix[]
+  salaryBands         SalaryBand[]
+  marketDataSources   MarketDataSource[]
 
   @@map("tenants")
 }
@@ -267,6 +270,12 @@ model Employee {
   manager         Employee? @relation("EmployeeManager", fields: [managerId], references: [id], onDelete: SetNull)
   directReports   Employee[] @relation("EmployeeManager")
 
+  performanceRating  Decimal?  @db.Decimal(3, 1)
+
+  jobFamily       String?
+  compaRatio      Decimal?  @db.Decimal(5, 4)
+  salaryBandId    String?
+
   recommendations    CompRecommendation[]
   cycleBudgets       CycleBudget[]
   payrollLineItems   PayrollLineItem[]
@@ -275,12 +284,14 @@ model Employee {
   benefitDependents  BenefitDependent[]
   lifeEvents            LifeEvent[]
   compensationLetters   CompensationLetter[]
+  salaryBand            SalaryBand?   @relation(fields: [salaryBandId], references: [id], onDelete: SetNull)
 
   @@unique([tenantId, employeeCode])
   @@unique([tenantId, email])
   @@index([tenantId])
   @@index([tenantId, department])
   @@index([managerId])
+  @@index([salaryBandId])
   @@map("employees")
 }
 
@@ -453,7 +464,10 @@ model CompCycle {
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 
+  meritMatrixId       String?
+
   tenant              Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  meritMatrix         MeritMatrix?         @relation(fields: [meritMatrixId], references: [id], onDelete: SetNull)
   budgets             CycleBudget[]
   recommendations     CompRecommendation[]
   calibrationSessions CalibrationSession[]
@@ -1213,4 +1227,86 @@ model SimulationScenario {
   @@index([tenantId, status])
   @@index([tenantId, createdAt])
   @@map("simulation_scenarios")
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// Merit Matrix — performance rating × compa-ratio → increase %
+// ─────────────────────────────────────────────────────────────
+
+model MeritMatrix {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  isDefault Boolean  @default(false)
+  matrix    Json     @default("[]")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  cycles    CompCycle[]
+
+  @@index([tenantId])
+  @@map("merit_matrices")
+}
+// ─────────────────────────────────────────────────────────────
+// Market Pricing & Salary Benchmarking
+// ─────────────────────────────────────────────────────────────
+
+enum MarketDataProvider {
+  MANUAL
+  SURVEY
+  API
+}
+
+enum MarketDataSourceStatus {
+  ACTIVE
+  INACTIVE
+  ERROR
+}
+
+model SalaryBand {
+  id            String    @id @default(cuid())
+  tenantId      String
+  jobFamily     String
+  level         String
+  location      String?
+  currency      String    @default("USD")
+  p10           Decimal   @db.Decimal(12, 2)
+  p25           Decimal   @db.Decimal(12, 2)
+  p50           Decimal   @db.Decimal(12, 2)
+  p75           Decimal   @db.Decimal(12, 2)
+  p90           Decimal   @db.Decimal(12, 2)
+  source        String?
+  effectiveDate DateTime  @default(now())
+  expiresAt     DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  tenant        Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  employees     Employee[]
+
+  @@index([tenantId])
+  @@index([tenantId, jobFamily])
+  @@index([tenantId, jobFamily, level])
+  @@index([tenantId, jobFamily, level, location])
+  @@map("salary_bands")
+}
+
+model MarketDataSource {
+  id          String                 @id @default(cuid())
+  tenantId    String
+  name        String
+  provider    MarketDataProvider     @default(MANUAL)
+  config      Json                   @default("{}")
+  lastSyncAt  DateTime?
+  status      MarketDataSourceStatus @default(ACTIVE)
+  createdAt   DateTime               @default(now())
+  updatedAt   DateTime               @updatedAt
+
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([tenantId, provider])
+  @@map("market_data_sources")
 }
