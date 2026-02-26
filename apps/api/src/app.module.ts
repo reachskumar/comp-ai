@@ -29,6 +29,10 @@ import { BenchmarkingModule } from './modules/benchmarking';
 import { MeritMatrixModule } from './modules/merit-matrix';
 import { AdHocModule } from './modules/adhoc';
 import { CurrencyModule } from './modules/currency';
+import { RewardsStatementModule } from './modules/rewards-statement';
+import { EquityModule } from './modules/equity';
+import { PolicyRagModule } from './modules/policy-rag';
+import { AttritionModule } from './modules/attrition';
 import { CsrfModule } from './csrf';
 
 const isProduction = process.env['NODE_ENV'] === 'production';
@@ -107,6 +111,10 @@ const isProduction = process.env['NODE_ENV'] === 'production';
     MeritMatrixModule,
     AdHocModule,
     CurrencyModule,
+    RewardsStatementModule,
+    EquityModule,
+    PolicyRagModule,
+    AttritionModule,
     CsrfModule,
   ],
   providers: [
