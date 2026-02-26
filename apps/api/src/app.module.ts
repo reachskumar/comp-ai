@@ -25,6 +25,8 @@ import { ComplianceModule } from './modules/compliance';
 import { ReportsModule } from './modules/reports';
 import { DashboardModule } from './modules/dashboard';
 import { SettingsModule } from './modules/settings';
+import { BenchmarkingModule } from './modules/benchmarking';
+import { MeritMatrixModule } from './modules/merit-matrix';
 import { CsrfModule } from './csrf';
 
 const isProduction = process.env['NODE_ENV'] === 'production';
@@ -99,6 +101,8 @@ const isProduction = process.env['NODE_ENV'] === 'production';
     ReportsModule,
     DashboardModule,
     SettingsModule,
+    BenchmarkingModule,
+    MeritMatrixModule,
     CsrfModule,
   ],
   providers: [
