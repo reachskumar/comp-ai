@@ -355,7 +355,7 @@ export class ReportsService implements ReportBuilderDbAdapter {
     const where: Prisma.EmployeeWhereInput = { tenantId };
     if (params.filters?.['department']) where.department = String(params.filters['department']);
 
-    return this.db.forTenant(tenantId, (tx) => {
+    return this.db.forTenant(tenantId, async (tx): Promise<unknown> => {
       switch (params.metric) {
         case 'avg_salary': {
           if (params.groupBy === 'department') {
@@ -410,9 +410,7 @@ export class ReportsService implements ReportBuilderDbAdapter {
           });
         }
         default:
-          return { error: `Unknown metric: ${params.metric}` } as unknown as ReturnType<
-            typeof tx.employee.count
-          >;
+          return { error: `Unknown metric: ${params.metric}` };
       }
     });
   }
