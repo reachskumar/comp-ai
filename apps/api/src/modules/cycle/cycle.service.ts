@@ -90,19 +90,21 @@ export class CycleService {
   // ─── Cycle CRUD ─────────────────────────────────────────────────────────
 
   async createCycle(tenantId: string, dto: CreateCycleDto) {
-    return this.db.client.compCycle.create({
-      data: {
-        tenantId,
-        name: dto.name,
-        cycleType: dto.cycleType as never,
-        budgetTotal: dto.budgetTotal ?? 0,
-        currency: dto.currency ?? 'USD',
-        startDate: new Date(dto.startDate),
-        endDate: new Date(dto.endDate),
-        settings: (dto.settings ?? {}) as never,
-        status: 'DRAFT',
-      },
-    });
+    return this.db.forTenant(tenantId, async (tx) =>
+      tx.compCycle.create({
+        data: {
+          tenantId,
+          name: dto.name,
+          cycleType: dto.cycleType as never,
+          budgetTotal: dto.budgetTotal ?? 0,
+          currency: dto.currency ?? 'USD',
+          startDate: new Date(dto.startDate),
+          endDate: new Date(dto.endDate),
+          settings: (dto.settings ?? {}) as never,
+          status: 'DRAFT',
+        },
+      }),
+    );
   }
 
   async updateCycle(tenantId: string, cycleId: string, dto: UpdateCycleDto) {
@@ -117,21 +119,25 @@ export class CycleService {
     if (dto.endDate !== undefined) data['endDate'] = new Date(dto.endDate);
     if (dto.settings !== undefined) data['settings'] = dto.settings;
 
-    return this.db.client.compCycle.update({
-      where: { id: cycleId },
-      data,
-    });
+    return this.db.forTenant(tenantId, async (tx) =>
+      tx.compCycle.update({
+        where: { id: cycleId },
+        data,
+      }),
+    );
   }
 
   async getCycle(tenantId: string, cycleId: string) {
-    const cycle = await this.db.client.compCycle.findFirst({
-      where: { id: cycleId, tenantId },
-      include: {
-        budgets: true,
-        calibrationSessions: true,
-        _count: { select: { recommendations: true } },
-      },
-    });
+    const cycle = await this.db.forTenant(tenantId, async (tx) =>
+      tx.compCycle.findFirst({
+        where: { id: cycleId, tenantId },
+        include: {
+          budgets: true,
+          calibrationSessions: true,
+          _count: { select: { recommendations: true } },
+        },
+      }),
+    );
 
     if (!cycle) {
       throw new NotFoundException(`Cycle ${cycleId} not found`);
@@ -149,18 +155,20 @@ export class CycleService {
     if (query.status) where['status'] = query.status;
     if (query.cycleType) where['cycleType'] = query.cycleType;
 
-    const [data, total] = await Promise.all([
-      this.db.client.compCycle.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { createdAt: 'desc' },
-        include: {
-          _count: { select: { recommendations: true, budgets: true } },
-        },
-      }),
-      this.db.client.compCycle.count({ where }),
-    ]);
+    const [data, total] = await this.db.forTenant(tenantId, async (tx) =>
+      Promise.all([
+        tx.compCycle.findMany({
+          where,
+          skip,
+          take: limit,
+          orderBy: { createdAt: 'desc' },
+          include: {
+            _count: { select: { recommendations: true, budgets: true } },
+          },
+        }),
+        tx.compCycle.count({ where }),
+      ]),
+    );
 
     return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
@@ -174,65 +182,69 @@ export class CycleService {
     userRole: string,
     reason?: string,
   ) {
-    const cycle = await this.db.client.compCycle.findFirst({
-      where: { id: cycleId, tenantId },
-      include: {
-        budgets: { select: { allocated: true } },
-        recommendations: { select: { id: true } },
-      },
-    });
+    return this.db.forTenant(tenantId, async (tx) => {
+      const cycle = await tx.compCycle.findFirst({
+        where: { id: cycleId, tenantId },
+        include: {
+          budgets: { select: { allocated: true } },
+          recommendations: { select: { id: true } },
+        },
+      });
 
-    if (!cycle) {
-      throw new NotFoundException(`Cycle ${cycleId} not found`);
-    }
-
-    const currentStatus = cycle.status as string;
-
-    // 1. Check if transition is valid
-    const allowed = VALID_TRANSITIONS[currentStatus] ?? [];
-    if (!allowed.includes(targetStatus)) {
-      throw new BadRequestException(
-        `Cannot transition from ${currentStatus} to ${targetStatus}. Allowed: ${allowed.join(', ') || 'none (terminal state)'}`,
-      );
-    }
-
-    // 2. Check role guard
-    const guardKey = `${currentStatus}->${targetStatus}`;
-    const allowedRoles = TRANSITION_GUARDS[guardKey];
-    if (allowedRoles && !allowedRoles.includes(userRole)) {
-      throw new ForbiddenException(
-        `Role ${userRole} is not allowed to transition from ${currentStatus} to ${targetStatus}`,
-      );
-    }
-
-    // 3. Run transition validators
-    const validator = TRANSITION_VALIDATORS[guardKey];
-    if (validator) {
-      const error = validator(cycle as never);
-      if (error) {
-        throw new BadRequestException(error);
+      if (!cycle) {
+        throw new NotFoundException(`Cycle ${cycleId} not found`);
       }
-    }
 
-    // 4. Execute transition
-    const updated = await this.db.client.compCycle.update({
-      where: { id: cycleId },
-      data: {
-        status: targetStatus as never,
-        settings: ({
-          ...(typeof cycle.settings === 'object' && cycle.settings !== null ? cycle.settings as Record<string, unknown> : {}),
-          lastTransition: {
-            from: currentStatus,
-            to: targetStatus,
-            reason,
-            at: new Date().toISOString(),
-          },
-        }) as never,
-      },
+      const currentStatus = cycle.status as string;
+
+      // 1. Check if transition is valid
+      const allowed = VALID_TRANSITIONS[currentStatus] ?? [];
+      if (!allowed.includes(targetStatus)) {
+        throw new BadRequestException(
+          `Cannot transition from ${currentStatus} to ${targetStatus}. Allowed: ${allowed.join(', ') || 'none (terminal state)'}`,
+        );
+      }
+
+      // 2. Check role guard
+      const guardKey = `${currentStatus}->${targetStatus}`;
+      const allowedRoles = TRANSITION_GUARDS[guardKey];
+      if (allowedRoles && !allowedRoles.includes(userRole)) {
+        throw new ForbiddenException(
+          `Role ${userRole} is not allowed to transition from ${currentStatus} to ${targetStatus}`,
+        );
+      }
+
+      // 3. Run transition validators
+      const validator = TRANSITION_VALIDATORS[guardKey];
+      if (validator) {
+        const error = validator(cycle as never);
+        if (error) {
+          throw new BadRequestException(error);
+        }
+      }
+
+      // 4. Execute transition
+      const updated = await tx.compCycle.update({
+        where: { id: cycleId },
+        data: {
+          status: targetStatus as never,
+          settings: {
+            ...(typeof cycle.settings === 'object' && cycle.settings !== null
+              ? (cycle.settings as Record<string, unknown>)
+              : {}),
+            lastTransition: {
+              from: currentStatus,
+              to: targetStatus,
+              reason,
+              at: new Date().toISOString(),
+            },
+          } as never,
+        },
+      });
+
+      this.logger.log(`Cycle ${cycleId} transitioned: ${currentStatus} -> ${targetStatus}`);
+      return updated;
     });
-
-    this.logger.log(`Cycle ${cycleId} transitioned: ${currentStatus} -> ${targetStatus}`);
-    return updated;
   }
 
   // ─── Budget Allocation ──────────────────────────────────────────────────
@@ -245,12 +257,12 @@ export class CycleService {
 
     const results = [];
     for (const budget of dto.budgets) {
-      const result = await this.upsertBudget(cycleId, budget);
+      const result = await this.upsertBudget(tenantId, cycleId, budget);
       results.push(result);
     }
 
     // Recalculate remaining for all budgets
-    await this.recalculateBudgetRemaining(cycleId);
+    await this.recalculateBudgetRemaining(tenantId, cycleId);
 
     return { cycleId, budgets: results };
   }
@@ -261,71 +273,73 @@ export class CycleService {
    */
   async requestBudget(tenantId: string, cycleId: string, dto: SetBudgetDto) {
     await this.findCycle(tenantId, cycleId);
-    const result = await this.upsertBudget(cycleId, dto);
-    await this.recalculateBudgetRemaining(cycleId);
+    const result = await this.upsertBudget(tenantId, cycleId, dto);
+    await this.recalculateBudgetRemaining(tenantId, cycleId);
     return result;
   }
 
-  private async upsertBudget(cycleId: string, dto: SetBudgetDto) {
-    const existing = await this.db.client.cycleBudget.findFirst({
-      where: {
-        cycleId,
-        department: dto.department,
-        ...(dto.managerId ? { managerId: dto.managerId } : {}),
-      },
-    });
-
-    if (existing) {
-      return this.db.client.cycleBudget.update({
-        where: { id: existing.id },
-        data: {
-          allocated: dto.allocated,
-          remaining: dto.allocated - Number(existing.spent),
+  private async upsertBudget(tenantId: string, cycleId: string, dto: SetBudgetDto) {
+    return this.db.forTenant(tenantId, async (tx) => {
+      const existing = await tx.cycleBudget.findFirst({
+        where: {
+          cycleId,
+          department: dto.department,
+          ...(dto.managerId ? { managerId: dto.managerId } : {}),
         },
       });
-    }
 
-    return this.db.client.cycleBudget.create({
-      data: {
-        cycleId,
-        department: dto.department,
-        managerId: dto.managerId ?? null,
-        allocated: dto.allocated,
-        spent: 0,
-        remaining: dto.allocated,
-        driftPct: 0,
-      },
+      if (existing) {
+        return tx.cycleBudget.update({
+          where: { id: existing.id },
+          data: {
+            allocated: dto.allocated,
+            remaining: dto.allocated - Number(existing.spent),
+          },
+        });
+      }
+
+      return tx.cycleBudget.create({
+        data: {
+          cycleId,
+          department: dto.department,
+          managerId: dto.managerId ?? null,
+          allocated: dto.allocated,
+          spent: 0,
+          remaining: dto.allocated,
+          driftPct: 0,
+        },
+      });
     });
   }
 
-  private async recalculateBudgetRemaining(cycleId: string) {
-    const budgets = await this.db.client.cycleBudget.findMany({
-      where: { cycleId },
-    });
-
-    const cycle = await this.db.client.compCycle.findUnique({
-      where: { id: cycleId },
-    });
-
-    const totalAllocated = budgets.reduce((sum, b) => sum + Number(b.allocated), 0);
-    const cycleBudget = Number(cycle?.budgetTotal ?? 0);
-
-    for (const budget of budgets) {
-      const allocated = Number(budget.allocated);
-      const spent = Number(budget.spent);
-      const remaining = allocated - spent;
-      const driftPct = cycleBudget > 0
-        ? ((totalAllocated - cycleBudget) / cycleBudget) * 100
-        : 0;
-
-      await this.db.client.cycleBudget.update({
-        where: { id: budget.id },
-        data: {
-          remaining,
-          driftPct: Math.round(driftPct * 100) / 100,
-        },
+  private async recalculateBudgetRemaining(tenantId: string, cycleId: string) {
+    return this.db.forTenant(tenantId, async (tx) => {
+      const budgets = await tx.cycleBudget.findMany({
+        where: { cycleId },
       });
-    }
+
+      const cycle = await tx.compCycle.findUnique({
+        where: { id: cycleId },
+      });
+
+      const totalAllocated = budgets.reduce((sum, b) => sum + Number(b.allocated), 0);
+      const cycleBudget = Number(cycle?.budgetTotal ?? 0);
+
+      for (const budget of budgets) {
+        const allocated = Number(budget.allocated);
+        const spent = Number(budget.spent);
+        const remaining = allocated - spent;
+        const driftPct = cycleBudget > 0 ? ((totalAllocated - cycleBudget) / cycleBudget) * 100 : 0;
+
+        await tx.cycleBudget.update({
+          where: { id: budget.id },
+          data: {
+            remaining,
+            driftPct: Math.round(driftPct * 100) / 100,
+          },
+        });
+      }
+    });
   }
 
   // ─── Recommendations ─────────────────────────────────────────────────
@@ -347,9 +361,7 @@ export class CycleService {
     for (let i = 0; i < dto.recommendations.length; i += BULK_BATCH_SIZE) {
       const batch = dto.recommendations.slice(i, i + BULK_BATCH_SIZE);
 
-      const operations = batch.map((rec) =>
-        this.upsertRecommendation(cycleId, rec),
-      );
+      const operations = batch.map((rec) => this.upsertRecommendation(tenantId, cycleId, rec));
 
       const results = await Promise.all(operations);
       for (const result of results) {
@@ -359,56 +371,55 @@ export class CycleService {
     }
 
     // Recalculate budget spent amounts
-    await this.recalculateBudgetSpent(cycleId);
+    await this.recalculateBudgetSpent(tenantId, cycleId);
 
     return { cycleId, created, updated, total: created + updated };
   }
 
   private async upsertRecommendation(
+    tenantId: string,
     cycleId: string,
     rec: CreateRecommendationDto,
   ): Promise<{ isNew: boolean }> {
-    const existing = await this.db.client.compRecommendation.findFirst({
-      where: {
-        cycleId,
-        employeeId: rec.employeeId,
-        recType: rec.recType as never,
-      },
-    });
-
-    if (existing) {
-      await this.db.client.compRecommendation.update({
-        where: { id: existing.id },
-        data: {
-          currentValue: rec.currentValue,
-          proposedValue: rec.proposedValue,
-          justification: rec.justification ?? existing.justification,
-          approverUserId: rec.approverUserId ?? existing.approverUserId,
+    return this.db.forTenant(tenantId, async (tx) => {
+      const existing = await tx.compRecommendation.findFirst({
+        where: {
+          cycleId,
+          employeeId: rec.employeeId,
+          recType: rec.recType as never,
         },
       });
-      return { isNew: false };
-    }
 
-    await this.db.client.compRecommendation.create({
-      data: {
-        cycleId,
-        employeeId: rec.employeeId,
-        recType: rec.recType as never,
-        currentValue: rec.currentValue,
-        proposedValue: rec.proposedValue,
-        justification: rec.justification ?? null,
-        status: 'DRAFT',
-        approverUserId: rec.approverUserId ?? null,
-      },
+      if (existing) {
+        await tx.compRecommendation.update({
+          where: { id: existing.id },
+          data: {
+            currentValue: rec.currentValue,
+            proposedValue: rec.proposedValue,
+            justification: rec.justification ?? existing.justification,
+            approverUserId: rec.approverUserId ?? existing.approverUserId,
+          },
+        });
+        return { isNew: false };
+      }
+
+      await tx.compRecommendation.create({
+        data: {
+          cycleId,
+          employeeId: rec.employeeId,
+          recType: rec.recType as never,
+          currentValue: rec.currentValue,
+          proposedValue: rec.proposedValue,
+          justification: rec.justification ?? null,
+          status: 'DRAFT',
+          approverUserId: rec.approverUserId ?? null,
+        },
+      });
+      return { isNew: true };
     });
-    return { isNew: true };
   }
 
-  async listRecommendations(
-    tenantId: string,
-    cycleId: string,
-    query: RecommendationQueryDto,
-  ) {
+  async listRecommendations(tenantId: string, cycleId: string, query: RecommendationQueryDto) {
     await this.findCycle(tenantId, cycleId);
 
     const page = query.page ?? 1;
@@ -428,29 +439,31 @@ export class CycleService {
       where['employee'] = employeeWhere;
     }
 
-    const [data, total] = await Promise.all([
-      this.db.client.compRecommendation.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { createdAt: 'desc' },
-        include: {
-          employee: {
-            select: {
-              id: true,
-              employeeCode: true,
-              firstName: true,
-              lastName: true,
-              department: true,
-              level: true,
-              baseSalary: true,
-              totalComp: true,
+    const [data, total] = await this.db.forTenant(tenantId, async (tx) =>
+      Promise.all([
+        tx.compRecommendation.findMany({
+          where,
+          skip,
+          take: limit,
+          orderBy: { createdAt: 'desc' },
+          include: {
+            employee: {
+              select: {
+                id: true,
+                employeeCode: true,
+                firstName: true,
+                lastName: true,
+                department: true,
+                level: true,
+                baseSalary: true,
+                totalComp: true,
+              },
             },
           },
-        },
-      }),
-      this.db.client.compRecommendation.count({ where }),
-    ]);
+        }),
+        tx.compRecommendation.count({ where }),
+      ]),
+    );
 
     return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
@@ -464,164 +477,172 @@ export class CycleService {
   ) {
     await this.findCycle(tenantId, cycleId);
 
-    const rec = await this.db.client.compRecommendation.findFirst({
-      where: { id: recommendationId, cycleId },
-    });
+    return this.db.forTenant(tenantId, async (tx) => {
+      const rec = await tx.compRecommendation.findFirst({
+        where: { id: recommendationId, cycleId },
+      });
 
-    if (!rec) {
-      throw new NotFoundException(`Recommendation ${recommendationId} not found`);
-    }
+      if (!rec) {
+        throw new NotFoundException(`Recommendation ${recommendationId} not found`);
+      }
 
-    const data: Record<string, unknown> = { status };
-    if (status === 'APPROVED' && approverUserId) {
-      data['approverUserId'] = approverUserId;
-      data['approvedAt'] = new Date();
-    }
+      const data: Record<string, unknown> = { status };
+      if (status === 'APPROVED' && approverUserId) {
+        data['approverUserId'] = approverUserId;
+        data['approvedAt'] = new Date();
+      }
 
-    return this.db.client.compRecommendation.update({
-      where: { id: recommendationId },
-      data,
+      return tx.compRecommendation.update({
+        where: { id: recommendationId },
+        data,
+      });
     });
   }
 
   /**
    * Recalculate spent amounts per budget based on approved recommendations.
    */
-  private async recalculateBudgetSpent(cycleId: string) {
-    const budgets = await this.db.client.cycleBudget.findMany({
-      where: { cycleId },
+  private async recalculateBudgetSpent(tenantId: string, cycleId: string) {
+    return this.db.forTenant(tenantId, async (tx) => {
+      const budgets = await tx.cycleBudget.findMany({
+        where: { cycleId },
+      });
+
+      for (const budget of budgets) {
+        // Sum proposed values for recommendations in this department
+        const recs = await tx.compRecommendation.findMany({
+          where: {
+            cycleId,
+            employee: { department: budget.department },
+          },
+          select: { proposedValue: true, currentValue: true },
+        });
+
+        const spent = recs.reduce(
+          (sum, r) => sum + (Number(r.proposedValue) - Number(r.currentValue)),
+          0,
+        );
+
+        const allocated = Number(budget.allocated);
+        await tx.cycleBudget.update({
+          where: { id: budget.id },
+          data: {
+            spent: Math.max(0, spent),
+            remaining: allocated - Math.max(0, spent),
+          },
+        });
+      }
     });
-
-    for (const budget of budgets) {
-      // Sum proposed values for recommendations in this department
-      const recs = await this.db.client.compRecommendation.findMany({
-        where: {
-          cycleId,
-          employee: { department: budget.department },
-        },
-        select: { proposedValue: true, currentValue: true },
-      });
-
-      const spent = recs.reduce(
-        (sum, r) => sum + (Number(r.proposedValue) - Number(r.currentValue)),
-        0,
-      );
-
-      const allocated = Number(budget.allocated);
-      await this.db.client.cycleBudget.update({
-        where: { id: budget.id },
-        data: {
-          spent: Math.max(0, spent),
-          remaining: allocated - Math.max(0, spent),
-        },
-      });
-    }
   }
 
   // ─── Summary ────────────────────────────────────────────────────────────
 
   async getCycleSummary(tenantId: string, cycleId: string) {
-    const cycle = await this.db.client.compCycle.findFirst({
-      where: { id: cycleId, tenantId },
-      include: {
-        budgets: true,
-        _count: { select: { recommendations: true, calibrationSessions: true } },
-      },
+    return this.db.forTenant(tenantId, async (tx) => {
+      const cycle = await tx.compCycle.findFirst({
+        where: { id: cycleId, tenantId },
+        include: {
+          budgets: true,
+          _count: { select: { recommendations: true, calibrationSessions: true } },
+        },
+      });
+
+      if (!cycle) {
+        throw new NotFoundException(`Cycle ${cycleId} not found`);
+      }
+
+      // Budget stats
+      const totalAllocated = cycle.budgets.reduce((sum, b) => sum + Number(b.allocated), 0);
+      const totalSpent = cycle.budgets.reduce((sum, b) => sum + Number(b.spent), 0);
+      const totalRemaining = cycle.budgets.reduce((sum, b) => sum + Number(b.remaining), 0);
+      const budgetTotal = Number(cycle.budgetTotal);
+      const overallDriftPct =
+        budgetTotal > 0
+          ? Math.round(((totalAllocated - budgetTotal) / budgetTotal) * 10000) / 100
+          : 0;
+
+      // Recommendation status breakdown
+      const recStatusCounts = await tx.compRecommendation.groupBy({
+        by: ['status'],
+        where: { cycleId },
+        _count: { id: true },
+      });
+
+      const recommendationsByStatus: Record<string, number> = {};
+      for (const group of recStatusCounts) {
+        recommendationsByStatus[group.status] = group._count.id;
+      }
+
+      // Recommendation type breakdown
+      const recTypeCounts = await tx.compRecommendation.groupBy({
+        by: ['recType'],
+        where: { cycleId },
+        _count: { id: true },
+      });
+
+      const recommendationsByType: Record<string, number> = {};
+      for (const group of recTypeCounts) {
+        recommendationsByType[group.recType] = group._count.id;
+      }
+
+      // Department budget breakdown
+      const departmentBudgets = cycle.budgets.map((b) => ({
+        department: b.department,
+        allocated: Number(b.allocated),
+        spent: Number(b.spent),
+        remaining: Number(b.remaining),
+        driftPct: Number(b.driftPct),
+        utilizationPct:
+          Number(b.allocated) > 0
+            ? Math.round((Number(b.spent) / Number(b.allocated)) * 10000) / 100
+            : 0,
+      }));
+
+      // Progress indicators
+      const totalRecs = cycle._count.recommendations;
+      const approvedRecs = recommendationsByStatus['APPROVED'] ?? 0;
+      const completionPct =
+        totalRecs > 0 ? Math.round((approvedRecs / totalRecs) * 10000) / 100 : 0;
+
+      return {
+        cycle: {
+          id: cycle.id,
+          name: cycle.name,
+          cycleType: cycle.cycleType,
+          status: cycle.status,
+          startDate: cycle.startDate,
+          endDate: cycle.endDate,
+          currency: cycle.currency,
+        },
+        budget: {
+          total: budgetTotal,
+          allocated: totalAllocated,
+          spent: totalSpent,
+          remaining: totalRemaining,
+          driftPct: overallDriftPct,
+          utilizationPct:
+            totalAllocated > 0 ? Math.round((totalSpent / totalAllocated) * 10000) / 100 : 0,
+        },
+        recommendations: {
+          total: totalRecs,
+          byStatus: recommendationsByStatus,
+          byType: recommendationsByType,
+          completionPct,
+        },
+        departments: departmentBudgets,
+        calibrationSessions: cycle._count.calibrationSessions,
+      };
     });
-
-    if (!cycle) {
-      throw new NotFoundException(`Cycle ${cycleId} not found`);
-    }
-
-    // Budget stats
-    const totalAllocated = cycle.budgets.reduce((sum, b) => sum + Number(b.allocated), 0);
-    const totalSpent = cycle.budgets.reduce((sum, b) => sum + Number(b.spent), 0);
-    const totalRemaining = cycle.budgets.reduce((sum, b) => sum + Number(b.remaining), 0);
-    const budgetTotal = Number(cycle.budgetTotal);
-    const overallDriftPct = budgetTotal > 0
-      ? Math.round(((totalAllocated - budgetTotal) / budgetTotal) * 10000) / 100
-      : 0;
-
-    // Recommendation status breakdown
-    const recStatusCounts = await this.db.client.compRecommendation.groupBy({
-      by: ['status'],
-      where: { cycleId },
-      _count: { id: true },
-    });
-
-    const recommendationsByStatus: Record<string, number> = {};
-    for (const group of recStatusCounts) {
-      recommendationsByStatus[group.status] = group._count.id;
-    }
-
-    // Recommendation type breakdown
-    const recTypeCounts = await this.db.client.compRecommendation.groupBy({
-      by: ['recType'],
-      where: { cycleId },
-      _count: { id: true },
-    });
-
-    const recommendationsByType: Record<string, number> = {};
-    for (const group of recTypeCounts) {
-      recommendationsByType[group.recType] = group._count.id;
-    }
-
-    // Department budget breakdown
-    const departmentBudgets = cycle.budgets.map((b) => ({
-      department: b.department,
-      allocated: Number(b.allocated),
-      spent: Number(b.spent),
-      remaining: Number(b.remaining),
-      driftPct: Number(b.driftPct),
-      utilizationPct: Number(b.allocated) > 0
-        ? Math.round((Number(b.spent) / Number(b.allocated)) * 10000) / 100
-        : 0,
-    }));
-
-    // Progress indicators
-    const totalRecs = cycle._count.recommendations;
-    const approvedRecs = recommendationsByStatus['APPROVED'] ?? 0;
-    const completionPct = totalRecs > 0
-      ? Math.round((approvedRecs / totalRecs) * 10000) / 100
-      : 0;
-
-    return {
-      cycle: {
-        id: cycle.id,
-        name: cycle.name,
-        cycleType: cycle.cycleType,
-        status: cycle.status,
-        startDate: cycle.startDate,
-        endDate: cycle.endDate,
-        currency: cycle.currency,
-      },
-      budget: {
-        total: budgetTotal,
-        allocated: totalAllocated,
-        spent: totalSpent,
-        remaining: totalRemaining,
-        driftPct: overallDriftPct,
-        utilizationPct: totalAllocated > 0
-          ? Math.round((totalSpent / totalAllocated) * 10000) / 100
-          : 0,
-      },
-      recommendations: {
-        total: totalRecs,
-        byStatus: recommendationsByStatus,
-        byType: recommendationsByType,
-        completionPct,
-      },
-      departments: departmentBudgets,
-      calibrationSessions: cycle._count.calibrationSessions,
-    };
   }
 
   // ─── Private Helpers ──────────────────────────────────────────────────
 
   private async findCycle(tenantId: string, cycleId: string) {
-    const cycle = await this.db.client.compCycle.findFirst({
-      where: { id: cycleId, tenantId },
-    });
+    const cycle = await this.db.forTenant(tenantId, async (tx) =>
+      tx.compCycle.findFirst({
+        where: { id: cycleId, tenantId },
+      }),
+    );
     if (!cycle) {
       throw new NotFoundException(`Cycle ${cycleId} not found`);
     }

@@ -355,11 +355,11 @@ export class ReportsService implements ReportBuilderDbAdapter {
     const where: Prisma.EmployeeWhereInput = { tenantId };
     if (params.filters?.['department']) where.department = String(params.filters['department']);
 
-    return this.db.forTenant(tenantId, async (tx): Promise<unknown> => {
+    return this.db.forTenant(tenantId, async (tx) => {
       switch (params.metric) {
         case 'avg_salary': {
           if (params.groupBy === 'department') {
-            return tx.employee.groupBy({
+            return await tx.employee.groupBy({
               by: ['department'],
               where,
               _avg: { baseSalary: true, totalComp: true },
@@ -367,14 +367,14 @@ export class ReportsService implements ReportBuilderDbAdapter {
             });
           }
           if (params.groupBy === 'level') {
-            return tx.employee.groupBy({
+            return await tx.employee.groupBy({
               by: ['level'],
               where,
               _avg: { baseSalary: true, totalComp: true },
               _count: true,
             });
           }
-          return tx.employee.aggregate({
+          return await tx.employee.aggregate({
             where,
             _avg: { baseSalary: true, totalComp: true },
             _count: true,
@@ -384,24 +384,24 @@ export class ReportsService implements ReportBuilderDbAdapter {
           if (params.groupBy) {
             const groupField = params.groupBy as 'department' | 'level';
             if (['department', 'level'].includes(groupField)) {
-              return tx.employee.groupBy({
+              return await tx.employee.groupBy({
                 by: [groupField],
                 where,
                 _count: true,
               });
             }
           }
-          return tx.employee.count({ where });
+          return await tx.employee.count({ where });
         }
         case 'total_comp': {
-          return tx.employee.aggregate({
+          return await tx.employee.aggregate({
             where,
             _sum: { baseSalary: true, totalComp: true },
             _count: true,
           });
         }
         case 'salary_range': {
-          return tx.employee.aggregate({
+          return await tx.employee.aggregate({
             where,
             _min: { baseSalary: true },
             _max: { baseSalary: true },

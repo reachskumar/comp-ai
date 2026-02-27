@@ -1,9 +1,4 @@
-import {
-  Injectable,
-  Logger,
-  NotFoundException,
-  BadRequestException,
-} from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { DatabaseService } from '../../../database';
@@ -32,10 +27,10 @@ export class ApprovalService {
   /**
    * Get the approval chain for a cycle. Falls back to default if not configured.
    */
-  async getApprovalChain(cycleId: string): Promise<string[]> {
-    const cycle = await this.db.client.compCycle.findUnique({
-      where: { id: cycleId },
-    });
+  async getApprovalChain(tenantId: string, cycleId: string): Promise<string[]> {
+    const cycle = await this.db.forTenant(tenantId, async (tx) =>
+      tx.compCycle.findUnique({ where: { id: cycleId } }),
+    );
     const settings = (cycle?.settings ?? {}) as Record<string, unknown>;
     const chain = settings['approvalChain'];
     if (Array.isArray(chain) && chain.length > 0) {
@@ -74,28 +69,30 @@ export class ApprovalService {
       where['employee'] = { department: query.department };
     }
 
-    const [data, total] = await Promise.all([
-      this.db.client.compRecommendation.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { createdAt: 'desc' },
-        include: {
-          employee: {
-            select: {
-              id: true,
-              employeeCode: true,
-              firstName: true,
-              lastName: true,
-              department: true,
-              level: true,
-              baseSalary: true,
+    const [data, total] = await this.db.forTenant(tenantId, async (tx) =>
+      Promise.all([
+        tx.compRecommendation.findMany({
+          where,
+          skip,
+          take: limit,
+          orderBy: { createdAt: 'desc' },
+          include: {
+            employee: {
+              select: {
+                id: true,
+                employeeCode: true,
+                firstName: true,
+                lastName: true,
+                department: true,
+                level: true,
+                baseSalary: true,
+              },
             },
           },
-        },
-      }),
-      this.db.client.compRecommendation.count({ where }),
-    ]);
+        }),
+        tx.compRecommendation.count({ where }),
+      ]),
+    );
 
     return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
@@ -106,12 +103,7 @@ export class ApprovalService {
    * Bulk approve or reject recommendations using Prisma transactions.
    * Supports 1000+ recommendations via batching.
    */
-  async bulkApproveReject(
-    tenantId: string,
-    cycleId: string,
-    userId: string,
-    dto: BulkApprovalDto,
-  ) {
+  async bulkApproveReject(tenantId: string, cycleId: string, userId: string, dto: BulkApprovalDto) {
     await this.findCycleOrThrow(tenantId, cycleId);
 
     let approved = 0;
@@ -122,7 +114,7 @@ export class ApprovalService {
     for (let i = 0; i < dto.decisions.length; i += BULK_BATCH_SIZE) {
       const batch = dto.decisions.slice(i, i + BULK_BATCH_SIZE);
 
-      await this.db.client.$transaction(async (tx) => {
+      await this.db.forTenant(tenantId, async (tx) => {
         for (const decision of batch) {
           const rec = await tx.compRecommendation.findFirst({
             where: { id: decision.recommendationId, cycleId },
@@ -196,20 +188,18 @@ export class ApprovalService {
    * Schedule escalation for pending recommendations.
    * Uses BullMQ delayed jobs to auto-escalate after configured delay.
    */
-  async scheduleEscalation(
-    tenantId: string,
-    cycleId: string,
-    userId: string,
-  ) {
+  async scheduleEscalation(tenantId: string, cycleId: string, userId: string) {
     const cycle = await this.findCycleOrThrow(tenantId, cycleId);
     const settings = (cycle.settings ?? {}) as Record<string, unknown>;
     const delayMs = (settings['escalationDelayMs'] as number) ?? DEFAULT_ESCALATION_DELAY_MS;
 
     // Find all SUBMITTED recommendations that haven't been actioned
-    const pendingRecs = await this.db.client.compRecommendation.findMany({
-      where: { cycleId, status: 'SUBMITTED' as never },
-      select: { id: true },
-    });
+    const pendingRecs = await this.db.forTenant(tenantId, async (tx) =>
+      tx.compRecommendation.findMany({
+        where: { cycleId, status: 'SUBMITTED' as never },
+        select: { id: true },
+      }),
+    );
 
     if (pendingRecs.length === 0) {
       return { scheduled: 0 };
@@ -228,19 +218,21 @@ export class ApprovalService {
     );
 
     // Audit log
-    await this.db.client.auditLog.create({
-      data: {
-        tenantId,
-        userId,
-        action: 'ESCALATION_SCHEDULED',
-        entityType: 'CompCycle',
-        entityId: cycleId,
-        changes: {
-          recommendationCount: pendingRecs.length,
-          delayMs,
-        } as never,
-      },
-    });
+    await this.db.forTenant(tenantId, async (tx) =>
+      tx.auditLog.create({
+        data: {
+          tenantId,
+          userId,
+          action: 'ESCALATION_SCHEDULED',
+          entityType: 'CompCycle',
+          entityId: cycleId,
+          changes: {
+            recommendationCount: pendingRecs.length,
+            delayMs,
+          } as never,
+        },
+      }),
+    );
 
     this.logger.log(
       `Scheduled escalation for ${pendingRecs.length} recommendations in cycle ${cycleId}`,
@@ -264,7 +256,7 @@ export class ApprovalService {
     for (let i = 0; i < recommendationIds.length; i += BULK_BATCH_SIZE) {
       const batch = recommendationIds.slice(i, i + BULK_BATCH_SIZE);
 
-      await this.db.client.$transaction(async (tx) => {
+      await this.db.forTenant(tenantId, async (tx) => {
         for (const recId of batch) {
           const rec = await tx.compRecommendation.findFirst({
             where: { id: recId, cycleId, status: 'SUBMITTED' as never },
@@ -306,12 +298,7 @@ export class ApprovalService {
   /**
    * Send nudge notifications to pending approvers.
    */
-  async sendNudge(
-    tenantId: string,
-    cycleId: string,
-    userId: string,
-    dto: NudgeDto,
-  ) {
+  async sendNudge(tenantId: string, cycleId: string, userId: string, dto: NudgeDto) {
     await this.findCycleOrThrow(tenantId, cycleId);
 
     let targetUserIds: string[] = [];
@@ -320,15 +307,17 @@ export class ApprovalService {
       targetUserIds = dto.approverUserIds;
     } else {
       // Find all unique approvers with pending recommendations
-      const pendingRecs = await this.db.client.compRecommendation.findMany({
-        where: {
-          cycleId,
-          status: { in: ['SUBMITTED', 'ESCALATED'] } as never,
-          approverUserId: { not: null },
-        },
-        select: { approverUserId: true },
-        distinct: ['approverUserId'],
-      });
+      const pendingRecs = await this.db.forTenant(tenantId, async (tx) =>
+        tx.compRecommendation.findMany({
+          where: {
+            cycleId,
+            status: { in: ['SUBMITTED', 'ESCALATED'] } as never,
+            approverUserId: { not: null },
+          },
+          select: { approverUserId: true },
+          distinct: ['approverUserId'],
+        }),
+      );
       targetUserIds = pendingRecs
         .map((r) => r.approverUserId)
         .filter((id): id is string => id !== null);
@@ -338,10 +327,12 @@ export class ApprovalService {
       return { nudged: 0 };
     }
 
-    const cycle = await this.db.client.compCycle.findUnique({
-      where: { id: cycleId },
-      select: { name: true },
-    });
+    const cycle = await this.db.forTenant(tenantId, async (tx) =>
+      tx.compCycle.findUnique({
+        where: { id: cycleId },
+        select: { name: true },
+      }),
+    );
 
     const defaultMessage = `You have pending approvals for cycle "${cycle?.name ?? cycleId}". Please review and take action.`;
     const message = dto.message ?? defaultMessage;
@@ -357,25 +348,29 @@ export class ApprovalService {
     }));
 
     // Bulk create notifications
-    const result = await this.db.client.notification.createMany({
-      data: notifications,
-    });
+    const result = await this.db.forTenant(tenantId, async (tx) =>
+      tx.notification.createMany({
+        data: notifications,
+      }),
+    );
 
     // Audit log
-    await this.db.client.auditLog.create({
-      data: {
-        tenantId,
-        userId,
-        action: 'NUDGE_SENT',
-        entityType: 'CompCycle',
-        entityId: cycleId,
-        changes: {
-          targetUserIds,
-          message,
-          count: result.count,
-        } as never,
-      },
-    });
+    await this.db.forTenant(tenantId, async (tx) =>
+      tx.auditLog.create({
+        data: {
+          tenantId,
+          userId,
+          action: 'NUDGE_SENT',
+          entityType: 'CompCycle',
+          entityId: cycleId,
+          changes: {
+            targetUserIds,
+            message,
+            count: result.count,
+          } as never,
+        },
+      }),
+    );
 
     this.logger.log(`Sent ${result.count} nudge notifications for cycle ${cycleId}`);
 
@@ -385,13 +380,12 @@ export class ApprovalService {
   // ─── Private Helpers ───────────────────────────────────────────────────
 
   private async findCycleOrThrow(tenantId: string, cycleId: string) {
-    const cycle = await this.db.client.compCycle.findFirst({
-      where: { id: cycleId, tenantId },
-    });
+    const cycle = await this.db.forTenant(tenantId, async (tx) =>
+      tx.compCycle.findFirst({ where: { id: cycleId, tenantId } }),
+    );
     if (!cycle) {
       throw new NotFoundException(`Cycle ${cycleId} not found`);
     }
     return cycle;
   }
 }
-

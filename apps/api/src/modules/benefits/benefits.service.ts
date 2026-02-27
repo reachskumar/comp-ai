@@ -1,9 +1,4 @@
-import {
-  Injectable,
-  Logger,
-  NotFoundException,
-  BadRequestException,
-} from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { DatabaseService } from '../../database';
 import { EncryptionService } from './services/encryption.service';
 import { PremiumCalculatorService } from './services/premium-calculator.service';
@@ -29,24 +24,26 @@ export class BenefitsService {
   // ─── Plans ──────────────────────────────────────────────────────────
 
   async createPlan(tenantId: string, dto: CreatePlanDto) {
-    return this.db.client.benefitPlan.create({
-      data: {
-        tenantId,
-        planType: dto.planType as never,
-        name: dto.name,
-        carrier: dto.carrier,
-        description: dto.description ?? null,
-        network: dto.network ?? null,
-        premiums: (dto.premiums ?? {}) as never,
-        deductibles: (dto.deductibles ?? {}) as never,
-        outOfPocketMax: (dto.outOfPocketMax ?? {}) as never,
-        copays: (dto.copays ?? {}) as never,
-        coverageDetails: (dto.coverageDetails ?? {}) as never,
-        effectiveDate: new Date(dto.effectiveDate),
-        endDate: dto.endDate ? new Date(dto.endDate) : null,
-        isActive: dto.isActive ?? true,
-      },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.benefitPlan.create({
+        data: {
+          tenantId,
+          planType: dto.planType as never,
+          name: dto.name,
+          carrier: dto.carrier,
+          description: dto.description ?? null,
+          network: dto.network ?? null,
+          premiums: (dto.premiums ?? {}) as never,
+          deductibles: (dto.deductibles ?? {}) as never,
+          outOfPocketMax: (dto.outOfPocketMax ?? {}) as never,
+          copays: (dto.copays ?? {}) as never,
+          coverageDetails: (dto.coverageDetails ?? {}) as never,
+          effectiveDate: new Date(dto.effectiveDate),
+          endDate: dto.endDate ? new Date(dto.endDate) : null,
+          isActive: dto.isActive ?? true,
+        },
+      }),
+    );
   }
 
   async updatePlan(tenantId: string, planId: string, dto: UpdatePlanDto) {
@@ -66,7 +63,9 @@ export class BenefitsService {
     if (dto.endDate !== undefined) data['endDate'] = new Date(dto.endDate);
     if (dto.isActive !== undefined) data['isActive'] = dto.isActive;
 
-    return this.db.client.benefitPlan.update({ where: { id: planId }, data });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.benefitPlan.update({ where: { id: planId }, data }),
+    );
   }
 
   async listPlans(tenantId: string, query: PlanQueryDto) {
@@ -74,10 +73,12 @@ export class BenefitsService {
     if (query.planType) where['planType'] = query.planType;
     if (query.isActive !== undefined) where['isActive'] = query.isActive;
 
-    return this.db.client.benefitPlan.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.benefitPlan.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+      }),
+    );
   }
 
   async getPlan(tenantId: string, planId: string) {
@@ -89,13 +90,15 @@ export class BenefitsService {
 
   async deletePlan(tenantId: string, planId: string) {
     await this.findPlan(tenantId, planId);
-    return this.db.client.benefitPlan.delete({ where: { id: planId } });
+    return this.db.forTenant(tenantId, (tx) => tx.benefitPlan.delete({ where: { id: planId } }));
   }
 
   private async findPlan(tenantId: string, planId: string) {
-    const plan = await this.db.client.benefitPlan.findFirst({
-      where: { id: planId, tenantId },
-    });
+    const plan = await this.db.forTenant(tenantId, (tx) =>
+      tx.benefitPlan.findFirst({
+        where: { id: planId, tenantId },
+      }),
+    );
     if (!plan) throw new NotFoundException(`Plan ${planId} not found`);
     return plan;
   }
@@ -107,29 +110,33 @@ export class BenefitsService {
     const premiums = (plan.premiums ?? {}) as Record<string, number>;
     const breakdown = this.premiumCalc.calculatePremium(premiums, dto.tier);
 
-    const enrollment = await this.db.client.benefitEnrollment.create({
-      data: {
-        tenantId,
-        employeeId: dto.employeeId,
-        planId: dto.planId,
-        tier: dto.tier as never,
-        status: 'PENDING' as never,
-        effectiveDate: new Date(dto.effectiveDate),
-        endDate: dto.endDate ? new Date(dto.endDate) : null,
-        employeePremium: breakdown.employeePremium,
-        employerPremium: breakdown.employerPremium,
-        electedAt: new Date(),
-      },
-      include: { plan: true },
-    });
-
-    // Link dependents if provided
-    if (dto.dependentIds?.length) {
-      await this.db.client.benefitDependent.updateMany({
-        where: { id: { in: dto.dependentIds }, employeeId: dto.employeeId },
-        data: { enrollmentId: enrollment.id },
+    const enrollment = await this.db.forTenant(tenantId, async (tx) => {
+      const created = await tx.benefitEnrollment.create({
+        data: {
+          tenantId,
+          employeeId: dto.employeeId,
+          planId: dto.planId,
+          tier: dto.tier as never,
+          status: 'PENDING' as never,
+          effectiveDate: new Date(dto.effectiveDate),
+          endDate: dto.endDate ? new Date(dto.endDate) : null,
+          employeePremium: breakdown.employeePremium,
+          employerPremium: breakdown.employerPremium,
+          electedAt: new Date(),
+        },
+        include: { plan: true },
       });
-    }
+
+      // Link dependents if provided
+      if (dto.dependentIds?.length) {
+        await tx.benefitDependent.updateMany({
+          where: { id: { in: dto.dependentIds }, employeeId: dto.employeeId },
+          data: { enrollmentId: created.id },
+        });
+      }
+
+      return created;
+    });
 
     this.logger.log(`Enrollment created: employee=${dto.employeeId} plan=${dto.planId}`);
     return enrollment;
@@ -144,25 +151,29 @@ export class BenefitsService {
     if (query.employeeId) where['employeeId'] = query.employeeId;
     if (query.status) where['status'] = query.status;
 
-    const [data, total] = await Promise.all([
-      this.db.client.benefitEnrollment.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { createdAt: 'desc' },
-        include: { plan: true, dependents: true },
-      }),
-      this.db.client.benefitEnrollment.count({ where }),
-    ]);
+    const [data, total] = await this.db.forTenant(tenantId, (tx) =>
+      Promise.all([
+        tx.benefitEnrollment.findMany({
+          where,
+          skip,
+          take: limit,
+          orderBy: { createdAt: 'desc' },
+          include: { plan: true, dependents: true },
+        }),
+        tx.benefitEnrollment.count({ where }),
+      ]),
+    );
 
     return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 
   async getEnrollment(tenantId: string, enrollmentId: string) {
-    const enrollment = await this.db.client.benefitEnrollment.findFirst({
-      where: { id: enrollmentId, tenantId },
-      include: { plan: true, dependents: true },
-    });
+    const enrollment = await this.db.forTenant(tenantId, (tx) =>
+      tx.benefitEnrollment.findFirst({
+        where: { id: enrollmentId, tenantId },
+        include: { plan: true, dependents: true },
+      }),
+    );
     if (!enrollment) throw new NotFoundException(`Enrollment ${enrollmentId} not found`);
 
     // Mask SSN on dependents for HIPAA compliance
@@ -175,19 +186,17 @@ export class BenefitsService {
     return { ...enrollment, dependents: maskedDependents };
   }
 
-  async updateEnrollmentStatus(
-    tenantId: string,
-    enrollmentId: string,
-    status: string,
-  ) {
-    const enrollment = await this.db.client.benefitEnrollment.findFirst({
-      where: { id: enrollmentId, tenantId },
-    });
-    if (!enrollment) throw new NotFoundException(`Enrollment ${enrollmentId} not found`);
+  async updateEnrollmentStatus(tenantId: string, enrollmentId: string, status: string) {
+    return this.db.forTenant(tenantId, async (tx) => {
+      const enrollment = await tx.benefitEnrollment.findFirst({
+        where: { id: enrollmentId, tenantId },
+      });
+      if (!enrollment) throw new NotFoundException(`Enrollment ${enrollmentId} not found`);
 
-    return this.db.client.benefitEnrollment.update({
-      where: { id: enrollmentId },
-      data: { status: status as never },
+      return tx.benefitEnrollment.update({
+        where: { id: enrollmentId },
+        data: { status: status as never },
+      });
     });
   }
 
@@ -197,17 +206,19 @@ export class BenefitsService {
     // Encrypt SSN if provided (HIPAA: field-level encryption)
     const ssnEncrypted = dto.ssn ? this.encryption.encrypt(dto.ssn) : null;
 
-    const dependent = await this.db.client.benefitDependent.create({
-      data: {
-        employeeId: dto.employeeId,
-        enrollmentId: dto.enrollmentId ?? null,
-        firstName: dto.firstName,
-        lastName: dto.lastName,
-        relationship: dto.relationship as never,
-        dateOfBirth: new Date(dto.dateOfBirth),
-        ssnEncrypted,
-      },
-    });
+    const dependent = await this.db.forTenant(tenantId, (tx) =>
+      tx.benefitDependent.create({
+        data: {
+          employeeId: dto.employeeId,
+          enrollmentId: dto.enrollmentId ?? null,
+          firstName: dto.firstName,
+          lastName: dto.lastName,
+          relationship: dto.relationship as never,
+          dateOfBirth: new Date(dto.dateOfBirth),
+          ssnEncrypted,
+        },
+      }),
+    );
 
     this.logger.log(`Dependent created for employee=${dto.employeeId}`);
     // Return with masked SSN — never expose full SSN
@@ -218,11 +229,13 @@ export class BenefitsService {
     };
   }
 
-  async listDependents(employeeId: string) {
-    const dependents = await this.db.client.benefitDependent.findMany({
-      where: { employeeId },
-      orderBy: { createdAt: 'desc' },
-    });
+  async listDependents(tenantId: string, employeeId: string) {
+    const dependents = await this.db.forTenant(tenantId, (tx) =>
+      tx.benefitDependent.findMany({
+        where: { employeeId },
+        orderBy: { createdAt: 'desc' },
+      }),
+    );
 
     return dependents.map((dep) => ({
       ...dep,
@@ -231,63 +244,71 @@ export class BenefitsService {
     }));
   }
 
-  async updateDependent(dependentId: string, dto: UpdateDependentDto) {
-    const existing = await this.db.client.benefitDependent.findUnique({
-      where: { id: dependentId },
+  async updateDependent(tenantId: string, dependentId: string, dto: UpdateDependentDto) {
+    return this.db.forTenant(tenantId, async (tx) => {
+      const existing = await tx.benefitDependent.findUnique({
+        where: { id: dependentId },
+      });
+      if (!existing) throw new NotFoundException(`Dependent ${dependentId} not found`);
+
+      const data: Record<string, unknown> = {};
+      if (dto.firstName !== undefined) data['firstName'] = dto.firstName;
+      if (dto.lastName !== undefined) data['lastName'] = dto.lastName;
+      if (dto.relationship !== undefined) data['relationship'] = dto.relationship;
+      if (dto.dateOfBirth !== undefined) data['dateOfBirth'] = new Date(dto.dateOfBirth);
+      if (dto.ssn !== undefined) data['ssnEncrypted'] = this.encryption.encrypt(dto.ssn);
+
+      const updated = await tx.benefitDependent.update({
+        where: { id: dependentId },
+        data,
+      });
+
+      return {
+        ...updated,
+        ssnEncrypted: undefined,
+        ssnMasked: this.encryption.maskSsn(updated.ssnEncrypted),
+      };
     });
-    if (!existing) throw new NotFoundException(`Dependent ${dependentId} not found`);
-
-    const data: Record<string, unknown> = {};
-    if (dto.firstName !== undefined) data['firstName'] = dto.firstName;
-    if (dto.lastName !== undefined) data['lastName'] = dto.lastName;
-    if (dto.relationship !== undefined) data['relationship'] = dto.relationship;
-    if (dto.dateOfBirth !== undefined) data['dateOfBirth'] = new Date(dto.dateOfBirth);
-    if (dto.ssn !== undefined) data['ssnEncrypted'] = this.encryption.encrypt(dto.ssn);
-
-    const updated = await this.db.client.benefitDependent.update({
-      where: { id: dependentId },
-      data,
-    });
-
-    return {
-      ...updated,
-      ssnEncrypted: undefined,
-      ssnMasked: this.encryption.maskSsn(updated.ssnEncrypted),
-    };
   }
 
-  async deleteDependent(dependentId: string) {
-    const existing = await this.db.client.benefitDependent.findUnique({
-      where: { id: dependentId },
+  async deleteDependent(tenantId: string, dependentId: string) {
+    return this.db.forTenant(tenantId, async (tx) => {
+      const existing = await tx.benefitDependent.findUnique({
+        where: { id: dependentId },
+      });
+      if (!existing) throw new NotFoundException(`Dependent ${dependentId} not found`);
+      return tx.benefitDependent.delete({ where: { id: dependentId } });
     });
-    if (!existing) throw new NotFoundException(`Dependent ${dependentId} not found`);
-    return this.db.client.benefitDependent.delete({ where: { id: dependentId } });
   }
 
   // ─── Life Events ────────────────────────────────────────────────────
 
   async createLifeEvent(tenantId: string, dto: CreateLifeEventDto) {
-    return this.db.client.lifeEvent.create({
-      data: {
-        tenantId,
-        employeeId: dto.employeeId,
-        eventType: dto.eventType as never,
-        eventDate: new Date(dto.eventDate),
-        qualifyingDate: new Date(dto.qualifyingDate),
-        description: dto.description ?? null,
-        status: 'PENDING',
-      },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.lifeEvent.create({
+        data: {
+          tenantId,
+          employeeId: dto.employeeId,
+          eventType: dto.eventType as never,
+          eventDate: new Date(dto.eventDate),
+          qualifyingDate: new Date(dto.qualifyingDate),
+          description: dto.description ?? null,
+          status: 'PENDING',
+        },
+      }),
+    );
   }
 
   async listLifeEvents(tenantId: string, employeeId?: string) {
     const where: Record<string, unknown> = { tenantId };
     if (employeeId) where['employeeId'] = employeeId;
 
-    return this.db.client.lifeEvent.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.lifeEvent.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+      }),
+    );
   }
 
   async reviewLifeEvent(
@@ -296,14 +317,16 @@ export class BenefitsService {
     status: 'APPROVED' | 'DENIED',
     reviewerId: string,
   ) {
-    const event = await this.db.client.lifeEvent.findFirst({
-      where: { id: eventId, tenantId },
-    });
-    if (!event) throw new NotFoundException(`Life event ${eventId} not found`);
+    return this.db.forTenant(tenantId, async (tx) => {
+      const event = await tx.lifeEvent.findFirst({
+        where: { id: eventId, tenantId },
+      });
+      if (!event) throw new NotFoundException(`Life event ${eventId} not found`);
 
-    return this.db.client.lifeEvent.update({
-      where: { id: eventId },
-      data: { status, reviewedBy: reviewerId, reviewedAt: new Date() },
+      return tx.lifeEvent.update({
+        where: { id: eventId },
+        data: { status, reviewedBy: reviewerId, reviewedAt: new Date() },
+      });
     });
   }
 
@@ -329,11 +352,7 @@ export class BenefitsService {
     });
   }
 
-  async updateEnrollmentWindow(
-    tenantId: string,
-    windowId: string,
-    dto: UpdateEnrollmentWindowDto,
-  ) {
+  async updateEnrollmentWindow(tenantId: string, windowId: string, dto: UpdateEnrollmentWindowDto) {
     const existing = await this.db.client.enrollmentWindow.findFirst({
       where: { id: windowId, tenantId },
     });
@@ -366,4 +385,3 @@ export class BenefitsService {
     };
   }
 }
-

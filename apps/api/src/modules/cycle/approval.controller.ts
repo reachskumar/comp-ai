@@ -85,8 +85,8 @@ export class ApprovalController {
 
   @Get(':id/approvals/chain')
   @ApiOperation({ summary: 'Get the approval chain configuration for a cycle' })
-  async getApprovalChain(@Param('id') cycleId: string) {
-    const chain = await this.approvalService.getApprovalChain(cycleId);
+  async getApprovalChain(@Param('id') cycleId: string, @Request() req: AuthRequest) {
+    const chain = await this.approvalService.getApprovalChain(req.user.tenantId, cycleId);
     return { cycleId, approvalChain: chain };
   }
 
