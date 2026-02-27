@@ -11,12 +11,13 @@ import {
   START,
   END,
 } from '@langchain/langgraph';
-import { ChatOpenAI } from '@langchain/openai';
+import type { ChatOpenAI } from '@langchain/openai';
 import type { StructuredToolInterface } from '@langchain/core/tools';
 import type { BaseCheckpointSaver } from '@langchain/langgraph';
 import {
   loadAIConfig,
   resolveModelConfig,
+  createChatModel,
   type AIConfig,
   type ModelConfig,
 } from './config.js';
@@ -111,26 +112,17 @@ export async function createAgentGraph<SD extends StateDefinition>(
     ...options.modelConfig,
   };
 
-  // Create OpenAI model
-  const model = new ChatOpenAI({
-    openAIApiKey: aiConfig.apiKey,
-    modelName: modelConfig.model,
-    temperature: modelConfig.temperature,
-    maxTokens: modelConfig.maxTokens,
-  });
+  // Create model (OpenAI or Azure OpenAI based on config)
+  const model = (await createChatModel(aiConfig, modelConfig)) as ChatOpenAI;
 
   // Bind tools if provided
-  const boundModel = definition.tools?.length
-    ? model.bindTools(definition.tools)
-    : model;
+  const boundModel = definition.tools?.length ? model.bindTools(definition.tools) : model;
 
   // Store the model on the graph for node access
   void boundModel;
 
   // Create checkpointer
-  const checkpointer =
-    options.checkpointer ??
-    (await createCheckpointer(options.connectionString));
+  const checkpointer = options.checkpointer ?? (await createCheckpointer(options.connectionString));
 
   // Build graph
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -143,10 +135,7 @@ export async function createAgentGraph<SD extends StateDefinition>(
 
   // Add simple edges
   for (const [from, to] of definition.edges) {
-    builder.addEdge(
-      from === '__start__' ? START : from,
-      to === '__end__' ? END : to,
-    );
+    builder.addEdge(from === '__start__' ? START : from, to === '__end__' ? END : to);
   }
 
   // Add conditional edges
@@ -163,4 +152,3 @@ export async function createAgentGraph<SD extends StateDefinition>(
 }
 
 export { START, END } from '@langchain/langgraph';
-

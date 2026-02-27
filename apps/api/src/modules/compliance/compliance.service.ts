@@ -19,21 +19,25 @@ export class ComplianceService implements ComplianceDbAdapter {
   // ─── Scan Management ────────────────────────────────────
 
   async createScan(tenantId: string, userId: string, scanConfig?: Record<string, unknown>) {
-    return this.db.client.complianceScan.create({
-      data: {
-        tenantId,
-        userId,
-        status: 'PENDING',
-        scanConfig: (scanConfig ?? {}) as Prisma.InputJsonValue,
-      },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.complianceScan.create({
+        data: {
+          tenantId,
+          userId,
+          status: 'PENDING',
+          scanConfig: (scanConfig ?? {}) as Prisma.InputJsonValue,
+        },
+      }),
+    );
   }
 
   async runScan(scanId: string, tenantId: string, userId: string) {
-    await this.db.client.complianceScan.update({
-      where: { id: scanId },
-      data: { status: 'RUNNING', startedAt: new Date() },
-    });
+    await this.db.forTenant(tenantId, (tx) =>
+      tx.complianceScan.update({
+        where: { id: scanId },
+        data: { status: 'RUNNING', startedAt: new Date() },
+      }),
+    );
 
     try {
       const { graph } = await buildComplianceScannerGraph(this, tenantId);
@@ -53,45 +57,48 @@ export class ComplianceService implements ComplianceDbAdapter {
       const overallScore = (result.overallScore as number) ?? 0;
       const aiReport = (result.aiReport as string) ?? '';
 
-      // Persist findings
-      if (findings.length > 0) {
-        await this.db.client.complianceFinding.createMany({
-          data: findings.map((f) => ({
-            scanId,
-            category: this.mapCategory(f.category),
-            severity: this.mapSeverity(f.severity),
-            title: f.title,
-            description: f.description,
-            explanation: f.explanation ?? '',
-            remediation: f.remediation ?? '',
-            affectedScope: (f.affectedScope ?? {}) as Prisma.InputJsonValue,
-          })),
-        });
-      }
+      // Persist findings and update scan in a single tenant-scoped transaction
+      await this.db.forTenant(tenantId, async (tx) => {
+        if (findings.length > 0) {
+          await tx.complianceFinding.createMany({
+            data: findings.map((f) => ({
+              scanId,
+              category: this.mapCategory(f.category),
+              severity: this.mapSeverity(f.severity),
+              title: f.title,
+              description: f.description,
+              explanation: f.explanation ?? '',
+              remediation: f.remediation ?? '',
+              affectedScope: (f.affectedScope ?? {}) as Prisma.InputJsonValue,
+            })),
+          });
+        }
 
-      // Update scan
-      await this.db.client.complianceScan.update({
-        where: { id: scanId },
-        data: {
-          status: 'COMPLETED',
-          overallScore,
-          aiReport,
-          riskSummary: this.buildRiskSummary(findings),
-          completedAt: new Date(),
-        },
+        await tx.complianceScan.update({
+          where: { id: scanId },
+          data: {
+            status: 'COMPLETED',
+            overallScore,
+            aiReport,
+            riskSummary: this.buildRiskSummary(findings),
+            completedAt: new Date(),
+          },
+        });
       });
 
       return { scanId, overallScore, findings, aiReport };
     } catch (error) {
       this.logger.error(`Compliance scan failed: ${scanId}`, error);
-      await this.db.client.complianceScan.update({
-        where: { id: scanId },
-        data: {
-          status: 'FAILED',
-          errorMsg: error instanceof Error ? error.message : 'Unknown error',
-          completedAt: new Date(),
-        },
-      });
+      await this.db.forTenant(tenantId, (tx) =>
+        tx.complianceScan.update({
+          where: { id: scanId },
+          data: {
+            status: 'FAILED',
+            errorMsg: error instanceof Error ? error.message : 'Unknown error',
+            completedAt: new Date(),
+          },
+        }),
+      );
       throw error;
     }
   }
@@ -104,110 +111,135 @@ export class ComplianceService implements ComplianceDbAdapter {
       where.status = options.status as Prisma.EnumComplianceScanStatusFilter;
     }
 
-    const [items, total] = await Promise.all([
-      this.db.client.complianceScan.findMany({
-        where,
-        orderBy: { createdAt: 'desc' },
-        skip: (page - 1) * limit,
-        take: limit,
-        include: { _count: { select: { findings: true } } },
-      }),
-      this.db.client.complianceScan.count({ where }),
-    ]);
+    const [items, total] = await this.db.forTenant(tenantId, (tx) =>
+      Promise.all([
+        tx.complianceScan.findMany({
+          where,
+          orderBy: { createdAt: 'desc' },
+          skip: (page - 1) * limit,
+          take: limit,
+          include: { _count: { select: { findings: true } } },
+        }),
+        tx.complianceScan.count({ where }),
+      ]),
+    );
 
     return { items, total, page, limit };
   }
 
   async getScan(scanId: string, tenantId: string) {
-    return this.db.client.complianceScan.findFirst({
-      where: { id: scanId, tenantId },
-      include: {
-        findings: { orderBy: [{ severity: 'asc' }, { createdAt: 'asc' }] },
-      },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.complianceScan.findFirst({
+        where: { id: scanId, tenantId },
+        include: {
+          findings: { orderBy: [{ severity: 'asc' }, { createdAt: 'asc' }] },
+        },
+      }),
+    );
   }
 
   async getLatestScore(tenantId: string) {
-    const scan = await this.db.client.complianceScan.findFirst({
-      where: { tenantId, status: 'COMPLETED' },
-      orderBy: { completedAt: 'desc' },
-      select: { id: true, overallScore: true, completedAt: true, riskSummary: true },
-    });
+    const scan = await this.db.forTenant(tenantId, (tx) =>
+      tx.complianceScan.findFirst({
+        where: { tenantId, status: 'COMPLETED' },
+        orderBy: { completedAt: 'desc' },
+        select: { id: true, overallScore: true, completedAt: true, riskSummary: true },
+      }),
+    );
     return scan ?? { overallScore: null, completedAt: null, riskSummary: {} };
   }
 
   async getScoreHistory(tenantId: string, limit = 10) {
-    return this.db.client.complianceScan.findMany({
-      where: { tenantId, status: 'COMPLETED' },
-      orderBy: { completedAt: 'desc' },
-      take: limit,
-      select: { id: true, overallScore: true, completedAt: true },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.complianceScan.findMany({
+        where: { tenantId, status: 'COMPLETED' },
+        orderBy: { completedAt: 'desc' },
+        take: limit,
+        select: { id: true, overallScore: true, completedAt: true },
+      }),
+    );
   }
 
   // ─── ComplianceDbAdapter Implementation ─────────────────
 
   async getAllRules(tenantId: string): Promise<unknown[]> {
-    return this.db.client.ruleSet.findMany({
-      where: { tenantId },
-      include: { rules: true },
-      orderBy: { updatedAt: 'desc' },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.ruleSet.findMany({
+        where: { tenantId },
+        include: { rules: true },
+        orderBy: { updatedAt: 'desc' },
+      }),
+    );
   }
 
   async getRecentDecisions(tenantId: string, limit?: number): Promise<unknown[]> {
-    return this.db.client.compRecommendation.findMany({
-      where: { cycle: { tenantId } },
-      take: limit ?? 100,
-      include: {
-        employee: {
-          select: {
-            firstName: true, lastName: true, department: true,
-            level: true, baseSalary: true, location: true,
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.compRecommendation.findMany({
+        where: { cycle: { tenantId } },
+        take: limit ?? 100,
+        include: {
+          employee: {
+            select: {
+              firstName: true,
+              lastName: true,
+              department: true,
+              level: true,
+              baseSalary: true,
+              location: true,
+            },
           },
+          cycle: { select: { name: true, status: true } },
         },
-        cycle: { select: { name: true, status: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+        orderBy: { createdAt: 'desc' },
+      }),
+    );
   }
 
   async getCompDataStats(tenantId: string): Promise<unknown> {
-    const [salaryByDept, salaryByLevel, overall, headcount] = await Promise.all([
-      this.db.client.employee.groupBy({
+    return this.db.forTenant(tenantId, (tx) => {
+      const salaryByDeptP = tx.employee.groupBy({
         by: ['department'],
         where: { tenantId },
         _avg: { baseSalary: true, totalComp: true },
         _min: { baseSalary: true },
         _max: { baseSalary: true },
         _count: true,
-      }),
-      this.db.client.employee.groupBy({
+      });
+      const salaryByLevelP = tx.employee.groupBy({
         by: ['level'],
         where: { tenantId },
         _avg: { baseSalary: true, totalComp: true },
         _count: true,
-      }),
-      this.db.client.employee.aggregate({
+      });
+      const overallP = tx.employee.aggregate({
         where: { tenantId },
         _avg: { baseSalary: true, totalComp: true },
         _min: { baseSalary: true },
         _max: { baseSalary: true },
         _count: true,
-      }),
-      this.db.client.employee.count({ where: { tenantId } }),
-    ]);
+      });
+      const headcountP = tx.employee.count({ where: { tenantId } });
 
-    return { salaryByDept, salaryByLevel, overall, headcount };
+      return Promise.all([salaryByDeptP, salaryByLevelP, overallP, headcountP]).then(
+        ([salaryByDept, salaryByLevel, overall, headcount]) => ({
+          salaryByDept,
+          salaryByLevel,
+          overall,
+          headcount,
+        }),
+      );
+    });
   }
 
   async getBenefitsConfigs(tenantId: string): Promise<unknown[]> {
-    return this.db.client.benefitPlan.findMany({
-      where: { tenantId },
-      include: {
-        _count: { select: { enrollments: true } },
-      },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.benefitPlan.findMany({
+        where: { tenantId },
+        include: {
+          _count: { select: { enrollments: true } },
+        },
+      }),
+    );
   }
 
   async getRegulatoryRequirements(tenantId: string): Promise<unknown> {
@@ -217,7 +249,13 @@ export class ComplianceService implements ComplianceDbAdapter {
       flsa: {
         salaryThreshold: 35568,
         overtimeMultiplier: 1.5,
-        exemptCategories: ['EXECUTIVE', 'ADMINISTRATIVE', 'PROFESSIONAL', 'COMPUTER', 'OUTSIDE_SALES'],
+        exemptCategories: [
+          'EXECUTIVE',
+          'ADMINISTRATIVE',
+          'PROFESSIONAL',
+          'COMPUTER',
+          'OUTSIDE_SALES',
+        ],
       },
       payEquity: {
         maxGapPercentage: 10,
@@ -238,8 +276,24 @@ export class ComplianceService implements ComplianceDbAdapter {
 
   // ─── Private Helpers ────────────────────────────────────
 
-  private mapCategory(category: string): 'FLSA_OVERTIME' | 'PAY_EQUITY' | 'POLICY_VIOLATION' | 'BENEFITS_ELIGIBILITY' | 'REGULATORY_GAP' | 'DATA_QUALITY' {
-    const map: Record<string, 'FLSA_OVERTIME' | 'PAY_EQUITY' | 'POLICY_VIOLATION' | 'BENEFITS_ELIGIBILITY' | 'REGULATORY_GAP' | 'DATA_QUALITY'> = {
+  private mapCategory(
+    category: string,
+  ):
+    | 'FLSA_OVERTIME'
+    | 'PAY_EQUITY'
+    | 'POLICY_VIOLATION'
+    | 'BENEFITS_ELIGIBILITY'
+    | 'REGULATORY_GAP'
+    | 'DATA_QUALITY' {
+    const map: Record<
+      string,
+      | 'FLSA_OVERTIME'
+      | 'PAY_EQUITY'
+      | 'POLICY_VIOLATION'
+      | 'BENEFITS_ELIGIBILITY'
+      | 'REGULATORY_GAP'
+      | 'DATA_QUALITY'
+    > = {
       FLSA_OVERTIME: 'FLSA_OVERTIME',
       PAY_EQUITY: 'PAY_EQUITY',
       POLICY_VIOLATION: 'POLICY_VIOLATION',
@@ -279,4 +333,3 @@ export class ComplianceService implements ComplianceDbAdapter {
     };
   }
 }
-

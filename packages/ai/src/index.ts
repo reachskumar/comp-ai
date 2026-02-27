@@ -5,7 +5,15 @@
  */
 
 // Configuration
-export { loadAIConfig, resolveModelConfig, type AIConfig, type ModelConfig } from './config.js';
+export {
+  loadAIConfig,
+  resolveModelConfig,
+  createChatModel,
+  type AIProvider,
+  type AIConfig,
+  type AzureConfig,
+  type ModelConfig,
+} from './config.js';
 
 // Base state schema
 export {

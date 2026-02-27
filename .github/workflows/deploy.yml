@@ -1,0 +1,103 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  EKS_CLUSTER: compportiq-prod-eks
+  ECR_API_REPO: compportiq-prod/api
+  ECR_WEB_REPO: compportiq-prod/web
+  K8S_NAMESPACE: compportiq
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-deploy:
+    name: Build, Push & Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image tag
+        id: tag
+        run: echo "TAG=sha-$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Build & push API image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_API_REPO }}:${{ steps.tag.outputs.TAG }}
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_API_REPO }}:latest
+
+      - name: Build & push Web image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_WEB_REPO }}:${{ steps.tag.outputs.TAG }}
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_WEB_REPO }}:latest
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.29.0'
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name ${{ env.EKS_CLUSTER }}
+
+      - name: Deploy to EKS
+        run: |
+          REGISTRY="${{ steps.ecr-login.outputs.registry }}"
+          TAG="${{ steps.tag.outputs.TAG }}"
+
+          # Update image tags in kustomization
+          cd infra/k8s/overlays/prod
+          kustomize edit set image \
+            "PLACEHOLDER_API_IMAGE=${REGISTRY}/${ECR_API_REPO}:${TAG}" \
+            "PLACEHOLDER_WEB_IMAGE=${REGISTRY}/${ECR_WEB_REPO}:${TAG}"
+
+          # Apply manifests
+          kustomize build . | kubectl apply -f -
+
+          # Wait for rollout
+          kubectl rollout status deployment/compportiq-api \
+            -n ${{ env.K8S_NAMESPACE }} --timeout=300s
+          kubectl rollout status deployment/compportiq-web \
+            -n ${{ env.K8S_NAMESPACE }} --timeout=300s
+
+      - name: Verify deployment
+        run: |
+          kubectl get pods -n ${{ env.K8S_NAMESPACE }}
+          kubectl get svc -n ${{ env.K8S_NAMESPACE }}
+          kubectl get ingress -n ${{ env.K8S_NAMESPACE }}
+

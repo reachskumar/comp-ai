@@ -9,7 +9,6 @@
  */
 
 import { START, END } from '@langchain/langgraph';
-import { ChatOpenAI } from '@langchain/openai';
 import {
   HumanMessage,
   SystemMessage,
@@ -67,26 +66,19 @@ export async function buildCopilotGraph(
   const tools = createCopilotTools(tenantId, db);
 
   // Resolve config to create model with tools bound
-  const { loadAIConfig, resolveModelConfig } = await import('../config.js');
+  const { loadAIConfig, resolveModelConfig, createChatModel } = await import('../config.js');
   const aiConfig = options.config ?? loadAIConfig();
   const modelConfig = {
     ...resolveModelConfig(aiConfig, 'copilot'),
     ...options.modelConfig,
   };
 
-  const model = new ChatOpenAI({
-    openAIApiKey: aiConfig.apiKey,
-    modelName: modelConfig.model,
-    temperature: modelConfig.temperature,
-    maxTokens: modelConfig.maxTokens,
-  });
+  const model = await createChatModel(aiConfig, modelConfig);
 
   const modelWithTools = model.bindTools(tools);
 
   // Agent node: calls the LLM (with tools bound)
-  async function agentNode(
-    state: BaseAgentStateType,
-  ): Promise<{ messages: BaseMessage[] }> {
+  async function agentNode(state: BaseAgentStateType): Promise<{ messages: BaseMessage[] }> {
     const systemMsg = new SystemMessage(SYSTEM_PROMPT);
     const response = await modelWithTools.invoke([systemMsg, ...state.messages]);
     return { messages: [response] };
@@ -95,9 +87,7 @@ export async function buildCopilotGraph(
   // Tool executor node
   const toolNode = new ToolNode(tools);
 
-  async function toolExecutor(
-    state: BaseAgentStateType,
-  ): Promise<{ messages: BaseMessage[] }> {
+  async function toolExecutor(state: BaseAgentStateType): Promise<{ messages: BaseMessage[] }> {
     const result = await toolNode.invoke(state);
     // ToolNode returns { messages: [...] }
     const msgs = (result as { messages?: BaseMessage[] }).messages ?? [];

@@ -1,6 +1,11 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createPrismaClient, PrismaClient } from '@compensation/database';
+import {
+  createPrismaClient,
+  PrismaClient,
+  withTenantScope,
+  type Prisma,
+} from '@compensation/database';
 
 const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 1000;
@@ -33,6 +38,37 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /**
+   * Execute a callback within a tenant-scoped RLS transaction.
+   *
+   * All queries inside the callback are restricted by PostgreSQL Row-Level
+   * Security to only return/modify rows belonging to the specified tenant.
+   *
+   * Uses `SET LOCAL` which is scoped to the transaction — the tenant context
+   * cannot leak across connections in the pool.
+   *
+   * @param tenantId - The tenant ID to scope queries to.
+   * @param callback - Async function receiving a transaction client.
+   * @returns The result of the callback.
+   *
+   * @example
+   * ```ts
+   * const employees = await this.db.forTenant(tenantId, async (tx) => {
+   *   return tx.employee.findMany({ where: { department: 'Engineering' } });
+   *   // tenantId filter is enforced by RLS — even without WHERE tenantId
+   * });
+   * ```
+   */
+  async forTenant<T>(
+    tenantId: string,
+    callback: (tx: Prisma.TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    if (!tenantId) {
+      throw new Error('forTenant requires a non-empty tenantId');
+    }
+    return withTenantScope(this._client, tenantId, callback);
+  }
+
   async isHealthy(): Promise<boolean> {
     try {
       await this._client.$queryRawUnsafe('SELECT 1');
@@ -50,10 +86,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         return;
       } catch (error) {
         if (attempt === MAX_RETRIES) {
-          this.logger.error(
-            `Failed to connect to database after ${MAX_RETRIES} attempts`,
-            error,
-          );
+          this.logger.error(`Failed to connect to database after ${MAX_RETRIES} attempts`, error);
           throw error;
         }
         const delay = BASE_DELAY_MS * Math.pow(2, attempt - 1);
@@ -69,4 +102,3 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }
-

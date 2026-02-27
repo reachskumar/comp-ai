@@ -8,13 +8,7 @@
  */
 
 import { START, END } from '@langchain/langgraph';
-import { ChatOpenAI } from '@langchain/openai';
-import {
-  HumanMessage,
-  SystemMessage,
-  AIMessage,
-  type BaseMessage,
-} from '@langchain/core/messages';
+import { HumanMessage, SystemMessage, AIMessage, type BaseMessage } from '@langchain/core/messages';
 import { ToolNode } from '@langchain/langgraph/prebuilt';
 import { Annotation, MessagesAnnotation } from '@langchain/langgraph';
 import { createAgentGraph } from '../graph-factory.js';
@@ -115,7 +109,6 @@ export interface DataQualityGraphOutput {
   rawResponse: string;
 }
 
-
 // ─── Graph Builder ──────────────────────────────────────────
 
 /**
@@ -128,25 +121,18 @@ export async function buildDataQualityGraph(
 ) {
   const tools = createDataQualityTools(tenantId, db);
 
-  const { loadAIConfig, resolveModelConfig } = await import('../config.js');
+  const { loadAIConfig, resolveModelConfig, createChatModel } = await import('../config.js');
   const aiConfig = options.config ?? loadAIConfig();
   const modelConfig = {
     ...resolveModelConfig(aiConfig, 'data-quality'),
     ...options.modelConfig,
   };
 
-  const model = new ChatOpenAI({
-    openAIApiKey: aiConfig.apiKey,
-    modelName: modelConfig.model,
-    temperature: modelConfig.temperature,
-    maxTokens: modelConfig.maxTokens,
-  });
+  const model = await createChatModel(aiConfig, modelConfig);
 
   const modelWithTools = model.bindTools(tools);
 
-  async function agentNode(
-    state: DataQualityStateType,
-  ): Promise<{ messages: BaseMessage[] }> {
+  async function agentNode(state: DataQualityStateType): Promise<{ messages: BaseMessage[] }> {
     const systemMsg = new SystemMessage(SYSTEM_PROMPT);
     const response = await modelWithTools.invoke([systemMsg, ...state.messages]);
     return { messages: [response] };
@@ -154,9 +140,7 @@ export async function buildDataQualityGraph(
 
   const toolNode = new ToolNode(tools);
 
-  async function toolExecutor(
-    state: DataQualityStateType,
-  ): Promise<{ messages: BaseMessage[] }> {
+  async function toolExecutor(state: DataQualityStateType): Promise<{ messages: BaseMessage[] }> {
     const result = await toolNode.invoke(state);
     const msgs = (result as { messages?: BaseMessage[] }).messages ?? [];
     return { messages: msgs };
@@ -182,12 +166,17 @@ export async function buildDataQualityGraph(
       graphType: 'data-quality',
       stateSchema: DataQualityState,
       nodes: { agent: agentNode, tools: toolExecutor },
-      edges: [[START, 'agent'], ['tools', 'agent']],
-      conditionalEdges: [{
-        source: 'agent',
-        router: shouldContinue,
-        destinations: { tools: 'tools', end: END },
-      }],
+      edges: [
+        [START, 'agent'],
+        ['tools', 'agent'],
+      ],
+      conditionalEdges: [
+        {
+          source: 'agent',
+          router: shouldContinue,
+          destinations: { tools: 'tools', end: END },
+        },
+      ],
     },
     { ...options, config: aiConfig },
   );

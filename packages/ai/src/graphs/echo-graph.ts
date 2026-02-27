@@ -6,7 +6,6 @@
  */
 
 import { START, END } from '@langchain/langgraph';
-import { ChatOpenAI } from '@langchain/openai';
 import { HumanMessage, type BaseMessage } from '@langchain/core/messages';
 import { BaseAgentState, type BaseAgentStateType } from '../state.js';
 import { createAgentGraph } from '../graph-factory.js';
@@ -35,10 +34,9 @@ export interface EchoGraphOutput {
  * Create the echo agent node.
  * This closure captures the model instance so the node can call it.
  */
-function createEchoNode(model: ChatOpenAI) {
-  return async (
-    state: BaseAgentStateType,
-  ): Promise<{ messages: BaseMessage[] }> => {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function createEchoNode(model: any) {
+  return async (state: BaseAgentStateType): Promise<{ messages: BaseMessage[] }> => {
     const response = await model.invoke(state.messages);
     return { messages: [response] };
   };
@@ -63,7 +61,7 @@ function createEchoNode(model: ChatOpenAI) {
  */
 export async function buildEchoGraph(options: CreateGraphOptions = {}) {
   // We need the model before defining nodes, so resolve config first
-  const { loadAIConfig, resolveModelConfig } = await import('../config.js');
+  const { loadAIConfig, resolveModelConfig, createChatModel } = await import('../config.js');
 
   const aiConfig = options.config ?? loadAIConfig();
   const modelConfig = {
@@ -71,12 +69,7 @@ export async function buildEchoGraph(options: CreateGraphOptions = {}) {
     ...options.modelConfig,
   };
 
-  const model = new ChatOpenAI({
-    openAIApiKey: aiConfig.apiKey,
-    modelName: modelConfig.model,
-    temperature: modelConfig.temperature,
-    maxTokens: modelConfig.maxTokens,
-  });
+  const model = await createChatModel(aiConfig, modelConfig);
 
   const echoNode = createEchoNode(model);
 
@@ -127,4 +120,3 @@ export async function invokeEchoGraph(
     response,
   };
 }
-

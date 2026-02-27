@@ -95,34 +95,40 @@ export class PolicyRagService implements PolicyRagDbAdapter {
     content: string,
     mimeType: string,
   ) {
-    const doc = await this.db.client.policyDocument.create({
-      data: {
-        tenantId,
-        title,
-        fileName,
-        filePath: `uploads/policies/${tenantId}/${fileName}`,
-        fileSize: Buffer.byteLength(content, 'utf-8'),
-        mimeType,
-        status: 'PROCESSING',
-        uploadedBy: userId,
-      },
-    });
+    const doc = await this.db.forTenant(tenantId, (tx) =>
+      tx.policyDocument.create({
+        data: {
+          tenantId,
+          title,
+          fileName,
+          filePath: `uploads/policies/${tenantId}/${fileName}`,
+          fileSize: Buffer.byteLength(content, 'utf-8'),
+          mimeType,
+          status: 'PROCESSING',
+          uploadedBy: userId,
+        },
+      }),
+    );
 
     // Process in background (but await for simplicity in MVP)
     try {
       await this.processDocument(doc.id, tenantId, content);
     } catch (error) {
       this.logger.error(`Failed to process document ${doc.id}`, error);
-      await this.db.client.policyDocument.update({
-        where: { id: doc.id },
-        data: {
-          status: 'FAILED',
-          errorMessage: error instanceof Error ? error.message : 'Processing failed',
-        },
-      });
+      await this.db.forTenant(tenantId, (tx) =>
+        tx.policyDocument.update({
+          where: { id: doc.id },
+          data: {
+            status: 'FAILED',
+            errorMessage: error instanceof Error ? error.message : 'Processing failed',
+          },
+        }),
+      );
     }
 
-    return this.db.client.policyDocument.findUnique({ where: { id: doc.id } });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.policyDocument.findUnique({ where: { id: doc.id } }),
+    );
   }
 
   private async processDocument(documentId: string, tenantId: string, content: string) {
@@ -132,21 +138,23 @@ export class PolicyRagService implements PolicyRagDbAdapter {
     // Embed all chunks
     const embeddings = await this.embedTexts(chunks);
 
-    // Store chunks with embeddings
-    await this.db.client.policyChunk.createMany({
-      data: chunks.map((chunkContent, index) => ({
-        documentId,
-        tenantId,
-        chunkIndex: index,
-        content: chunkContent,
-        embedding: embeddings[index] as unknown as any,
-        metadata: { chunkIndex: index, totalChunks: chunks.length },
-      })),
-    });
+    // Store chunks with embeddings and update document status
+    await this.db.forTenant(tenantId, async (tx) => {
+      await tx.policyChunk.createMany({
+        data: chunks.map((chunkContent, index) => ({
+          documentId,
+          tenantId,
+          chunkIndex: index,
+          content: chunkContent,
+          embedding: embeddings[index] as unknown as any,
+          metadata: { chunkIndex: index, totalChunks: chunks.length },
+        })),
+      });
 
-    await this.db.client.policyDocument.update({
-      where: { id: documentId },
-      data: { status: 'READY', chunkCount: chunks.length },
+      await tx.policyDocument.update({
+        where: { id: documentId },
+        data: { status: 'READY', chunkCount: chunks.length },
+      });
     });
   }
 
@@ -156,32 +164,38 @@ export class PolicyRagService implements PolicyRagDbAdapter {
     const where: Record<string, unknown> = { tenantId };
     if (filters.status) where['status'] = filters.status;
 
-    const docs = await this.db.client.policyDocument.findMany({
-      where: where as any,
-      orderBy: { createdAt: 'desc' },
-    });
+    const docs = await this.db.forTenant(tenantId, (tx) =>
+      tx.policyDocument.findMany({
+        where: where as any,
+        orderBy: { createdAt: 'desc' },
+      }),
+    );
     return { data: docs, total: docs.length };
   }
 
   async deleteDocument(tenantId: string, id: string) {
-    const doc = await this.db.client.policyDocument.findFirst({
-      where: { id, tenantId },
-    });
-    if (!doc) throw new NotFoundException('Policy document not found');
+    return this.db.forTenant(tenantId, async (tx) => {
+      const doc = await tx.policyDocument.findFirst({
+        where: { id, tenantId },
+      });
+      if (!doc) throw new NotFoundException('Policy document not found');
 
-    // Cascade deletes chunks via Prisma relation
-    await this.db.client.policyDocument.delete({ where: { id } });
-    return { deleted: true };
+      // Cascade deletes chunks via Prisma relation
+      await tx.policyDocument.delete({ where: { id } });
+      return { deleted: true };
+    });
   }
 
   // ─── PolicyRagDbAdapter Implementation ─────────────────
 
   async searchPolicyChunks(tenantId: string, queryEmbedding: number[], topK: number) {
     // Fetch all chunks for this tenant (in-memory cosine similarity)
-    const chunks = await this.db.client.policyChunk.findMany({
-      where: { tenantId },
-      include: { document: { select: { title: true } } },
-    });
+    const chunks = await this.db.forTenant(tenantId, (tx) =>
+      tx.policyChunk.findMany({
+        where: { tenantId },
+        include: { document: { select: { title: true } } },
+      }),
+    );
 
     // Compute cosine similarity
     const scored = chunks.map((chunk) => {
@@ -207,11 +221,13 @@ export class PolicyRagService implements PolicyRagDbAdapter {
     const where: Record<string, unknown> = { tenantId };
     if (filters.status) where['status'] = filters.status;
 
-    const docs = await this.db.client.policyDocument.findMany({
-      where: where as any,
-      take: filters.limit ?? 20,
-      orderBy: { createdAt: 'desc' },
-    });
+    const docs = await this.db.forTenant(tenantId, (tx) =>
+      tx.policyDocument.findMany({
+        where: where as any,
+        take: filters.limit ?? 20,
+        orderBy: { createdAt: 'desc' },
+      }),
+    );
 
     return docs.map((d) => ({
       id: d.id,

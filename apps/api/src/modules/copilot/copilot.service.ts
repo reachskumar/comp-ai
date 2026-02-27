@@ -51,10 +51,18 @@ export class CopilotService implements CopilotDbAdapter {
 
   // ─── CopilotDbAdapter Implementation ──────────────────────
 
-  async queryEmployees(tenantId: string, filters: {
-    department?: string; level?: string; location?: string;
-    minSalary?: number; maxSalary?: number; search?: string; limit?: number;
-  }): Promise<unknown[]> {
+  async queryEmployees(
+    tenantId: string,
+    filters: {
+      department?: string;
+      level?: string;
+      location?: string;
+      minSalary?: number;
+      maxSalary?: number;
+      search?: string;
+      limit?: number;
+    },
+  ): Promise<unknown[]> {
     const where: Prisma.EmployeeWhereInput = { tenantId };
     if (filters.department) where.department = filters.department;
     if (filters.level) where.level = filters.level;
@@ -72,20 +80,36 @@ export class CopilotService implements CopilotDbAdapter {
       ];
     }
 
-    return this.db.client.employee.findMany({
-      where,
-      take: filters.limit ?? 50,
-      select: {
-        id: true, employeeCode: true, firstName: true, lastName: true,
-        department: true, level: true, location: true,
-        baseSalary: true, totalComp: true, currency: true, hireDate: true,
-      },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.employee.findMany({
+        where,
+        take: filters.limit ?? 50,
+        select: {
+          id: true,
+          employeeCode: true,
+          firstName: true,
+          lastName: true,
+          department: true,
+          level: true,
+          location: true,
+          baseSalary: true,
+          totalComp: true,
+          currency: true,
+          hireDate: true,
+        },
+      }),
+    );
   }
 
-  async queryCompensation(tenantId: string, filters: {
-    employeeId?: string; department?: string; component?: string; limit?: number;
-  }): Promise<unknown[]> {
+  async queryCompensation(
+    tenantId: string,
+    filters: {
+      employeeId?: string;
+      department?: string;
+      component?: string;
+      limit?: number;
+    },
+  ): Promise<unknown[]> {
     const where: Prisma.CompRecommendationWhereInput = {
       cycle: { tenantId },
     };
@@ -94,121 +118,152 @@ export class CopilotService implements CopilotDbAdapter {
       where.employee = { department: filters.department };
     }
 
-    return this.db.client.compRecommendation.findMany({
-      where,
-      take: filters.limit ?? 50,
-      include: {
-        employee: { select: { firstName: true, lastName: true, department: true } },
-        cycle: { select: { name: true, status: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.compRecommendation.findMany({
+        where,
+        take: filters.limit ?? 50,
+        include: {
+          employee: { select: { firstName: true, lastName: true, department: true } },
+          cycle: { select: { name: true, status: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+    );
   }
 
-  async queryRules(tenantId: string, filters: {
-    status?: string; ruleType?: string; search?: string; limit?: number;
-  }): Promise<unknown[]> {
+  async queryRules(
+    tenantId: string,
+    filters: {
+      status?: string;
+      ruleType?: string;
+      search?: string;
+      limit?: number;
+    },
+  ): Promise<unknown[]> {
     const where: Prisma.RuleSetWhereInput = { tenantId };
     if (filters.status) where.status = filters.status as Prisma.EnumRuleSetStatusFilter;
     if (filters.search) where.name = { contains: filters.search, mode: 'insensitive' };
 
-    return this.db.client.ruleSet.findMany({
-      where,
-      take: filters.limit ?? 20,
-      include: { rules: { take: 10 } },
-      orderBy: { updatedAt: 'desc' },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.ruleSet.findMany({
+        where,
+        take: filters.limit ?? 20,
+        include: { rules: { take: 10 } },
+        orderBy: { updatedAt: 'desc' },
+      }),
+    );
   }
 
-  async queryCycles(tenantId: string, filters: {
-    status?: string; cycleType?: string; limit?: number;
-  }): Promise<unknown[]> {
+  async queryCycles(
+    tenantId: string,
+    filters: {
+      status?: string;
+      cycleType?: string;
+      limit?: number;
+    },
+  ): Promise<unknown[]> {
     const where: Prisma.CompCycleWhereInput = { tenantId };
     if (filters.status) where.status = filters.status as Prisma.EnumCycleStatusFilter;
     if (filters.cycleType) where.cycleType = filters.cycleType as Prisma.EnumCycleTypeFilter;
 
-    return this.db.client.compCycle.findMany({
-      where,
-      take: filters.limit ?? 10,
-      include: { budgets: true },
-      orderBy: { createdAt: 'desc' },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.compCycle.findMany({
+        where,
+        take: filters.limit ?? 10,
+        include: { budgets: true },
+        orderBy: { createdAt: 'desc' },
+      }),
+    );
   }
 
-  async queryPayroll(tenantId: string, filters: {
-    status?: string; period?: string; limit?: number;
-  }): Promise<unknown[]> {
+  async queryPayroll(
+    tenantId: string,
+    filters: {
+      status?: string;
+      period?: string;
+      limit?: number;
+    },
+  ): Promise<unknown[]> {
     const where: Prisma.PayrollRunWhereInput = { tenantId };
     if (filters.status) where.status = filters.status as Prisma.EnumPayrollStatusFilter;
     if (filters.period) where.period = filters.period;
 
-    return this.db.client.payrollRun.findMany({
-      where,
-      take: filters.limit ?? 10,
-      include: { _count: { select: { lineItems: true, anomalies: true } } },
-      orderBy: { createdAt: 'desc' },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.payrollRun.findMany({
+        where,
+        take: filters.limit ?? 10,
+        include: { _count: { select: { lineItems: true, anomalies: true } } },
+        orderBy: { createdAt: 'desc' },
+      }),
+    );
   }
 
-  async queryAnalytics(tenantId: string, filters: {
-    metric: string; groupBy?: string; department?: string;
-  }): Promise<unknown> {
+  async queryAnalytics(
+    tenantId: string,
+    filters: {
+      metric: string;
+      groupBy?: string;
+      department?: string;
+    },
+  ): Promise<unknown> {
     const baseWhere: Prisma.EmployeeWhereInput = { tenantId };
     if (filters.department) baseWhere.department = filters.department;
 
-    switch (filters.metric) {
-      case 'avg_salary': {
-        const result = await this.db.client.employee.aggregate({
-          where: baseWhere,
-          _avg: { baseSalary: true, totalComp: true },
-          _count: true,
-        });
-        if (filters.groupBy === 'department') {
-          const grouped = await this.db.client.employee.groupBy({
-            by: ['department'],
-            where: { tenantId },
+    return this.db.forTenant(tenantId, async (tx) => {
+      switch (filters.metric) {
+        case 'avg_salary': {
+          const result = await tx.employee.aggregate({
+            where: baseWhere,
             _avg: { baseSalary: true, totalComp: true },
             _count: true,
           });
-          return { overall: result, byGroup: grouped };
+          if (filters.groupBy === 'department') {
+            const grouped = await tx.employee.groupBy({
+              by: ['department'],
+              where: { tenantId },
+              _avg: { baseSalary: true, totalComp: true },
+              _count: true,
+            });
+            return { overall: result, byGroup: grouped };
+          }
+          return result;
         }
-        return result;
-      }
-      case 'headcount': {
-        if (filters.groupBy === 'department') {
-          return this.db.client.employee.groupBy({
-            by: ['department'],
-            where: { tenantId },
+        case 'headcount': {
+          if (filters.groupBy === 'department') {
+            return tx.employee.groupBy({
+              by: ['department'],
+              where: { tenantId },
+              _count: true,
+            });
+          }
+          if (filters.groupBy === 'level') {
+            return tx.employee.groupBy({
+              by: ['level'],
+              where: { tenantId },
+              _count: true,
+            });
+          }
+          return tx.employee.count({ where: baseWhere });
+        }
+        case 'total_comp': {
+          return tx.employee.aggregate({
+            where: baseWhere,
+            _sum: { baseSalary: true, totalComp: true },
             _count: true,
           });
         }
-        if (filters.groupBy === 'level') {
-          return this.db.client.employee.groupBy({
-            by: ['level'],
-            where: { tenantId },
+        case 'salary_range': {
+          return tx.employee.aggregate({
+            where: baseWhere,
+            _min: { baseSalary: true },
+            _max: { baseSalary: true },
+            _avg: { baseSalary: true },
             _count: true,
           });
         }
-        return this.db.client.employee.count({ where: baseWhere });
+        default:
+          return { error: `Unknown metric: ${filters.metric}` };
       }
-      case 'total_comp': {
-        return this.db.client.employee.aggregate({
-          where: baseWhere,
-          _sum: { baseSalary: true, totalComp: true },
-          _count: true,
-        });
-      }
-      case 'salary_range': {
-        return this.db.client.employee.aggregate({
-          where: baseWhere,
-          _min: { baseSalary: true },
-          _max: { baseSalary: true },
-          _avg: { baseSalary: true },
-          _count: true,
-        });
-      }
-      default:
-        return { error: `Unknown metric: ${filters.metric}` };
-    }
+    });
   }
 }

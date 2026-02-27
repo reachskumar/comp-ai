@@ -251,6 +251,7 @@ model User {
   email        String
   name         String
   passwordHash String?
+  azureAdOid   String?  // Azure AD Object ID for SSO users
   role         UserRole @default(EMPLOYEE)
   avatarUrl    String?
   createdAt    DateTime @default(now())

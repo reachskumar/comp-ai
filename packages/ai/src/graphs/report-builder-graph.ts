@@ -10,18 +10,15 @@
  */
 
 import { START, END } from '@langchain/langgraph';
-import { ChatOpenAI } from '@langchain/openai';
-import {
-  HumanMessage,
-  SystemMessage,
-  AIMessage,
-  type BaseMessage,
-} from '@langchain/core/messages';
+import { HumanMessage, SystemMessage, AIMessage, type BaseMessage } from '@langchain/core/messages';
 import { ToolNode } from '@langchain/langgraph/prebuilt';
 import { BaseAgentState, type BaseAgentStateType } from '../state.js';
 import { createAgentGraph } from '../graph-factory.js';
 import type { CreateGraphOptions } from '../graph-factory.js';
-import { createReportBuilderTools, type ReportBuilderDbAdapter } from '../tools/report-builder-tools.js';
+import {
+  createReportBuilderTools,
+  type ReportBuilderDbAdapter,
+} from '../tools/report-builder-tools.js';
 
 const SYSTEM_PROMPT = `You are the AI Report Builder for the Compport compensation platform. You help HR professionals generate data reports from natural language requests.
 
@@ -79,25 +76,18 @@ export async function buildReportBuilderGraph(
 ) {
   const tools = createReportBuilderTools(tenantId, db);
 
-  const { loadAIConfig, resolveModelConfig } = await import('../config.js');
+  const { loadAIConfig, resolveModelConfig, createChatModel } = await import('../config.js');
   const aiConfig = options.config ?? loadAIConfig();
   const modelConfig = {
     ...resolveModelConfig(aiConfig, 'report-builder'),
     ...options.modelConfig,
   };
 
-  const model = new ChatOpenAI({
-    openAIApiKey: aiConfig.apiKey,
-    modelName: modelConfig.model,
-    temperature: modelConfig.temperature,
-    maxTokens: modelConfig.maxTokens,
-  });
+  const model = await createChatModel(aiConfig, modelConfig);
 
   const modelWithTools = model.bindTools(tools);
 
-  async function agentNode(
-    state: BaseAgentStateType,
-  ): Promise<{ messages: BaseMessage[] }> {
+  async function agentNode(state: BaseAgentStateType): Promise<{ messages: BaseMessage[] }> {
     const systemMsg = new SystemMessage(SYSTEM_PROMPT);
     const response = await modelWithTools.invoke([systemMsg, ...state.messages]);
     return { messages: [response] };
@@ -118,9 +108,7 @@ export async function buildReportBuilderGraph(
 
   const toolNode = new ToolNode(tools);
 
-  async function toolExecutor(
-    state: BaseAgentStateType,
-  ): Promise<{ messages: BaseMessage[] }> {
+  async function toolExecutor(state: BaseAgentStateType): Promise<{ messages: BaseMessage[] }> {
     const result = await toolNode.invoke(state);
     const msgs = (result as { messages?: BaseMessage[] }).messages ?? [];
     return { messages: msgs };
@@ -180,10 +168,10 @@ export async function invokeReportBuilderGraph(
 
   const messages = result.messages as BaseMessage[];
   const lastMessage = messages[messages.length - 1];
-  const response = typeof lastMessage?.content === 'string'
-    ? lastMessage.content
-    : JSON.stringify(lastMessage?.content ?? '');
+  const response =
+    typeof lastMessage?.content === 'string'
+      ? lastMessage.content
+      : JSON.stringify(lastMessage?.content ?? '');
 
   return { messages, response };
 }
-

@@ -1,0 +1,34 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+# Production-specific patches
+patches:
+  # Scale API to 3 replicas in prod
+  - target:
+      kind: Deployment
+      name: compportiq-api
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 3
+  # Scale Web to 2 replicas in prod
+  - target:
+      kind: Deployment
+      name: compportiq-web
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 2
+
+# Image tags are set via CI/CD using kustomize edit set image
+images:
+  - name: PLACEHOLDER_API_IMAGE
+    newName: ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/compportiq-prod/api
+    newTag: latest
+  - name: PLACEHOLDER_WEB_IMAGE
+    newName: ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/compportiq-prod/web
+    newTag: latest
+

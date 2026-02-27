@@ -6,12 +6,7 @@
  */
 
 import { START, END } from '@langchain/langgraph';
-import { ChatOpenAI } from '@langchain/openai';
-import {
-  HumanMessage,
-  SystemMessage,
-  type BaseMessage,
-} from '@langchain/core/messages';
+import { HumanMessage, SystemMessage, type BaseMessage } from '@langchain/core/messages';
 import { Annotation } from '@langchain/langgraph';
 import { BaseAgentState, type BaseAgentStateType } from '../state.js';
 import { createAgentGraph } from '../graph-factory.js';
@@ -116,27 +111,18 @@ Generate the complete letter content in markdown format. Do NOT include the subj
 
 // ─── Graph Builder ────────────────────────────────────────
 
-export async function buildLetterGeneratorGraph(
-  options: CreateGraphOptions = {},
-) {
-  const { loadAIConfig, resolveModelConfig } = await import('../config.js');
+export async function buildLetterGeneratorGraph(options: CreateGraphOptions = {}) {
+  const { loadAIConfig, resolveModelConfig, createChatModel } = await import('../config.js');
   const aiConfig = options.config ?? loadAIConfig();
   const modelConfig = {
     ...resolveModelConfig(aiConfig, 'letter-generator'),
     ...options.modelConfig,
   };
 
-  const model = new ChatOpenAI({
-    openAIApiKey: aiConfig.apiKey,
-    modelName: modelConfig.model,
-    temperature: modelConfig.temperature ?? 0.7,
-    maxTokens: modelConfig.maxTokens ?? 2000,
-  });
+  const model = await createChatModel(aiConfig, modelConfig);
 
   // Node 1: Select template based on letter type
-  async function selectTemplate(
-    state: LetterStateType,
-  ): Promise<Partial<LetterStateType>> {
+  async function selectTemplate(state: LetterStateType): Promise<Partial<LetterStateType>> {
     const { employee, compData } = state;
     const prompt = `Letter type: ${compData.letterType}
 Employee: ${employee.firstName} ${employee.lastName}
@@ -156,12 +142,12 @@ Select the appropriate template and subject line.`;
     let template = '';
     let subject = '';
     try {
-      const content = typeof response.content === 'string'
-        ? response.content
-        : JSON.stringify(response.content);
+      const content =
+        typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
       const parsed = JSON.parse(content) as { template: string; subject: string };
       template = parsed.template || '';
-      subject = parsed.subject || `Compensation Letter - ${employee.firstName} ${employee.lastName}`;
+      subject =
+        parsed.subject || `Compensation Letter - ${employee.firstName} ${employee.lastName}`;
     } catch {
       template = '{{content}}';
       subject = `Compensation Letter - ${employee.firstName} ${employee.lastName}`;
@@ -175,14 +161,13 @@ Select the appropriate template and subject line.`;
   }
 
   // Node 2: Personalize content using the template and employee data
-  async function personalizeContent(
-    state: LetterStateType,
-  ): Promise<Partial<LetterStateType>> {
+  async function personalizeContent(state: LetterStateType): Promise<Partial<LetterStateType>> {
     const { employee, compData, tone, language } = state;
 
-    const personalizePrompt = PERSONALIZE_PROMPT
-      .replace('{{tone}}', tone || 'professional')
-      .replace('{{language}}', language || 'English');
+    const personalizePrompt = PERSONALIZE_PROMPT.replace(
+      '{{tone}}',
+      tone || 'professional',
+    ).replace('{{language}}', language || 'English');
 
     const dataContext = `
 Employee Details:
@@ -213,9 +198,8 @@ Write the complete letter now.`;
       new HumanMessage(dataContext),
     ]);
 
-    const content = typeof response.content === 'string'
-      ? response.content
-      : JSON.stringify(response.content);
+    const content =
+      typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
 
     return {
       content,
@@ -224,9 +208,7 @@ Write the complete letter now.`;
   }
 
   // Node 3: Format the final letter
-  async function formatLetter(
-    state: LetterStateType,
-  ): Promise<Partial<LetterStateType>> {
+  async function formatLetter(state: LetterStateType): Promise<Partial<LetterStateType>> {
     const { content, subject } = state;
 
     const response = await model.invoke([
@@ -239,9 +221,8 @@ Write the complete letter now.`;
       new HumanMessage(content),
     ]);
 
-    const formattedContent = typeof response.content === 'string'
-      ? response.content
-      : JSON.stringify(response.content);
+    const formattedContent =
+      typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
 
     return {
       content: formattedContent,
@@ -303,4 +284,3 @@ export async function invokeLetterGenerator(
     messages: ((result as LetterStateType).messages as BaseMessage[]) ?? [],
   };
 }
-

@@ -46,23 +46,20 @@ export class ImportService {
 
   // ─── Upload ───────────────────────────────────────────────
 
-  async upload(
-    tenantId: string,
-    userId: string,
-    fileName: string,
-    fileBuffer: Buffer,
-  ) {
+  async upload(tenantId: string, userId: string, fileName: string, fileBuffer: Buffer) {
     // Create import job record
-    const job = await this.db.client.importJob.create({
-      data: {
-        tenantId,
-        userId,
-        fileName,
-        fileSize: fileBuffer.length,
-        status: 'PENDING',
-        settings: {},
-      },
-    });
+    const job = await this.db.forTenant(tenantId, (tx) =>
+      tx.importJob.create({
+        data: {
+          tenantId,
+          userId,
+          fileName,
+          fileSize: fileBuffer.length,
+          status: 'PENDING',
+          settings: {},
+        },
+      }),
+    );
 
     // Save file to disk
     const dir = this.uploadDir(tenantId, job.id);
@@ -75,10 +72,12 @@ export class ImportService {
     const { rows } = parseCSV(text);
     const totalRows = rows.length;
 
-    await this.db.client.importJob.update({
-      where: { id: job.id },
-      data: { totalRows },
-    });
+    await this.db.forTenant(tenantId, (tx) =>
+      tx.importJob.update({
+        where: { id: job.id },
+        data: { totalRows },
+      }),
+    );
 
     if (totalRows > LARGE_FILE_THRESHOLD) {
       // Queue for async processing
@@ -108,38 +107,42 @@ export class ImportService {
   async runAnalysis(jobId: string, tenantId: string): Promise<AnalysisReport> {
     const job = await this.findJob(jobId, tenantId);
 
-    await this.db.client.importJob.update({
-      where: { id: jobId },
-      data: { status: 'ANALYZING' },
-    });
+    await this.db.forTenant(tenantId, (tx) =>
+      tx.importJob.update({
+        where: { id: jobId },
+        data: { status: 'ANALYZING' },
+      }),
+    );
 
     const filePath = path.join(this.uploadDir(tenantId, jobId), job.fileName);
     const buffer = await this.readFileBuffer(filePath);
     const analysis = analyzeFile(buffer);
 
-    // Store issues in DB
-    if (analysis.issues.length > 0) {
-      await this.db.client.importIssue.createMany({
-        data: analysis.issues.map((issue) => ({
-          importJobId: jobId,
-          row: issue.row,
-          column: issue.column,
-          fieldName: analysis.fieldReports[issue.column]?.columnName ?? `Column ${issue.column}`,
-          issueType: issue.type,
-          severity: issue.severity,
-          originalValue: issue.originalValue,
-          cleanedValue: issue.suggestedFix || null,
-        })),
-      });
-    }
+    // Store issues and update job in a single tenant-scoped transaction
+    await this.db.forTenant(tenantId, async (tx) => {
+      if (analysis.issues.length > 0) {
+        await tx.importIssue.createMany({
+          data: analysis.issues.map((issue) => ({
+            importJobId: jobId,
+            row: issue.row,
+            column: issue.column,
+            fieldName: analysis.fieldReports[issue.column]?.columnName ?? `Column ${issue.column}`,
+            issueType: issue.type,
+            severity: issue.severity,
+            originalValue: issue.originalValue,
+            cleanedValue: issue.suggestedFix || null,
+          })),
+        });
+      }
 
-    await this.db.client.importJob.update({
-      where: { id: jobId },
-      data: {
-        status: 'REVIEW',
-        encoding: analysis.encoding.encoding,
-        totalRows: analysis.fileInfo.totalRows,
-      },
+      await tx.importJob.update({
+        where: { id: jobId },
+        data: {
+          status: 'REVIEW',
+          encoding: analysis.encoding.encoding,
+          totalRows: analysis.fileInfo.totalRows,
+        },
+      });
     });
 
     return analysis;
@@ -151,9 +154,11 @@ export class ImportService {
     // If not yet analyzed, run analysis now
     if (job.status === 'PENDING') {
       const analysis = await this.runAnalysis(jobId, tenantId);
-      const issues = await this.db.client.importIssue.findMany({
-        where: { importJobId: jobId },
-      });
+      const issues = await this.db.forTenant(tenantId, (tx) =>
+        tx.importIssue.findMany({
+          where: { importJobId: jobId },
+        }),
+      );
       return { analysis, issues };
     }
 
@@ -161,9 +166,11 @@ export class ImportService {
     const filePath = path.join(this.uploadDir(tenantId, jobId), job.fileName);
     const buffer = await this.readFileBuffer(filePath);
     const analysis = analyzeFile(buffer);
-    const issues = await this.db.client.importIssue.findMany({
-      where: { importJobId: jobId },
-    });
+    const issues = await this.db.forTenant(tenantId, (tx) =>
+      tx.importIssue.findMany({
+        where: { importJobId: jobId },
+      }),
+    );
 
     return { analysis, issues };
   }
@@ -173,10 +180,12 @@ export class ImportService {
   async clean(jobId: string, tenantId: string) {
     const job = await this.findJob(jobId, tenantId);
 
-    await this.db.client.importJob.update({
-      where: { id: jobId },
-      data: { status: 'CLEANING' },
-    });
+    await this.db.forTenant(tenantId, (tx) =>
+      tx.importJob.update({
+        where: { id: jobId },
+        data: { status: 'CLEANING' },
+      }),
+    );
 
     const filePath = path.join(this.uploadDir(tenantId, jobId), job.fileName);
     const buffer = await this.readFileBuffer(filePath);
@@ -219,18 +228,19 @@ export class ImportService {
       resolution: 'AUTO_FIXED' as const,
     }));
 
-    if (autoFixedIssues.length > 0) {
-      await this.db.client.importIssue.createMany({ data: autoFixedIssues });
-    }
+    await this.db.forTenant(tenantId, async (tx) => {
+      if (autoFixedIssues.length > 0) {
+        await tx.importIssue.createMany({ data: autoFixedIssues });
+      }
 
-    // Update job
-    await this.db.client.importJob.update({
-      where: { id: jobId },
-      data: {
-        status: 'REVIEW',
-        cleanRows: result.cleanedRows.length,
-        rejectRows: result.rejectedRows.length,
-      },
+      await tx.importJob.update({
+        where: { id: jobId },
+        data: {
+          status: 'REVIEW',
+          cleanRows: result.cleanedRows.length,
+          rejectRows: result.rejectedRows.length,
+        },
+      });
     });
 
     return {
@@ -247,13 +257,10 @@ export class ImportService {
     const job = await this.findJob(jobId, tenantId);
 
     if (job.status !== 'REVIEW') {
-      throw new BadRequestException(`Import job must be in REVIEW status to approve. Current: ${job.status}`);
+      throw new BadRequestException(
+        `Import job must be in REVIEW status to approve. Current: ${job.status}`,
+      );
     }
-
-    await this.db.client.importJob.update({
-      where: { id: jobId },
-      data: { status: 'APPROVED' },
-    });
 
     // Read cleaned CSV
     const cleanedPath = path.join(this.uploadDir(tenantId, jobId), 'cleaned.csv');
@@ -264,55 +271,64 @@ export class ImportService {
     const headerMap = new Map<string, number>();
     headers.forEach((h, i) => headerMap.set(h.toLowerCase(), i));
 
-    let created = 0;
-    let updated = 0;
-
-    for (const row of rows) {
-      const getValue = (key: string): string => {
-        const idx = headerMap.get(key.toLowerCase());
-        return idx !== undefined ? (row[idx] ?? '') : '';
-      };
-
-      const employeeCode = getValue('employeecode') || getValue('employee_code') || getValue('id');
-      if (!employeeCode) continue;
-
-      const data = {
-        email: getValue('email') || `${employeeCode}@placeholder.com`,
-        firstName: getValue('firstname') || getValue('first_name') || 'Unknown',
-        lastName: getValue('lastname') || getValue('last_name') || 'Unknown',
-        department: getValue('department') || 'Unassigned',
-        level: getValue('level') || getValue('grade') || 'N/A',
-        location: getValue('location') || null,
-        hireDate: this.parseDate(getValue('hiredate') || getValue('hire_date')),
-        currency: getValue('currency') || 'USD',
-        baseSalary: parseFloat(getValue('basesalary') || getValue('base_salary') || '0') || 0,
-        totalComp: parseFloat(getValue('totalcomp') || getValue('total_comp') || '0') || 0,
-      };
-
-      const existing = await this.db.client.employee.findUnique({
-        where: { tenantId_employeeCode: { tenantId, employeeCode } },
+    // Run entire approve + upsert + complete in a single tenant-scoped transaction
+    return this.db.forTenant(tenantId, async (tx) => {
+      await tx.importJob.update({
+        where: { id: jobId },
+        data: { status: 'APPROVED' },
       });
 
-      if (existing) {
-        await this.db.client.employee.update({
-          where: { id: existing.id },
-          data,
+      let created = 0;
+      let updated = 0;
+
+      for (const row of rows) {
+        const getValue = (key: string): string => {
+          const idx = headerMap.get(key.toLowerCase());
+          return idx !== undefined ? (row[idx] ?? '') : '';
+        };
+
+        const employeeCode =
+          getValue('employeecode') || getValue('employee_code') || getValue('id');
+        if (!employeeCode) continue;
+
+        const data = {
+          email: getValue('email') || `${employeeCode}@placeholder.com`,
+          firstName: getValue('firstname') || getValue('first_name') || 'Unknown',
+          lastName: getValue('lastname') || getValue('last_name') || 'Unknown',
+          department: getValue('department') || 'Unassigned',
+          level: getValue('level') || getValue('grade') || 'N/A',
+          location: getValue('location') || null,
+          hireDate: this.parseDate(getValue('hiredate') || getValue('hire_date')),
+          currency: getValue('currency') || 'USD',
+          baseSalary: parseFloat(getValue('basesalary') || getValue('base_salary') || '0') || 0,
+          totalComp: parseFloat(getValue('totalcomp') || getValue('total_comp') || '0') || 0,
+        };
+
+        const existing = await tx.employee.findUnique({
+          where: { tenantId_employeeCode: { tenantId, employeeCode } },
         });
-        updated++;
-      } else {
-        await this.db.client.employee.create({
-          data: { ...data, tenantId, employeeCode },
-        });
-        created++;
+
+        if (existing) {
+          await tx.employee.update({
+            where: { id: existing.id },
+            data,
+          });
+          updated++;
+        } else {
+          await tx.employee.create({
+            data: { ...data, tenantId, employeeCode },
+          });
+          created++;
+        }
       }
-    }
 
-    await this.db.client.importJob.update({
-      where: { id: jobId },
-      data: { status: 'COMPLETED', completedAt: new Date() },
+      await tx.importJob.update({
+        where: { id: jobId },
+        data: { status: 'COMPLETED', completedAt: new Date() },
+      });
+
+      return { imported: created + updated, created, updated };
     });
-
-    return { imported: created + updated, created, updated };
   }
 
   // ─── List / Get ───────────────────────────────────────────
@@ -327,15 +343,17 @@ export class ImportService {
       where['status'] = query.status;
     }
 
-    const [data, total] = await Promise.all([
-      this.db.client.importJob.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { createdAt: 'desc' },
-      }),
-      this.db.client.importJob.count({ where }),
-    ]);
+    const [data, total] = await this.db.forTenant(tenantId, (tx) =>
+      Promise.all([
+        tx.importJob.findMany({
+          where,
+          skip,
+          take: limit,
+          orderBy: { createdAt: 'desc' },
+        }),
+        tx.importJob.count({ where }),
+      ]),
+    );
 
     return {
       data,
@@ -348,11 +366,13 @@ export class ImportService {
 
   async getById(jobId: string, tenantId: string) {
     const job = await this.findJob(jobId, tenantId);
-    const issues = await this.db.client.importIssue.findMany({
-      where: { importJobId: jobId },
-      take: 100,
-      orderBy: { createdAt: 'desc' },
-    });
+    const issues = await this.db.forTenant(tenantId, (tx) =>
+      tx.importIssue.findMany({
+        where: { importJobId: jobId },
+        take: 100,
+        orderBy: { createdAt: 'desc' },
+      }),
+    );
     return { ...job, issues };
   }
 
@@ -593,4 +613,3 @@ export class ImportService {
     return isNaN(parsed.getTime()) ? new Date() : parsed;
   }
 }
-

@@ -8,12 +8,7 @@
 
 import { Annotation } from '@langchain/langgraph';
 import { START, END } from '@langchain/langgraph';
-import { ChatOpenAI } from '@langchain/openai';
-import {
-  HumanMessage,
-  SystemMessage,
-  type BaseMessage,
-} from '@langchain/core/messages';
+import { HumanMessage, SystemMessage, type BaseMessage } from '@langchain/core/messages';
 import { BaseAgentState, type BaseAgentStateType } from '../state.js';
 import { createAgentGraph } from '../graph-factory.js';
 import type { CreateGraphOptions } from '../graph-factory.js';
@@ -126,22 +121,15 @@ Guidelines:
 
 // ─── Graph Builder ──────────────────────────────────────────
 
-export async function buildAnomalyExplainerGraph(
-  options: CreateGraphOptions = {},
-) {
-  const { loadAIConfig, resolveModelConfig } = await import('../config.js');
+export async function buildAnomalyExplainerGraph(options: CreateGraphOptions = {}) {
+  const { loadAIConfig, resolveModelConfig, createChatModel } = await import('../config.js');
   const aiConfig = options.config ?? loadAIConfig();
   const modelConfig = {
     ...resolveModelConfig(aiConfig, 'anomaly-explainer'),
     ...options.modelConfig,
   };
 
-  const model = new ChatOpenAI({
-    openAIApiKey: aiConfig.apiKey,
-    modelName: modelConfig.model,
-    temperature: modelConfig.temperature,
-    maxTokens: modelConfig.maxTokens,
-  });
+  const model = await createChatModel(aiConfig, modelConfig);
 
   // Node 1: Contextualize the anomaly
   async function contextualize(state: ExplainerState): Promise<Partial<ExplainerState>> {
@@ -153,30 +141,32 @@ export async function buildAnomalyExplainerGraph(
       new SystemMessage('You are a payroll anomaly analyst.'),
       new HumanMessage(prompt),
     ]);
-    const content = typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
+    const content =
+      typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
     return { context: content };
   }
 
   // Node 2: Analyze root cause
   async function analyzeRootCause(state: ExplainerState): Promise<Partial<ExplainerState>> {
     const anomaly = state.anomalyData;
-    const prompt = ROOT_CAUSE_PROMPT
-      .replace('{context}', state.context)
-      .replace('{anomalyData}', JSON.stringify(anomaly, null, 2));
+    const prompt = ROOT_CAUSE_PROMPT.replace('{context}', state.context).replace(
+      '{anomalyData}',
+      JSON.stringify(anomaly, null, 2),
+    );
 
     const response = await model.invoke([
       new SystemMessage('You are a payroll root cause analyst.'),
       new HumanMessage(prompt),
     ]);
-    const content = typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
+    const content =
+      typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
     return { rootCauseAnalysis: content };
   }
 
   // Node 3: Generate plain-English explanation
   async function generateExplanation(state: ExplainerState): Promise<Partial<ExplainerState>> {
     const anomaly = state.anomalyData;
-    const prompt = EXPLANATION_PROMPT
-      .replace('{context}', state.context)
+    const prompt = EXPLANATION_PROMPT.replace('{context}', state.context)
       .replace('{rootCause}', state.rootCauseAnalysis)
       .replace('{anomalyData}', JSON.stringify(anomaly, null, 2));
 
@@ -184,15 +174,15 @@ export async function buildAnomalyExplainerGraph(
       new SystemMessage('You are a payroll communication specialist.'),
       new HumanMessage(prompt),
     ]);
-    const content = typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
+    const content =
+      typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
     return { explanationText: content };
   }
 
   // Node 4: Suggest actions
   async function suggestActions(state: ExplainerState): Promise<Partial<ExplainerState>> {
     const anomaly = state.anomalyData;
-    const prompt = ACTION_PROMPT
-      .replace('{context}', state.context)
+    const prompt = ACTION_PROMPT.replace('{context}', state.context)
       .replace('{rootCause}', state.rootCauseAnalysis)
       .replace('{explanation}', state.explanationText)
       .replace('{anomalyType}', anomaly?.anomalyType ?? 'UNKNOWN')
@@ -202,25 +192,41 @@ export async function buildAnomalyExplainerGraph(
       new SystemMessage('You are a payroll compliance advisor. Respond only in valid JSON.'),
       new HumanMessage(prompt),
     ]);
-    const content = typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
+    const content =
+      typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
 
-    let parsed: { recommendedAction?: string; confidence?: number; contributingFactors?: string[]; reasoning?: string };
+    let parsed: {
+      recommendedAction?: string;
+      confidence?: number;
+      contributingFactors?: string[];
+      reasoning?: string;
+    };
     try {
       parsed = JSON.parse(content);
     } catch {
-      parsed = { recommendedAction: 'flag', confidence: 0.5, contributingFactors: [], reasoning: content };
+      parsed = {
+        recommendedAction: 'flag',
+        confidence: 0.5,
+        contributingFactors: [],
+        reasoning: content,
+      };
     }
 
-    const action = (['approve', 'flag', 'block'].includes(parsed.recommendedAction ?? '')
-      ? parsed.recommendedAction
-      : 'flag') as 'approve' | 'flag' | 'block';
+    const action = (
+      ['approve', 'flag', 'block'].includes(parsed.recommendedAction ?? '')
+        ? parsed.recommendedAction
+        : 'flag'
+    ) as 'approve' | 'flag' | 'block';
 
     const result: AnomalyExplainerResult = {
       explanation: state.explanationText,
       rootCause: state.rootCauseAnalysis,
-      contributingFactors: Array.isArray(parsed.contributingFactors) ? parsed.contributingFactors : [],
+      contributingFactors: Array.isArray(parsed.contributingFactors)
+        ? parsed.contributingFactors
+        : [],
       recommendedAction: action,
-      confidence: typeof parsed.confidence === 'number' ? Math.min(1, Math.max(0, parsed.confidence)) : 0.5,
+      confidence:
+        typeof parsed.confidence === 'number' ? Math.min(1, Math.max(0, parsed.confidence)) : 0.5,
       reasoning: parsed.reasoning ?? content,
     };
 

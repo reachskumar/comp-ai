@@ -9,20 +9,11 @@
 
 import { Annotation, MessagesAnnotation } from '@langchain/langgraph';
 import { START, END } from '@langchain/langgraph';
-import { ChatOpenAI } from '@langchain/openai';
-import {
-  HumanMessage,
-  SystemMessage,
-  AIMessage,
-  type BaseMessage,
-} from '@langchain/core/messages';
+import { HumanMessage, SystemMessage, AIMessage, type BaseMessage } from '@langchain/core/messages';
 import { ToolNode } from '@langchain/langgraph/prebuilt';
 import { createAgentGraph } from '../graph-factory.js';
 import type { CreateGraphOptions } from '../graph-factory.js';
-import {
-  createComplianceTools,
-  type ComplianceDbAdapter,
-} from '../tools/compliance-tools.js';
+import { createComplianceTools, type ComplianceDbAdapter } from '../tools/compliance-tools.js';
 
 // ─── State ────────────────────────────────────────────────
 
@@ -170,26 +161,19 @@ export async function buildComplianceScannerGraph(
 ) {
   const tools = createComplianceTools(tenantId, db);
 
-  const { loadAIConfig, resolveModelConfig } = await import('../config.js');
+  const { loadAIConfig, resolveModelConfig, createChatModel } = await import('../config.js');
   const aiConfig = options.config ?? loadAIConfig();
   const modelConfig = {
     ...resolveModelConfig(aiConfig, 'compliance-scanner'),
     ...options.modelConfig,
   };
 
-  const model = new ChatOpenAI({
-    openAIApiKey: aiConfig.apiKey,
-    modelName: modelConfig.model,
-    temperature: modelConfig.temperature ?? 0.1,
-    maxTokens: modelConfig.maxTokens ?? 4096,
-  });
+  const model = await createChatModel(aiConfig, modelConfig);
 
   const modelWithTools = model.bindTools(tools);
   const toolNode = new ToolNode(tools);
 
-  async function toolExecutor(
-    state: ScannerState,
-  ): Promise<{ messages: BaseMessage[] }> {
+  async function toolExecutor(state: ScannerState): Promise<{ messages: BaseMessage[] }> {
     const result = await toolNode.invoke(state);
     const msgs = (result as { messages?: BaseMessage[] }).messages ?? [];
     return { messages: msgs };
@@ -274,7 +258,15 @@ export async function buildComplianceScannerGraph(
     ]);
     const content = typeof response.content === 'string' ? response.content : '';
     const assessment = extractAssessment(content);
-    const score = assessment?.score ?? Math.max(0, 100 - state.findings.filter(f => f.severity === 'critical').length * 15 - state.findings.filter(f => f.severity === 'warning').length * 5 - state.findings.filter(f => f.severity === 'info').length);
+    const score =
+      assessment?.score ??
+      Math.max(
+        0,
+        100 -
+          state.findings.filter((f) => f.severity === 'critical').length * 15 -
+          state.findings.filter((f) => f.severity === 'warning').length * 5 -
+          state.findings.filter((f) => f.severity === 'info').length,
+      );
     return {
       messages: [response],
       overallScore: Math.max(0, Math.min(100, score)),
@@ -355,4 +347,3 @@ export async function invokeComplianceScannerGraph(
     aiReport: (result.aiReport as string) ?? '',
   };
 }
-

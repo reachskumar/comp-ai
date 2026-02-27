@@ -10,12 +10,7 @@
 
 import { Annotation } from '@langchain/langgraph';
 import { START, END } from '@langchain/langgraph';
-import { ChatOpenAI } from '@langchain/openai';
-import {
-  HumanMessage,
-  SystemMessage,
-  type BaseMessage,
-} from '@langchain/core/messages';
+import { HumanMessage, SystemMessage, type BaseMessage } from '@langchain/core/messages';
 import { BaseAgentState, type BaseAgentStateType } from '../state.js';
 import { createAgentGraph } from '../graph-factory.js';
 import type { CreateGraphOptions } from '../graph-factory.js';
@@ -138,21 +133,17 @@ Respond with a JSON object:
 // Graph Builder
 // ─────────────────────────────────────────────────────────────
 
-export async function buildFieldMappingGraph(
-  options: CreateGraphOptions = {},
-) {
-  const { loadAIConfig, resolveModelConfig } = await import('../config.js');
+export async function buildFieldMappingGraph(options: CreateGraphOptions = {}) {
+  const { loadAIConfig, resolveModelConfig, createChatModel } = await import('../config.js');
   const aiConfig = options.config ?? loadAIConfig();
   const modelConfig = {
     ...resolveModelConfig(aiConfig, 'field-mapping'),
     ...options.modelConfig,
   };
 
-  const model = new ChatOpenAI({
-    openAIApiKey: aiConfig.apiKey,
-    modelName: modelConfig.model,
+  const model = await createChatModel(aiConfig, {
+    ...modelConfig,
     temperature: 0.1, // Low temperature for consistent mappings
-    maxTokens: modelConfig.maxTokens,
   });
 
   // Node: Suggest mappings using AI
@@ -160,15 +151,20 @@ export async function buildFieldMappingGraph(
     state: FieldMappingStateType,
   ): Promise<Partial<FieldMappingStateType>> {
     const sourceFieldsStr = state.sourceFields
-      .map((f) => `  - ${f.name} (${f.type}${f.required ? ', required' : ''}${f.description ? ': ' + f.description : ''}${f.sampleValues?.length ? ', samples: ' + f.sampleValues.join(', ') : ''})`)
+      .map(
+        (f) =>
+          `  - ${f.name} (${f.type}${f.required ? ', required' : ''}${f.description ? ': ' + f.description : ''}${f.sampleValues?.length ? ', samples: ' + f.sampleValues.join(', ') : ''})`,
+      )
       .join('\n');
 
     const targetFieldsStr = state.targetFields
-      .map((f) => `  - ${f.name} (${f.type}${f.required ? ', required' : ''}${f.description ? ': ' + f.description : ''})`)
+      .map(
+        (f) =>
+          `  - ${f.name} (${f.type}${f.required ? ', required' : ''}${f.description ? ': ' + f.description : ''})`,
+      )
       .join('\n');
 
-    const prompt = MAPPING_PROMPT
-      .replace('{connectorType}', state.connectorType)
+    const prompt = MAPPING_PROMPT.replace('{connectorType}', state.connectorType)
       .replace('{sourceFields}', sourceFieldsStr)
       .replace('{targetFields}', targetFieldsStr);
 
@@ -177,13 +173,15 @@ export async function buildFieldMappingGraph(
       new HumanMessage(prompt),
     ]);
 
-    const content = typeof response.content === 'string'
-      ? response.content
-      : JSON.stringify(response.content);
+    const content =
+      typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
 
     try {
       // Strip markdown fences if present
-      const cleaned = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+      const cleaned = content
+        .replace(/```json\n?/g, '')
+        .replace(/```\n?/g, '')
+        .trim();
       const parsed = JSON.parse(cleaned);
       const mappings: SuggestedMapping[] = (parsed.mappings || []).map(
         (m: Record<string, unknown>) => ({
@@ -204,9 +202,10 @@ export async function buildFieldMappingGraph(
         ? parsed.unmappedTarget.map(String)
         : [];
 
-      const avgConfidence = mappings.length > 0
-        ? mappings.reduce((sum, m) => sum + m.confidence, 0) / mappings.length
-        : 0;
+      const avgConfidence =
+        mappings.length > 0
+          ? mappings.reduce((sum, m) => sum + m.confidence, 0) / mappings.length
+          : 0;
 
       return {
         suggestions: mappings,
@@ -272,4 +271,3 @@ export async function invokeFieldMappingGraph(
     overallConfidence: (result.overallConfidence as number) ?? 0,
   };
 }
-

@@ -23,29 +23,36 @@ export class SimulationService implements SimulationDbAdapter {
     tenantId: string,
     userId: string,
     prompt: string,
-  ): Promise<{ id: string; response: string; affectedCount: number | null; totalCostDelta: number | null; budgetImpactPct: number | null }> {
+  ): Promise<{
+    id: string;
+    response: string;
+    affectedCount: number | null;
+    totalCostDelta: number | null;
+    budgetImpactPct: number | null;
+  }> {
     this.logger.log(`Simulation: tenant=${tenantId} user=${userId}`);
 
     // Create scenario record
-    const scenario = await this.db.client.simulationScenario.create({
-      data: { tenantId, userId, prompt, status: 'RUNNING', startedAt: new Date() },
-    });
+    const scenario = await this.db.forTenant(tenantId, (tx) =>
+      tx.simulationScenario.create({
+        data: { tenantId, userId, prompt, status: 'RUNNING', startedAt: new Date() },
+      }),
+    );
 
     try {
-      const result = await invokeSimulationGraph(
-        { tenantId, userId, message: prompt },
-        this,
-      );
+      const result = await invokeSimulationGraph({ tenantId, userId, message: prompt }, this);
 
       // Update scenario with results
-      await this.db.client.simulationScenario.update({
-        where: { id: scenario.id },
-        data: {
-          status: 'COMPLETED',
-          response: result.response,
-          completedAt: new Date(),
-        },
-      });
+      await this.db.forTenant(tenantId, (tx) =>
+        tx.simulationScenario.update({
+          where: { id: scenario.id },
+          data: {
+            status: 'COMPLETED',
+            response: result.response,
+            completedAt: new Date(),
+          },
+        }),
+      );
 
       return {
         id: scenario.id,
@@ -55,13 +62,15 @@ export class SimulationService implements SimulationDbAdapter {
         budgetImpactPct: null,
       };
     } catch (error) {
-      await this.db.client.simulationScenario.update({
-        where: { id: scenario.id },
-        data: {
-          status: 'FAILED',
-          errorMsg: error instanceof Error ? error.message : 'Unknown error',
-        },
-      });
+      await this.db.forTenant(tenantId, (tx) =>
+        tx.simulationScenario.update({
+          where: { id: scenario.id },
+          data: {
+            status: 'FAILED',
+            errorMsg: error instanceof Error ? error.message : 'Unknown error',
+          },
+        }),
+      );
       throw error;
     }
   }
@@ -99,7 +108,10 @@ export class SimulationService implements SimulationDbAdapter {
     userId: string,
     promptA: string,
     promptB: string,
-  ): Promise<{ scenarioA: { id: string; response: string }; scenarioB: { id: string; response: string } }> {
+  ): Promise<{
+    scenarioA: { id: string; response: string };
+    scenarioB: { id: string; response: string };
+  }> {
     const [resultA, resultB] = await Promise.all([
       this.runSimulation(tenantId, userId, promptA),
       this.runSimulation(tenantId, userId, promptB),
@@ -112,19 +124,29 @@ export class SimulationService implements SimulationDbAdapter {
   }
 
   async getScenarioHistory(tenantId: string, userId: string, limit = 20) {
-    return this.db.client.simulationScenario.findMany({
-      where: { tenantId, userId },
-      orderBy: { createdAt: 'desc' },
-      take: limit,
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.simulationScenario.findMany({
+        where: { tenantId, userId },
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+      }),
+    );
   }
 
   // ─── SimulationDbAdapter Implementation ────────────────────
 
-  async queryEmployeesForScenario(tenantId: string, filters: {
-    department?: string; level?: string; location?: string;
-    minSalary?: number; maxSalary?: number; performanceRating?: number; limit?: number;
-  }): Promise<unknown[]> {
+  async queryEmployeesForScenario(
+    tenantId: string,
+    filters: {
+      department?: string;
+      level?: string;
+      location?: string;
+      minSalary?: number;
+      maxSalary?: number;
+      performanceRating?: number;
+      limit?: number;
+    },
+  ): Promise<unknown[]> {
     const where: Record<string, unknown> = { tenantId };
     if (filters.department) where['department'] = filters.department;
     if (filters.level) where['level'] = filters.level;
@@ -136,16 +158,26 @@ export class SimulationService implements SimulationDbAdapter {
       where['baseSalary'] = salary;
     }
 
-    const employees = await this.db.client.employee.findMany({
-      where: where as never,
-      take: filters.limit ?? 500,
-      select: {
-        id: true, employeeCode: true, firstName: true, lastName: true,
-        department: true, level: true, location: true,
-        baseSalary: true, totalComp: true, currency: true,
-        hireDate: true, metadata: true,
-      },
-    });
+    const employees = await this.db.forTenant(tenantId, (tx) =>
+      tx.employee.findMany({
+        where: where as never,
+        take: filters.limit ?? 500,
+        select: {
+          id: true,
+          employeeCode: true,
+          firstName: true,
+          lastName: true,
+          department: true,
+          level: true,
+          location: true,
+          baseSalary: true,
+          totalComp: true,
+          currency: true,
+          hireDate: true,
+          metadata: true,
+        },
+      }),
+    );
 
     // Filter by performanceRating from metadata if requested
     if (filters.performanceRating != null) {
@@ -159,24 +191,51 @@ export class SimulationService implements SimulationDbAdapter {
     return employees;
   }
 
-  async runRulesSimulation(tenantId: string, params: {
-    ruleSetId?: string; adjustmentType: string; adjustmentValue: number;
-    employeeIds?: string[]; department?: string; level?: string;
-  }): Promise<unknown> {
+  async runRulesSimulation(
+    tenantId: string,
+    params: {
+      ruleSetId?: string;
+      adjustmentType: string;
+      adjustmentValue: number;
+      employeeIds?: string[];
+      department?: string;
+      level?: string;
+    },
+  ): Promise<unknown> {
     // Build employee query
     const where: Record<string, unknown> = { tenantId };
     if (params.employeeIds?.length) where['id'] = { in: params.employeeIds };
     if (params.department) where['department'] = params.department;
     if (params.level) where['level'] = params.level;
 
-    const employees = await this.db.client.employee.findMany({
-      where: where as never,
-      take: 500,
-      select: {
-        id: true, employeeCode: true, firstName: true, lastName: true,
-        department: true, level: true, location: true,
-        baseSalary: true, hireDate: true, metadata: true,
-      },
+    // Load employees and optionally a rule set in a single tenant-scoped transaction
+    const { employees, loadedRuleSet } = await this.db.forTenant(tenantId, async (tx) => {
+      const emps = await tx.employee.findMany({
+        where: where as never,
+        take: 500,
+        select: {
+          id: true,
+          employeeCode: true,
+          firstName: true,
+          lastName: true,
+          department: true,
+          level: true,
+          location: true,
+          baseSalary: true,
+          hireDate: true,
+          metadata: true,
+        },
+      });
+
+      let rs = null;
+      if (params.ruleSetId) {
+        rs = await tx.ruleSet.findFirst({
+          where: { id: params.ruleSetId, tenantId },
+          include: { rules: true },
+        });
+      }
+
+      return { employees: emps, loadedRuleSet: rs };
     });
 
     // Map adjustment type to rule action
@@ -188,42 +247,50 @@ export class SimulationService implements SimulationDbAdapter {
       salary_cap: { type: 'applyCap', paramKey: 'amount' },
     };
 
-    const mapping = actionMap[params.adjustmentType] ?? { type: 'setMerit', paramKey: 'percentage' };
+    const mapping = actionMap[params.adjustmentType] ?? {
+      type: 'setMerit',
+      paramKey: 'percentage',
+    };
 
     // Build synthetic rule set
     const syntheticRuleSet: RuleSet = {
       id: 'sim-ruleset',
       name: 'Simulation Rule Set',
-      rules: [{
-        id: 'sim-rule-1',
-        name: `Simulation: ${params.adjustmentType} ${params.adjustmentValue}`,
-        type: (mapping.type.startsWith('set') ? mapping.type.replace('set', '').toUpperCase() : 'MERIT') as Rule['type'],
-        conditions: [],
-        actions: [{ type: mapping.type as Rule['actions'][0]['type'], params: { [mapping.paramKey]: params.adjustmentValue } }],
-        priority: 0,
-        enabled: true,
-      }],
+      rules: [
+        {
+          id: 'sim-rule-1',
+          name: `Simulation: ${params.adjustmentType} ${params.adjustmentValue}`,
+          type: (mapping.type.startsWith('set')
+            ? mapping.type.replace('set', '').toUpperCase()
+            : 'MERIT') as Rule['type'],
+          conditions: [],
+          actions: [
+            {
+              type: mapping.type as Rule['actions'][0]['type'],
+              params: { [mapping.paramKey]: params.adjustmentValue },
+            },
+          ],
+          priority: 0,
+          enabled: true,
+        },
+      ],
     };
 
-    // If a real ruleSetId is provided, try to load it
-    if (params.ruleSetId) {
-      const ruleSet = await this.db.client.ruleSet.findFirst({
-        where: { id: params.ruleSetId, tenantId },
-        include: { rules: true },
-      });
-      if (ruleSet) {
-        syntheticRuleSet.id = ruleSet.id;
-        syntheticRuleSet.name = ruleSet.name;
-        syntheticRuleSet.rules = ruleSet.rules.map((r) => ({
-          id: r.id,
-          name: r.name,
-          type: r.ruleType as Rule['type'],
-          conditions: Array.isArray(r.conditions) ? r.conditions as unknown as Rule['conditions'] : [],
-          actions: Array.isArray(r.actions) ? r.actions as unknown as Rule['actions'] : [],
-          priority: r.priority,
-          enabled: r.enabled,
-        }));
-      }
+    // If a real ruleSet was loaded, use it
+    if (loadedRuleSet) {
+      syntheticRuleSet.id = loadedRuleSet.id;
+      syntheticRuleSet.name = loadedRuleSet.name;
+      syntheticRuleSet.rules = loadedRuleSet.rules.map((r) => ({
+        id: r.id,
+        name: r.name,
+        type: r.ruleType as Rule['type'],
+        conditions: Array.isArray(r.conditions)
+          ? (r.conditions as unknown as Rule['conditions'])
+          : [],
+        actions: Array.isArray(r.actions) ? (r.actions as unknown as Rule['actions']) : [],
+        priority: r.priority,
+        enabled: r.enabled,
+      }));
     }
 
     // Run rules engine for each employee
@@ -237,7 +304,7 @@ export class SimulationService implements SimulationDbAdapter {
         location: emp.location ?? undefined,
         baseSalary: Number(emp.baseSalary),
         hireDate: emp.hireDate,
-        ...(emp.metadata as Record<string, unknown> ?? {}),
+        ...((emp.metadata as Record<string, unknown>) ?? {}),
       };
 
       const evaluation = evaluateRules(empData, syntheticRuleSet);
@@ -269,22 +336,27 @@ export class SimulationService implements SimulationDbAdapter {
     };
   }
 
-  async calculateBudgetImpact(tenantId: string, params: {
-    totalCostDelta: number; affectedCount: number; department?: string;
-  }): Promise<unknown> {
+  async calculateBudgetImpact(
+    tenantId: string,
+    params: {
+      totalCostDelta: number;
+      affectedCount: number;
+      department?: string;
+    },
+  ): Promise<unknown> {
     const where: Record<string, unknown> = { tenantId };
     if (params.department) where['department'] = params.department;
 
-    const agg = await this.db.client.employee.aggregate({
-      where: where as never,
-      _sum: { baseSalary: true, totalComp: true },
-      _count: true,
-    });
+    const agg = await this.db.forTenant(tenantId, (tx) =>
+      tx.employee.aggregate({
+        where: where as never,
+        _sum: { baseSalary: true, totalComp: true },
+        _count: true,
+      }),
+    );
 
     const currentBudget = Number(agg._sum.totalComp ?? agg._sum.baseSalary ?? 0);
-    const budgetImpactPct = currentBudget > 0
-      ? (params.totalCostDelta / currentBudget) * 100
-      : 0;
+    const budgetImpactPct = currentBudget > 0 ? (params.totalCostDelta / currentBudget) * 100 : 0;
 
     return {
       totalCostDelta: params.totalCostDelta,
@@ -292,21 +364,24 @@ export class SimulationService implements SimulationDbAdapter {
       currentBudget,
       newBudget: currentBudget + params.totalCostDelta,
       budgetImpactPct: Math.round(budgetImpactPct * 100) / 100,
-      perEmployeeAverage: params.affectedCount > 0
-        ? Math.round(params.totalCostDelta / params.affectedCount)
-        : 0,
+      perEmployeeAverage:
+        params.affectedCount > 0 ? Math.round(params.totalCostDelta / params.affectedCount) : 0,
       headcount: agg._count,
     };
   }
 
-  async getMarketData(_tenantId: string, params: {
-    department?: string; level?: string; location?: string;
-  }): Promise<unknown> {
+  async getMarketData(
+    _tenantId: string,
+    params: {
+      department?: string;
+      level?: string;
+      location?: string;
+    },
+  ): Promise<unknown> {
     // Market benchmarks — placeholder data; in production this would query
     // an external market-data provider or an internal benchmarks table.
-    const label = [params.department, params.level, params.location]
-      .filter(Boolean)
-      .join(' / ') || 'All Roles';
+    const label =
+      [params.department, params.level, params.location].filter(Boolean).join(' / ') || 'All Roles';
 
     return {
       label,

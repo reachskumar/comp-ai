@@ -37,6 +37,51 @@ export class EnvironmentVariables {
   @IsOptional()
   SHUTDOWN_TIMEOUT?: number = 30000;
 
+  // ---- AI Provider ----
+
+  @IsString()
+  @IsOptional()
+  @IsIn(['openai', 'azure'])
+  AI_PROVIDER?: string = 'openai';
+
+  @IsString()
+  @IsOptional()
+  OPENAI_API_KEY?: string;
+
+  @IsString()
+  @IsOptional()
+  AZURE_OPENAI_API_KEY?: string;
+
+  @IsString()
+  @IsOptional()
+  AZURE_OPENAI_ENDPOINT?: string;
+
+  @IsString()
+  @IsOptional()
+  AZURE_OPENAI_DEPLOYMENT_NAME?: string;
+
+  @IsString()
+  @IsOptional()
+  AZURE_OPENAI_API_VERSION?: string;
+
+  // ---- Azure AD SSO ----
+
+  @IsString()
+  @IsOptional()
+  AZURE_AD_CLIENT_ID?: string;
+
+  @IsString()
+  @IsOptional()
+  AZURE_AD_CLIENT_SECRET?: string;
+
+  @IsString()
+  @IsOptional()
+  AZURE_AD_TENANT_ID?: string;
+
+  @IsString()
+  @IsOptional()
+  AZURE_AD_REDIRECT_URI?: string;
+
   // ---- Compport PHP Bridge ----
 
   @IsString()
@@ -82,4 +127,3 @@ export function validate(config: Record<string, unknown>): EnvironmentVariables 
 
   return validatedConfig;
 }
-

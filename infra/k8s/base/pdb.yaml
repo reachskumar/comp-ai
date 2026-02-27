@@ -1,0 +1,22 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: compportiq-api-pdb
+  namespace: compportiq
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: compportiq-api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: compportiq-web-pdb
+  namespace: compportiq
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: compportiq-web
+

@@ -9,12 +9,7 @@
  */
 
 import { START, END } from '@langchain/langgraph';
-import { ChatOpenAI } from '@langchain/openai';
-import {
-  HumanMessage,
-  SystemMessage,
-  type BaseMessage,
-} from '@langchain/core/messages';
+import { HumanMessage, SystemMessage, type BaseMessage } from '@langchain/core/messages';
 import { Annotation } from '@langchain/langgraph';
 import { BaseAgentState, type BaseAgentStateType } from '../state.js';
 import { createAgentGraph } from '../graph-factory.js';
@@ -83,27 +78,18 @@ export interface PayEquityAnalysisOutput {
 /**
  * Build and compile the pay equity analysis graph.
  */
-export async function buildPayEquityGraph(
-  options: CreateGraphOptions = {},
-) {
-  const { loadAIConfig, resolveModelConfig } = await import('../config.js');
+export async function buildPayEquityGraph(options: CreateGraphOptions = {}) {
+  const { loadAIConfig, resolveModelConfig, createChatModel } = await import('../config.js');
   const aiConfig = options.config ?? loadAIConfig();
   const modelConfig = {
     ...resolveModelConfig(aiConfig, 'pay-equity'),
     ...options.modelConfig,
   };
 
-  const model = new ChatOpenAI({
-    openAIApiKey: aiConfig.apiKey,
-    modelName: modelConfig.model,
-    temperature: modelConfig.temperature,
-    maxTokens: modelConfig.maxTokens,
-  });
+  const model = await createChatModel(aiConfig, modelConfig);
 
   // Narrate node: generates executive report from analysis data
-  async function narrateNode(
-    state: BaseAgentStateType,
-  ): Promise<{ messages: BaseMessage[] }> {
+  async function narrateNode(state: BaseAgentStateType): Promise<{ messages: BaseMessage[] }> {
     const systemMsg = new SystemMessage(SYSTEM_PROMPT);
     const response = await model.invoke([systemMsg, ...state.messages]);
     return { messages: [response] };
@@ -167,4 +153,3 @@ Generate a comprehensive report with:
     narrative,
   };
 }
-

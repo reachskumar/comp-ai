@@ -1,0 +1,57 @@
+# Allow web → api traffic only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-allow-from-web-and-ingress
+  namespace: compportiq
+spec:
+  podSelector:
+    matchLabels:
+      app: compportiq-api
+  policyTypes:
+    - Ingress
+  ingress:
+    # Allow from web pods
+    - from:
+        - podSelector:
+            matchLabels:
+              app: compportiq-web
+      ports:
+        - port: 4000
+    # Allow from ALB ingress controller
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              app.kubernetes.io/name: aws-load-balancer-controller
+      ports:
+        - port: 4000
+    # Allow from within namespace (for health checks)
+    - from:
+        - podSelector: {}
+      ports:
+        - port: 4000
+---
+# Web only accepts traffic from ingress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: web-allow-from-ingress
+  namespace: compportiq
+spec:
+  podSelector:
+    matchLabels:
+      app: compportiq-web
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              app.kubernetes.io/name: aws-load-balancer-controller
+      ports:
+        - port: 3000
+    - from:
+        - podSelector: {}
+      ports:
+        - port: 3000
+

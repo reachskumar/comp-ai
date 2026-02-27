@@ -1,9 +1,12 @@
 /**
  * AI configuration — model settings and environment-based API key.
+ * Supports both OpenAI and Azure OpenAI providers via AI_PROVIDER env var.
  */
 
+export type AIProvider = 'openai' | 'azure';
+
 export interface ModelConfig {
-  /** OpenAI model name (e.g. "gpt-4o") */
+  /** Model name / deployment name (e.g. "gpt-4o") */
   model: string;
   /** Sampling temperature */
   temperature: number;
@@ -11,9 +14,24 @@ export interface ModelConfig {
   maxTokens: number;
 }
 
-export interface AIConfig {
-  /** OpenAI API key loaded from OPENAI_API_KEY env var */
+export interface AzureConfig {
+  /** Azure OpenAI endpoint (e.g. "https://myorg.openai.azure.com") */
+  endpoint: string;
+  /** Azure OpenAI API key */
   apiKey: string;
+  /** Azure OpenAI deployment name (e.g. "gpt-4o") */
+  deploymentName: string;
+  /** Azure OpenAI API version (e.g. "2024-08-01-preview") */
+  apiVersion: string;
+}
+
+export interface AIConfig {
+  /** Which provider to use: 'openai' or 'azure' */
+  provider: AIProvider;
+  /** OpenAI API key (used when provider = 'openai') */
+  apiKey: string;
+  /** Azure-specific config (used when provider = 'azure') */
+  azure?: AzureConfig;
   /** Default model configuration */
   defaultModel: ModelConfig;
   /** Per-graph-type overrides */
@@ -39,9 +57,42 @@ const GRAPH_MODEL_DEFAULTS: Record<string, Partial<ModelConfig>> = {
 
 /**
  * Load AI configuration from environment variables.
- * Throws if OPENAI_API_KEY is not set.
+ * Supports both OpenAI and Azure OpenAI via AI_PROVIDER env var.
+ *
+ * For OpenAI: set OPENAI_API_KEY and optionally OPENAI_MODEL
+ * For Azure:  set AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT,
+ *             AZURE_OPENAI_DEPLOYMENT_NAME, AZURE_OPENAI_API_VERSION
  */
 export function loadAIConfig(): AIConfig {
+  const provider = (process.env['AI_PROVIDER'] ?? 'openai') as AIProvider;
+
+  if (provider === 'azure') {
+    const azureApiKey = process.env['AZURE_OPENAI_API_KEY'] ?? '';
+    const endpoint = process.env['AZURE_OPENAI_ENDPOINT'] ?? '';
+    const deploymentName = process.env['AZURE_OPENAI_DEPLOYMENT_NAME'] ?? 'gpt-4o';
+    const apiVersion = process.env['AZURE_OPENAI_API_VERSION'] ?? '2024-08-01-preview';
+
+    if (!azureApiKey || !endpoint) {
+      throw new Error(
+        'Azure OpenAI requires AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT. ' +
+          'Set AI_PROVIDER=openai to use direct OpenAI instead.',
+      );
+    }
+
+    return {
+      provider: 'azure',
+      apiKey: azureApiKey,
+      azure: { endpoint, apiKey: azureApiKey, deploymentName, apiVersion },
+      defaultModel: {
+        model: deploymentName,
+        temperature: 0.2,
+        maxTokens: 2048,
+      },
+      graphModels: GRAPH_MODEL_DEFAULTS,
+    };
+  }
+
+  // Default: OpenAI
   const apiKey = process.env['OPENAI_API_KEY'] ?? '';
   if (!apiKey) {
     throw new Error('OPENAI_API_KEY environment variable is required. Set it in your .env file.');
@@ -50,6 +101,7 @@ export function loadAIConfig(): AIConfig {
   const model = process.env['OPENAI_MODEL'] ?? 'gpt-4o';
 
   return {
+    provider: 'openai',
     apiKey,
     defaultModel: {
       model,
@@ -75,4 +127,30 @@ export function resolveModelConfig(config: AIConfig, graphType?: string): ModelC
     ...base,
     ...overrides,
   };
+}
+
+/**
+ * Create a ChatOpenAI or AzureChatOpenAI instance based on the AI config.
+ * This is the single point of model creation — all graphs should use this.
+ */
+export async function createChatModel(aiConfig: AIConfig, modelConfig: ModelConfig) {
+  if (aiConfig.provider === 'azure' && aiConfig.azure) {
+    const { AzureChatOpenAI } = await import('@langchain/openai');
+    return new AzureChatOpenAI({
+      azureOpenAIApiKey: aiConfig.azure.apiKey,
+      azureOpenAIApiDeploymentName: modelConfig.model || aiConfig.azure.deploymentName,
+      azureOpenAIApiVersion: aiConfig.azure.apiVersion,
+      azureOpenAIEndpoint: aiConfig.azure.endpoint,
+      temperature: modelConfig.temperature,
+      maxTokens: modelConfig.maxTokens,
+    });
+  }
+
+  const { ChatOpenAI } = await import('@langchain/openai');
+  return new ChatOpenAI({
+    openAIApiKey: aiConfig.apiKey,
+    modelName: modelConfig.model,
+    temperature: modelConfig.temperature,
+    maxTokens: modelConfig.maxTokens,
+  });
 }
