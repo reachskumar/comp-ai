@@ -9,11 +9,13 @@ export class EmployeePortalService {
 
   /** Resolve the Employee record linked to the authenticated user (by email match). */
   private async resolveEmployee(tenantId: string, userId: string) {
-    const user = await this.db.client.user.findUnique({ where: { id: userId } });
-    if (!user) return null;
-    return this.db.client.employee.findFirst({
-      where: { tenantId, email: user.email },
-      include: { salaryBand: true },
+    return this.db.forTenant(tenantId, async (tx) => {
+      const user = await tx.user.findUnique({ where: { id: userId } });
+      if (!user) return null;
+      return tx.employee.findFirst({
+        where: { tenantId, email: user.email },
+        include: { salaryBand: true },
+      });
     });
   }
 
@@ -23,17 +25,21 @@ export class EmployeePortalService {
     if (!emp) return null;
 
     // Benefit enrollments
-    const enrollments = await this.db.client.benefitEnrollment.findMany({
-      where: { tenantId, employeeId: emp.id, status: 'ACTIVE' },
-      include: { plan: true },
-    });
+    const enrollments = await this.db.forTenant(tenantId, (tx) =>
+      tx.benefitEnrollment.findMany({
+        where: { tenantId, employeeId: emp.id, status: 'ACTIVE' },
+        include: { plan: true },
+      }),
+    );
     const benefitsValue = enrollments.reduce((sum, e) => sum + Number(e.employerPremium) * 12, 0);
 
     // Equity grants summary
-    const grants = await this.db.client.equityGrant.findMany({
-      where: { tenantId, employeeId: emp.id },
-      include: { plan: true },
-    });
+    const grants = await this.db.forTenant(tenantId, (tx) =>
+      tx.equityGrant.findMany({
+        where: { tenantId, employeeId: emp.id },
+        include: { plan: true },
+      }),
+    );
     const equityValue = grants.reduce((sum, g) => sum + g.vestedShares * Number(g.currentPrice), 0);
 
     const baseSalary = Number(emp.baseSalary);
@@ -83,17 +89,21 @@ export class EmployeePortalService {
     if (!emp) return [];
 
     // Approved comp recommendations
-    const recs = await this.db.client.compRecommendation.findMany({
-      where: { employeeId: emp.id, status: 'APPROVED' },
-      orderBy: { approvedAt: 'asc' },
-      include: { cycle: { select: { name: true } } },
-    });
+    const recs = await this.db.forTenant(tenantId, (tx) =>
+      tx.compRecommendation.findMany({
+        where: { employeeId: emp.id, status: 'APPROVED' },
+        orderBy: { approvedAt: 'asc' },
+        include: { cycle: { select: { name: true } } },
+      }),
+    );
 
     // Ad hoc increases
-    const adhocs = await this.db.client.adHocIncrease.findMany({
-      where: { tenantId, employeeId: emp.id, status: 'APPLIED' },
-      orderBy: { effectiveDate: 'asc' },
-    });
+    const adhocs = await this.db.forTenant(tenantId, (tx) =>
+      tx.adHocIncrease.findMany({
+        where: { tenantId, employeeId: emp.id, status: 'APPLIED' },
+        orderBy: { effectiveDate: 'asc' },
+      }),
+    );
 
     const history = [
       ...recs.map((r) => ({
@@ -140,14 +150,16 @@ export class EmployeePortalService {
         summary: { totalGrants: 0, totalVested: 0, totalUnvested: 0, totalValue: 0, totalGain: 0 },
       };
 
-    const grants = await this.db.client.equityGrant.findMany({
-      where: { tenantId, employeeId: emp.id },
-      include: {
-        plan: { select: { name: true, planType: true } },
-        vestingEvents: { orderBy: { vestDate: 'asc' } },
-      },
-      orderBy: { grantDate: 'desc' },
-    });
+    const grants = await this.db.forTenant(tenantId, (tx) =>
+      tx.equityGrant.findMany({
+        where: { tenantId, employeeId: emp.id },
+        include: {
+          plan: { select: { name: true, planType: true } },
+          vestingEvents: { orderBy: { vestDate: 'asc' } },
+        },
+        orderBy: { grantDate: 'desc' },
+      }),
+    );
 
     const mapped = grants.map((g) => ({
       id: g.id,
@@ -187,11 +199,13 @@ export class EmployeePortalService {
     const emp = await this.resolveEmployee(tenantId, userId);
     if (!emp) return [];
 
-    const enrollments = await this.db.client.benefitEnrollment.findMany({
-      where: { tenantId, employeeId: emp.id, status: 'ACTIVE' },
-      include: { plan: true },
-      orderBy: { effectiveDate: 'desc' },
-    });
+    const enrollments = await this.db.forTenant(tenantId, (tx) =>
+      tx.benefitEnrollment.findMany({
+        where: { tenantId, employeeId: emp.id, status: 'ACTIVE' },
+        include: { plan: true },
+        orderBy: { effectiveDate: 'desc' },
+      }),
+    );
 
     return enrollments.map((e) => ({
       id: e.id,
@@ -215,10 +229,12 @@ export class EmployeePortalService {
 
     // Get all salary bands for the same job family to infer career ladder
     const bands = emp.jobFamily
-      ? await this.db.client.salaryBand.findMany({
-          where: { tenantId, jobFamily: emp.jobFamily },
-          orderBy: { p50: 'asc' },
-        })
+      ? await this.db.forTenant(tenantId, (tx) =>
+          tx.salaryBand.findMany({
+            where: { tenantId, jobFamily: emp.jobFamily! },
+            orderBy: { p50: 'asc' },
+          }),
+        )
       : [];
 
     const currentBandIndex = bands.findIndex((b) => b.id === emp.salaryBandId);
@@ -247,23 +263,25 @@ export class EmployeePortalService {
     const emp = await this.resolveEmployee(tenantId, userId);
     if (!emp) return { letters: [], statements: [] };
 
-    const letters = await this.db.client.compensationLetter.findMany({
-      where: { tenantId, employeeId: emp.id },
-      orderBy: { createdAt: 'desc' },
-      select: {
-        id: true,
-        letterType: true,
-        subject: true,
-        status: true,
-        pdfUrl: true,
-        createdAt: true,
-      },
-    });
-
-    const statements = await this.db.client.rewardsStatement.findMany({
-      where: { tenantId, employeeId: emp.id },
-      orderBy: { year: 'desc' },
-      select: { id: true, year: true, status: true, pdfUrl: true, generatedAt: true },
+    const [letters, statements] = await this.db.forTenant(tenantId, async (tx) => {
+      const l = await tx.compensationLetter.findMany({
+        where: { tenantId, employeeId: emp.id },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          letterType: true,
+          subject: true,
+          status: true,
+          pdfUrl: true,
+          createdAt: true,
+        },
+      });
+      const s = await tx.rewardsStatement.findMany({
+        where: { tenantId, employeeId: emp.id },
+        orderBy: { year: 'desc' },
+        select: { id: true, year: true, status: true, pdfUrl: true, generatedAt: true },
+      });
+      return [l, s] as const;
     });
 
     return {

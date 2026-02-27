@@ -15,75 +15,92 @@ export class MeritMatrixService {
   constructor(private readonly db: DatabaseService) {}
 
   async list(tenantId: string) {
-    return this.db.client.meritMatrix.findMany({
-      where: { tenantId },
-      orderBy: { createdAt: 'desc' },
-      include: { _count: { select: { cycles: true } } },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.meritMatrix.findMany({
+        where: { tenantId },
+        orderBy: { createdAt: 'desc' },
+        include: { _count: { select: { cycles: true } } },
+      }),
+    );
   }
 
   async getById(tenantId: string, id: string) {
-    const matrix = await this.db.client.meritMatrix.findFirst({
-      where: { id, tenantId },
-      include: { cycles: { select: { id: true, name: true, status: true } } },
-    });
+    const matrix = await this.db.forTenant(tenantId, (tx) =>
+      tx.meritMatrix.findFirst({
+        where: { id, tenantId },
+        include: { cycles: { select: { id: true, name: true, status: true } } },
+      }),
+    );
     if (!matrix) throw new NotFoundException(`Merit matrix ${id} not found`);
     return matrix;
   }
 
   async create(tenantId: string, dto: CreateMeritMatrixDto) {
-    if (dto.isDefault) {
-      await this.db.client.meritMatrix.updateMany({
-        where: { tenantId, isDefault: true },
-        data: { isDefault: false },
+    return this.db.forTenant(tenantId, async (tx) => {
+      if (dto.isDefault) {
+        await tx.meritMatrix.updateMany({
+          where: { tenantId, isDefault: true },
+          data: { isDefault: false },
+        });
+      }
+      return tx.meritMatrix.create({
+        data: {
+          tenantId,
+          name: dto.name,
+          isDefault: dto.isDefault ?? false,
+          matrix: dto.matrix as never,
+        },
       });
-    }
-    return this.db.client.meritMatrix.create({
-      data: {
-        tenantId,
-        name: dto.name,
-        isDefault: dto.isDefault ?? false,
-        matrix: dto.matrix as never,
-      },
     });
   }
 
   async update(tenantId: string, id: string, dto: UpdateMeritMatrixDto) {
-    await this.getById(tenantId, id);
-    if (dto.isDefault) {
-      await this.db.client.meritMatrix.updateMany({
-        where: { tenantId, isDefault: true },
-        data: { isDefault: false },
+    return this.db.forTenant(tenantId, async (tx) => {
+      const existing = await tx.meritMatrix.findFirst({
+        where: { id, tenantId },
+        include: { cycles: { select: { id: true, name: true, status: true } } },
       });
-    }
-    const data: Record<string, unknown> = {};
-    if (dto.name !== undefined) data['name'] = dto.name;
-    if (dto.isDefault !== undefined) data['isDefault'] = dto.isDefault;
-    if (dto.matrix !== undefined) data['matrix'] = dto.matrix;
-    return this.db.client.meritMatrix.update({ where: { id }, data });
+      if (!existing) throw new NotFoundException(`Merit matrix ${id} not found`);
+      if (dto.isDefault) {
+        await tx.meritMatrix.updateMany({
+          where: { tenantId, isDefault: true },
+          data: { isDefault: false },
+        });
+      }
+      const data: Record<string, unknown> = {};
+      if (dto.name !== undefined) data['name'] = dto.name;
+      if (dto.isDefault !== undefined) data['isDefault'] = dto.isDefault;
+      if (dto.matrix !== undefined) data['matrix'] = dto.matrix;
+      return tx.meritMatrix.update({ where: { id }, data });
+    });
   }
 
   async delete(tenantId: string, id: string) {
-    await this.getById(tenantId, id);
-    return this.db.client.meritMatrix.delete({ where: { id } });
+    return this.db.forTenant(tenantId, async (tx) => {
+      const existing = await tx.meritMatrix.findFirst({ where: { id, tenantId } });
+      if (!existing) throw new NotFoundException(`Merit matrix ${id} not found`);
+      return tx.meritMatrix.delete({ where: { id } });
+    });
   }
 
   async simulate(tenantId: string, id: string) {
     const matrix = await this.getById(tenantId, id);
     const cells = matrix.matrix as unknown as MatrixCell[];
-    const employees = await this.db.client.employee.findMany({
-      where: { tenantId, performanceRating: { not: null } },
-      select: {
-        id: true,
-        firstName: true,
-        lastName: true,
-        department: true,
-        level: true,
-        baseSalary: true,
-        totalComp: true,
-        performanceRating: true,
-      },
-    });
+    const employees = await this.db.forTenant(tenantId, (tx) =>
+      tx.employee.findMany({
+        where: { tenantId, performanceRating: { not: null } },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          department: true,
+          level: true,
+          baseSalary: true,
+          totalComp: true,
+          performanceRating: true,
+        },
+      }),
+    );
 
     const deptStats = new Map<string, { min: number; max: number }>();
     for (const emp of employees) {
@@ -146,55 +163,58 @@ export class MeritMatrixService {
 
   async applyToCycle(tenantId: string, matrixId: string, cycleId: string) {
     await this.getById(tenantId, matrixId);
-    const cycle = await this.db.client.compCycle.findFirst({
-      where: { id: cycleId, tenantId },
-    });
-    if (!cycle) throw new NotFoundException(`Cycle ${cycleId} not found`);
 
-    await this.db.client.compCycle.update({
-      where: { id: cycleId },
-      data: { meritMatrixId: matrixId },
-    });
-
-    const simulation = await this.simulate(tenantId, matrixId);
-    let created = 0;
-    let updated = 0;
-
-    for (const emp of simulation.employees) {
-      if (emp.increasePercent <= 0) continue;
-      const existing = await this.db.client.compRecommendation.findFirst({
-        where: { cycleId, employeeId: emp.employeeId, recType: 'MERIT_INCREASE' },
+    return this.db.forTenant(tenantId, async (tx) => {
+      const cycle = await tx.compCycle.findFirst({
+        where: { id: cycleId, tenantId },
       });
-      if (existing) {
-        await this.db.client.compRecommendation.update({
-          where: { id: existing.id },
-          data: {
-            currentValue: emp.currentSalary,
-            proposedValue: emp.projectedSalary,
-            justification: `Merit matrix: ${emp.increasePercent}% increase (perf=${emp.performanceRating}, CR=${emp.compaRatio})`,
-          },
-        });
-        updated++;
-      } else {
-        await this.db.client.compRecommendation.create({
-          data: {
-            cycleId,
-            employeeId: emp.employeeId,
-            recType: 'MERIT_INCREASE',
-            currentValue: emp.currentSalary,
-            proposedValue: emp.projectedSalary,
-            justification: `Merit matrix: ${emp.increasePercent}% increase (perf=${emp.performanceRating}, CR=${emp.compaRatio})`,
-            status: 'DRAFT',
-          },
-        });
-        created++;
-      }
-    }
+      if (!cycle) throw new NotFoundException(`Cycle ${cycleId} not found`);
 
-    this.logger.log(
-      `Applied matrix ${matrixId} to cycle ${cycleId}: ${created} created, ${updated} updated`,
-    );
-    return { matrixId, cycleId, created, updated, total: created + updated };
+      await tx.compCycle.update({
+        where: { id: cycleId },
+        data: { meritMatrixId: matrixId },
+      });
+
+      const simulation = await this.simulate(tenantId, matrixId);
+      let created = 0;
+      let updated = 0;
+
+      for (const emp of simulation.employees) {
+        if (emp.increasePercent <= 0) continue;
+        const existing = await tx.compRecommendation.findFirst({
+          where: { cycleId, employeeId: emp.employeeId, recType: 'MERIT_INCREASE' },
+        });
+        if (existing) {
+          await tx.compRecommendation.update({
+            where: { id: existing.id },
+            data: {
+              currentValue: emp.currentSalary,
+              proposedValue: emp.projectedSalary,
+              justification: `Merit matrix: ${emp.increasePercent}% increase (perf=${emp.performanceRating}, CR=${emp.compaRatio})`,
+            },
+          });
+          updated++;
+        } else {
+          await tx.compRecommendation.create({
+            data: {
+              cycleId,
+              employeeId: emp.employeeId,
+              recType: 'MERIT_INCREASE',
+              currentValue: emp.currentSalary,
+              proposedValue: emp.projectedSalary,
+              justification: `Merit matrix: ${emp.increasePercent}% increase (perf=${emp.performanceRating}, CR=${emp.compaRatio})`,
+              status: 'DRAFT',
+            },
+          });
+          created++;
+        }
+      }
+
+      this.logger.log(
+        `Applied matrix ${matrixId} to cycle ${cycleId}: ${created} created, ${updated} updated`,
+      );
+      return { matrixId, cycleId, created, updated, total: created + updated };
+    });
   }
 
   private isInRange(value: number, range: string): boolean {

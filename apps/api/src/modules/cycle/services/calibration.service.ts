@@ -49,17 +49,19 @@ export class CalibrationService {
     }
 
     // Load matching recommendations
-    const recommendations = await this.db.client.compRecommendation.findMany({
-      where: recWhere,
-      select: {
-        id: true,
-        employeeId: true,
-        recType: true,
-        currentValue: true,
-        proposedValue: true,
-        status: true,
-      },
-    });
+    const recommendations = await this.db.forTenant(tenantId, (tx) =>
+      tx.compRecommendation.findMany({
+        where: recWhere,
+        select: {
+          id: true,
+          employeeId: true,
+          recType: true,
+          currentValue: true,
+          proposedValue: true,
+          status: true,
+        },
+      }),
+    );
 
     if (recommendations.length === 0) {
       throw new BadRequestException('No recommendations found matching the criteria');
@@ -75,31 +77,35 @@ export class CalibrationService {
       originalStatus: rec.status,
     }));
 
-    const session = await this.db.client.calibrationSession.create({
-      data: {
-        cycleId,
-        name: dto.name,
-        status: 'ACTIVE' as never,
-        participants: participants as never,
-        outcomes: {} as never,
-      },
-    });
-
-    // Audit log
-    await this.db.client.auditLog.create({
-      data: {
-        tenantId,
-        userId,
-        action: 'CALIBRATION_SESSION_CREATED',
-        entityType: 'CalibrationSession',
-        entityId: session.id,
-        changes: {
+    const session = await this.db.forTenant(tenantId, async (tx) => {
+      const created = await tx.calibrationSession.create({
+        data: {
+          cycleId,
           name: dto.name,
-          participantCount: participants.length,
-          department: dto.department ?? null,
-          level: dto.level ?? null,
-        } as never,
-      },
+          status: 'ACTIVE' as never,
+          participants: participants as never,
+          outcomes: {} as never,
+        },
+      });
+
+      // Audit log
+      await tx.auditLog.create({
+        data: {
+          tenantId,
+          userId,
+          action: 'CALIBRATION_SESSION_CREATED',
+          entityType: 'CalibrationSession',
+          entityId: created.id,
+          changes: {
+            name: dto.name,
+            participantCount: participants.length,
+            department: dto.department ?? null,
+            level: dto.level ?? null,
+          } as never,
+        },
+      });
+
+      return created;
     });
 
     this.logger.log(
@@ -122,15 +128,17 @@ export class CalibrationService {
     const where: Record<string, unknown> = { cycleId };
     if (query.status) where['status'] = query.status;
 
-    const [data, total] = await Promise.all([
-      this.db.client.calibrationSession.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { createdAt: 'desc' },
-      }),
-      this.db.client.calibrationSession.count({ where }),
-    ]);
+    const [data, total] = await this.db.forTenant(tenantId, (tx) =>
+      Promise.all([
+        tx.calibrationSession.findMany({
+          where,
+          skip,
+          take: limit,
+          orderBy: { createdAt: 'desc' },
+        }),
+        tx.calibrationSession.count({ where }),
+      ]),
+    );
 
     return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
@@ -140,7 +148,7 @@ export class CalibrationService {
    */
   async getSession(tenantId: string, cycleId: string, sessionId: string) {
     await this.findCycleOrThrow(tenantId, cycleId);
-    return this.findSessionOrThrow(cycleId, sessionId);
+    return this.findSessionOrThrow(tenantId, cycleId, sessionId);
   }
 
   // ─── Lock / Unlock Recommendations ─────────────────────────────────────
@@ -151,31 +159,35 @@ export class CalibrationService {
    */
   async lockRecommendations(tenantId: string, cycleId: string, sessionId: string, userId: string) {
     await this.findCycleOrThrow(tenantId, cycleId);
-    const session = await this.findSessionOrThrow(cycleId, sessionId);
+    const session = await this.findSessionOrThrow(tenantId, cycleId, sessionId);
 
     const participants = session.participants as Array<{ recommendationId: string }>;
     const recIds = participants.map((p) => p.recommendationId);
 
     if (recIds.length === 0) return { locked: 0 };
 
-    const result = await this.db.client.compRecommendation.updateMany({
-      where: {
-        id: { in: recIds },
-        cycleId,
-        status: { in: ['DRAFT', 'SUBMITTED'] as never },
-      },
-      data: { status: LOCKED_STATUS as never },
-    });
+    const result = await this.db.forTenant(tenantId, async (tx) => {
+      const res = await tx.compRecommendation.updateMany({
+        where: {
+          id: { in: recIds },
+          cycleId,
+          status: { in: ['DRAFT', 'SUBMITTED'] as never },
+        },
+        data: { status: LOCKED_STATUS as never },
+      });
 
-    await this.db.client.auditLog.create({
-      data: {
-        tenantId,
-        userId,
-        action: 'CALIBRATION_RECOMMENDATIONS_LOCKED',
-        entityType: 'CalibrationSession',
-        entityId: sessionId,
-        changes: { lockedCount: result.count, recommendationIds: recIds } as never,
-      },
+      await tx.auditLog.create({
+        data: {
+          tenantId,
+          userId,
+          action: 'CALIBRATION_RECOMMENDATIONS_LOCKED',
+          entityType: 'CalibrationSession',
+          entityId: sessionId,
+          changes: { lockedCount: res.count, recommendationIds: recIds } as never,
+        },
+      });
+
+      return res;
     });
 
     this.logger.log(`Locked ${result.count} recommendations for session ${sessionId}`);
@@ -192,31 +204,35 @@ export class CalibrationService {
     userId: string,
   ) {
     await this.findCycleOrThrow(tenantId, cycleId);
-    const session = await this.findSessionOrThrow(cycleId, sessionId);
+    const session = await this.findSessionOrThrow(tenantId, cycleId, sessionId);
 
     const participants = session.participants as Array<{ recommendationId: string }>;
     const recIds = participants.map((p) => p.recommendationId);
 
     if (recIds.length === 0) return { unlocked: 0 };
 
-    const result = await this.db.client.compRecommendation.updateMany({
-      where: {
-        id: { in: recIds },
-        cycleId,
-        status: LOCKED_STATUS as never,
-      },
-      data: { status: 'SUBMITTED' as never },
-    });
+    const result = await this.db.forTenant(tenantId, async (tx) => {
+      const res = await tx.compRecommendation.updateMany({
+        where: {
+          id: { in: recIds },
+          cycleId,
+          status: LOCKED_STATUS as never,
+        },
+        data: { status: 'SUBMITTED' as never },
+      });
 
-    await this.db.client.auditLog.create({
-      data: {
-        tenantId,
-        userId,
-        action: 'CALIBRATION_RECOMMENDATIONS_UNLOCKED',
-        entityType: 'CalibrationSession',
-        entityId: sessionId,
-        changes: { unlockedCount: result.count, recommendationIds: recIds } as never,
-      },
+      await tx.auditLog.create({
+        data: {
+          tenantId,
+          userId,
+          action: 'CALIBRATION_RECOMMENDATIONS_UNLOCKED',
+          entityType: 'CalibrationSession',
+          entityId: sessionId,
+          changes: { unlockedCount: res.count, recommendationIds: recIds } as never,
+        },
+      });
+
+      return res;
     });
 
     this.logger.log(`Unlocked ${result.count} recommendations for session ${sessionId}`);
@@ -236,7 +252,7 @@ export class CalibrationService {
     dto: UpdateCalibrationSessionDto,
   ) {
     await this.findCycleOrThrow(tenantId, cycleId);
-    const session = await this.findSessionOrThrow(cycleId, sessionId);
+    const session = await this.findSessionOrThrow(tenantId, cycleId, sessionId);
 
     const sessionStatus = session.status as string;
     if (sessionStatus === 'COMPLETED' || sessionStatus === 'CANCELLED') {
@@ -252,7 +268,7 @@ export class CalibrationService {
       const existingOutcomes = (session.outcomes ?? {}) as Record<string, unknown>;
       const newOutcomes: Record<string, unknown> = { ...existingOutcomes };
 
-      await this.db.client.$transaction(async (tx) => {
+      await this.db.forTenant(tenantId, async (tx) => {
         for (const outcome of dto.outcomes!) {
           newOutcomes[outcome.recommendationId] = {
             adjustedValue: outcome.adjustedValue ?? null,
@@ -292,23 +308,27 @@ export class CalibrationService {
       } as never;
     }
 
-    const updated = await this.db.client.calibrationSession.update({
-      where: { id: sessionId },
-      data: updateData,
-    });
+    const updated = await this.db.forTenant(tenantId, async (tx) => {
+      const res = await tx.calibrationSession.update({
+        where: { id: sessionId },
+        data: updateData,
+      });
 
-    await this.db.client.auditLog.create({
-      data: {
-        tenantId,
-        userId,
-        action: 'CALIBRATION_SESSION_UPDATED',
-        entityType: 'CalibrationSession',
-        entityId: sessionId,
-        changes: {
-          statusChange: dto.status ?? null,
-          outcomesCount: dto.outcomes?.length ?? 0,
-        } as never,
-      },
+      await tx.auditLog.create({
+        data: {
+          tenantId,
+          userId,
+          action: 'CALIBRATION_SESSION_UPDATED',
+          entityType: 'CalibrationSession',
+          entityId: sessionId,
+          changes: {
+            statusChange: dto.status ?? null,
+            outcomesCount: dto.outcomes?.length ?? 0,
+          } as never,
+        },
+      });
+
+      return res;
     });
 
     this.logger.log(`Updated calibration session ${sessionId}`);
@@ -324,7 +344,7 @@ export class CalibrationService {
    */
   async aiSuggest(tenantId: string, cycleId: string, sessionId: string, userId: string) {
     await this.findCycleOrThrow(tenantId, cycleId);
-    const session = await this.findSessionOrThrow(cycleId, sessionId);
+    const session = await this.findSessionOrThrow(tenantId, cycleId, sessionId);
 
     const participants = session.participants as Array<{
       recommendationId: string;
@@ -351,19 +371,21 @@ export class CalibrationService {
     );
 
     // Audit log
-    await this.db.client.auditLog.create({
-      data: {
-        tenantId,
-        userId,
-        action: 'CALIBRATION_AI_SUGGEST',
-        entityType: 'CalibrationSession',
-        entityId: sessionId,
-        changes: {
-          suggestionsCount: result.suggestions.length,
-          participantCount: participants.length,
-        } as never,
-      },
-    });
+    await this.db.forTenant(tenantId, (tx) =>
+      tx.auditLog.create({
+        data: {
+          tenantId,
+          userId,
+          action: 'CALIBRATION_AI_SUGGEST',
+          entityType: 'CalibrationSession',
+          entityId: sessionId,
+          changes: {
+            suggestionsCount: result.suggestions.length,
+            participantCount: participants.length,
+          } as never,
+        },
+      }),
+    );
 
     this.logger.log(
       `AI generated ${result.suggestions.length} suggestions for session ${sessionId}`,
@@ -384,14 +406,14 @@ export class CalibrationService {
     suggestions: Array<{ recommendationId: string; suggestedValue: number }>,
   ) {
     await this.findCycleOrThrow(tenantId, cycleId);
-    await this.findSessionOrThrow(cycleId, sessionId);
+    await this.findSessionOrThrow(tenantId, cycleId, sessionId);
 
     if (suggestions.length === 0) {
       throw new BadRequestException('No suggestions provided to apply');
     }
 
     let applied = 0;
-    await this.db.client.$transaction(async (tx) => {
+    await this.db.forTenant(tenantId, async (tx) => {
       for (const suggestion of suggestions) {
         await tx.compRecommendation.update({
           where: { id: suggestion.recommendationId },
@@ -399,24 +421,24 @@ export class CalibrationService {
         });
         applied++;
       }
-    });
 
-    // Audit log
-    await this.db.client.auditLog.create({
-      data: {
-        tenantId,
-        userId,
-        action: 'CALIBRATION_AI_SUGGESTIONS_APPLIED',
-        entityType: 'CalibrationSession',
-        entityId: sessionId,
-        changes: {
-          appliedCount: applied,
-          suggestions: suggestions.map((s) => ({
-            recommendationId: s.recommendationId,
-            suggestedValue: s.suggestedValue,
-          })),
-        } as never,
-      },
+      // Audit log
+      await tx.auditLog.create({
+        data: {
+          tenantId,
+          userId,
+          action: 'CALIBRATION_AI_SUGGESTIONS_APPLIED',
+          entityType: 'CalibrationSession',
+          entityId: sessionId,
+          changes: {
+            appliedCount: applied,
+            suggestions: suggestions.map((s) => ({
+              recommendationId: s.recommendationId,
+              suggestedValue: s.suggestedValue,
+            })),
+          } as never,
+        },
+      });
     });
 
     this.logger.log(`Applied ${applied} AI suggestions for session ${sessionId}`);
@@ -435,114 +457,125 @@ export class CalibrationService {
         _tenantId: string,
         filters: { cycleId: string; sessionId: string },
       ) {
-        const session = await db.client.calibrationSession.findFirst({
-          where: { id: filters.sessionId, cycleId: filters.cycleId },
-        });
-        if (!session) return [];
+        return db.forTenant(tenantId, async (tx) => {
+          const session = await tx.calibrationSession.findFirst({
+            where: { id: filters.sessionId, cycleId: filters.cycleId },
+          });
+          if (!session) return [];
 
-        const participants = session.participants as Array<{ recommendationId: string }>;
-        const recIds = participants.map((p) => p.recommendationId);
+          const participants = session.participants as Array<{ recommendationId: string }>;
+          const recIds = participants.map((p) => p.recommendationId);
 
-        return db.client.compRecommendation.findMany({
-          where: { id: { in: recIds } },
-          include: {
-            employee: {
-              select: {
-                id: true,
-                firstName: true,
-                lastName: true,
-                department: true,
-                level: true,
-                baseSalary: true,
-                compaRatio: true,
-                performanceRating: true,
-                hireDate: true,
-                location: true,
-                jobFamily: true,
+          return tx.compRecommendation.findMany({
+            where: { id: { in: recIds } },
+            include: {
+              employee: {
+                select: {
+                  id: true,
+                  firstName: true,
+                  lastName: true,
+                  department: true,
+                  level: true,
+                  baseSalary: true,
+                  compaRatio: true,
+                  performanceRating: true,
+                  hireDate: true,
+                  location: true,
+                  jobFamily: true,
+                },
               },
             },
-          },
+          });
         });
       },
 
       async getEmployeeDetails(_tenantId: string, filters: { employeeIds: string[] }) {
-        return db.client.employee.findMany({
-          where: { id: { in: filters.employeeIds }, tenantId },
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            department: true,
-            level: true,
-            baseSalary: true,
-            compaRatio: true,
-            performanceRating: true,
-            hireDate: true,
-            location: true,
-            jobFamily: true,
-            salaryBandId: true,
-          },
-        });
+        return db.forTenant(tenantId, (tx) =>
+          tx.employee.findMany({
+            where: { id: { in: filters.employeeIds }, tenantId },
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              department: true,
+              level: true,
+              baseSalary: true,
+              compaRatio: true,
+              performanceRating: true,
+              hireDate: true,
+              location: true,
+              jobFamily: true,
+              salaryBandId: true,
+            },
+          }),
+        );
       },
 
       async getAttritionRiskScores(_tenantId: string, filters: { employeeIds: string[] }) {
-        return db.client.attritionRiskScore.findMany({
-          where: { tenantId, employeeId: { in: filters.employeeIds } },
-          select: {
-            employeeId: true,
-            riskScore: true,
-            riskLevel: true,
-            factors: true,
-            recommendation: true,
-          },
-        });
+        return db.forTenant(tenantId, (tx) =>
+          tx.attritionRiskScore.findMany({
+            where: { tenantId, employeeId: { in: filters.employeeIds } },
+            select: {
+              employeeId: true,
+              riskScore: true,
+              riskLevel: true,
+              factors: true,
+              recommendation: true,
+            },
+          }),
+        );
       },
 
       async getCycleBudget(_tenantId: string, filters: { cycleId: string; department?: string }) {
-        const cycle = await db.client.compCycle.findFirst({
-          where: { id: filters.cycleId, tenantId },
-          select: { budgetTotal: true, currency: true },
+        return db.forTenant(tenantId, async (tx) => {
+          const cycle = await tx.compCycle.findFirst({
+            where: { id: filters.cycleId, tenantId },
+            select: { budgetTotal: true, currency: true },
+          });
+
+          const budgetWhere: Record<string, unknown> = { cycleId: filters.cycleId };
+          if (filters.department) {
+            budgetWhere['employee'] = { department: filters.department };
+          }
+
+          const totalSpend = await tx.compRecommendation.aggregate({
+            where: budgetWhere,
+            _sum: { proposedValue: true },
+          });
+
+          return {
+            budgetTotal: cycle ? Number(cycle.budgetTotal) : 0,
+            currency: cycle?.currency ?? 'USD',
+            totalProposed: Number(totalSpend._sum.proposedValue ?? 0),
+            remaining: cycle
+              ? Number(cycle.budgetTotal) - Number(totalSpend._sum.proposedValue ?? 0)
+              : 0,
+          };
         });
-
-        const budgetWhere: Record<string, unknown> = { cycleId: filters.cycleId };
-        if (filters.department) {
-          budgetWhere['employee'] = { department: filters.department };
-        }
-
-        const totalSpend = await db.client.compRecommendation.aggregate({
-          where: budgetWhere,
-          _sum: { proposedValue: true },
-        });
-
-        return {
-          budgetTotal: cycle ? Number(cycle.budgetTotal) : 0,
-          currency: cycle?.currency ?? 'USD',
-          totalProposed: Number(totalSpend._sum.proposedValue ?? 0),
-          remaining: cycle
-            ? Number(cycle.budgetTotal) - Number(totalSpend._sum.proposedValue ?? 0)
-            : 0,
-        };
       },
 
       async getDepartmentStats(
         _tenantId: string,
         filters: { department: string; cycleId: string },
       ) {
-        const employees = await db.client.employee.findMany({
-          where: { tenantId, department: filters.department, terminationDate: null },
-          select: {
-            id: true,
-            baseSalary: true,
-            level: true,
-            compaRatio: true,
-            performanceRating: true,
-          },
-        });
-
-        const recs = await db.client.compRecommendation.findMany({
-          where: { cycleId: filters.cycleId, employee: { department: filters.department } },
-          select: { currentValue: true, proposedValue: true },
-        });
+        const [employees, recs] = await db.forTenant(tenantId, (tx) =>
+          Promise.all([
+            tx.employee.findMany({
+              where: { tenantId, department: filters.department, terminationDate: null },
+              select: {
+                id: true,
+                baseSalary: true,
+                level: true,
+                compaRatio: true,
+                performanceRating: true,
+              },
+            }),
+            tx.compRecommendation.findMany({
+              where: { cycleId: filters.cycleId, employee: { department: filters.department } },
+              select: { currentValue: true, proposedValue: true },
+            }),
+          ]),
+        );
 
         const salaries = employees.map((e) => Number(e.baseSalary));
         const avgSalary =
@@ -576,19 +609,23 @@ export class CalibrationService {
   // ─── Private Helpers ───────────────────────────────────────────────────
 
   private async findCycleOrThrow(tenantId: string, cycleId: string) {
-    const cycle = await this.db.client.compCycle.findFirst({
-      where: { id: cycleId, tenantId },
-    });
+    const cycle = await this.db.forTenant(tenantId, (tx) =>
+      tx.compCycle.findFirst({
+        where: { id: cycleId, tenantId },
+      }),
+    );
     if (!cycle) {
       throw new NotFoundException(`Cycle ${cycleId} not found`);
     }
     return cycle;
   }
 
-  private async findSessionOrThrow(cycleId: string, sessionId: string) {
-    const session = await this.db.client.calibrationSession.findFirst({
-      where: { id: sessionId, cycleId },
-    });
+  private async findSessionOrThrow(tenantId: string, cycleId: string, sessionId: string) {
+    const session = await this.db.forTenant(tenantId, (tx) =>
+      tx.calibrationSession.findFirst({
+        where: { id: sessionId, cycleId },
+      }),
+    );
     if (!session) {
       throw new NotFoundException(`Calibration session ${sessionId} not found`);
     }

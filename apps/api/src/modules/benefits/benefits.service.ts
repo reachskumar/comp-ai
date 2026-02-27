@@ -333,41 +333,47 @@ export class BenefitsService {
   // ─── Enrollment Windows ─────────────────────────────────────────────
 
   async createEnrollmentWindow(tenantId: string, dto: CreateEnrollmentWindowDto) {
-    return this.db.client.enrollmentWindow.create({
-      data: {
-        tenantId,
-        name: dto.name,
-        planYear: dto.planYear,
-        startDate: new Date(dto.startDate),
-        endDate: new Date(dto.endDate),
-        status: 'UPCOMING' as never,
-      },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.enrollmentWindow.create({
+        data: {
+          tenantId,
+          name: dto.name,
+          planYear: dto.planYear,
+          startDate: new Date(dto.startDate),
+          endDate: new Date(dto.endDate),
+          status: 'UPCOMING' as never,
+        },
+      }),
+    );
   }
 
   async listEnrollmentWindows(tenantId: string) {
-    return this.db.client.enrollmentWindow.findMany({
-      where: { tenantId },
-      orderBy: { startDate: 'desc' },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.enrollmentWindow.findMany({
+        where: { tenantId },
+        orderBy: { startDate: 'desc' },
+      }),
+    );
   }
 
   async updateEnrollmentWindow(tenantId: string, windowId: string, dto: UpdateEnrollmentWindowDto) {
-    const existing = await this.db.client.enrollmentWindow.findFirst({
-      where: { id: windowId, tenantId },
-    });
-    if (!existing) throw new NotFoundException(`Enrollment window ${windowId} not found`);
+    return this.db.forTenant(tenantId, async (tx) => {
+      const existing = await tx.enrollmentWindow.findFirst({
+        where: { id: windowId, tenantId },
+      });
+      if (!existing) throw new NotFoundException(`Enrollment window ${windowId} not found`);
 
-    const data: Record<string, unknown> = {};
-    if (dto.name !== undefined) data['name'] = dto.name;
-    if (dto.planYear !== undefined) data['planYear'] = dto.planYear;
-    if (dto.startDate !== undefined) data['startDate'] = new Date(dto.startDate);
-    if (dto.endDate !== undefined) data['endDate'] = new Date(dto.endDate);
-    if (dto.status !== undefined) data['status'] = dto.status;
+      const data: Record<string, unknown> = {};
+      if (dto.name !== undefined) data['name'] = dto.name;
+      if (dto.planYear !== undefined) data['planYear'] = dto.planYear;
+      if (dto.startDate !== undefined) data['startDate'] = new Date(dto.startDate);
+      if (dto.endDate !== undefined) data['endDate'] = new Date(dto.endDate);
+      if (dto.status !== undefined) data['status'] = dto.status;
 
-    return this.db.client.enrollmentWindow.update({
-      where: { id: windowId },
-      data,
+      return tx.enrollmentWindow.update({
+        where: { id: windowId },
+        data,
+      });
     });
   }
 

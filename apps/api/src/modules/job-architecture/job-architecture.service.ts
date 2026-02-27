@@ -33,51 +33,61 @@ export class JobArchitectureService {
     const where: Record<string, unknown> = { tenantId };
     if (query.isActive !== undefined) where.isActive = query.isActive === 'true';
 
-    const [data, total] = await Promise.all([
-      this.db.client.jobFamily.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { name: 'asc' },
-        include: { _count: { select: { jobLevels: true } } },
-      }),
-      this.db.client.jobFamily.count({ where }),
-    ]);
+    const [data, total] = await this.db.forTenant(tenantId, (tx) =>
+      Promise.all([
+        tx.jobFamily.findMany({
+          where,
+          skip,
+          take: limit,
+          orderBy: { name: 'asc' },
+          include: { _count: { select: { jobLevels: true } } },
+        }),
+        tx.jobFamily.count({ where }),
+      ]),
+    );
 
     return { data, total, page, limit };
   }
 
   async getFamily(tenantId: string, id: string) {
-    const family = await this.db.client.jobFamily.findFirst({
-      where: { id, tenantId },
-      include: {
-        jobLevels: {
-          orderBy: { grade: 'asc' },
-          include: { _count: { select: { employees: true } } },
+    const family = await this.db.forTenant(tenantId, (tx) =>
+      tx.jobFamily.findFirst({
+        where: { id, tenantId },
+        include: {
+          jobLevels: {
+            orderBy: { grade: 'asc' },
+            include: { _count: { select: { employees: true } } },
+          },
         },
-      },
-    });
+      }),
+    );
     if (!family) throw new NotFoundException('Job family not found');
     return family;
   }
 
   async createFamily(tenantId: string, dto: CreateJobFamilyDto) {
-    return this.db.client.jobFamily.create({
-      data: { tenantId, ...dto },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.jobFamily.create({
+        data: { tenantId, ...dto },
+      }),
+    );
   }
 
   async updateFamily(tenantId: string, id: string, dto: UpdateJobFamilyDto) {
-    const existing = await this.db.client.jobFamily.findFirst({ where: { id, tenantId } });
-    if (!existing) throw new NotFoundException('Job family not found');
-    return this.db.client.jobFamily.update({ where: { id }, data: dto });
+    return this.db.forTenant(tenantId, async (tx) => {
+      const existing = await tx.jobFamily.findFirst({ where: { id, tenantId } });
+      if (!existing) throw new NotFoundException('Job family not found');
+      return tx.jobFamily.update({ where: { id }, data: dto });
+    });
   }
 
   async deleteFamily(tenantId: string, id: string) {
-    const existing = await this.db.client.jobFamily.findFirst({ where: { id, tenantId } });
-    if (!existing) throw new NotFoundException('Job family not found');
-    await this.db.client.jobFamily.delete({ where: { id } });
-    return { deleted: true };
+    return this.db.forTenant(tenantId, async (tx) => {
+      const existing = await tx.jobFamily.findFirst({ where: { id, tenantId } });
+      if (!existing) throw new NotFoundException('Job family not found');
+      await tx.jobFamily.delete({ where: { id } });
+      return { deleted: true };
+    });
   }
 
   // ─── Job Levels ─────────────────────────────────────────────
@@ -92,8 +102,8 @@ export class JobArchitectureService {
     if (query.grade) where.grade = Number(query.grade);
     if (query.isActive !== undefined) where.isActive = query.isActive === 'true';
 
-    const [data, total] = await Promise.all([
-      this.db.client.jobLevel.findMany({
+    const [data, total] = await this.db.forTenant(tenantId, async (tx) => {
+      const d = await tx.jobLevel.findMany({
         where,
         skip,
         take: limit,
@@ -102,115 +112,125 @@ export class JobArchitectureService {
           jobFamily: { select: { id: true, name: true, code: true } },
           _count: { select: { employees: true } },
         },
-      }),
-      this.db.client.jobLevel.count({ where }),
-    ]);
+      });
+      const t = await tx.jobLevel.count({ where });
+      return [d, t] as const;
+    });
 
     return { data, total, page, limit };
   }
 
   async getLevel(tenantId: string, id: string) {
-    const level = await this.db.client.jobLevel.findFirst({
-      where: { id, tenantId },
-      include: {
-        jobFamily: true,
-        nextLevel: { select: { id: true, name: true, code: true, grade: true } },
-        previousLevel: { select: { id: true, name: true, code: true, grade: true } },
-        employees: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            department: true,
-            email: true,
-            baseSalary: true,
+    const level = await this.db.forTenant(tenantId, (tx) =>
+      tx.jobLevel.findFirst({
+        where: { id, tenantId },
+        include: {
+          jobFamily: true,
+          nextLevel: { select: { id: true, name: true, code: true, grade: true } },
+          previousLevel: { select: { id: true, name: true, code: true, grade: true } },
+          employees: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              department: true,
+              email: true,
+              baseSalary: true,
+            },
+            take: 100,
           },
-          take: 100,
         },
-      },
-    });
+      }),
+    );
     if (!level) throw new NotFoundException('Job level not found');
     return level;
   }
 
   async createLevel(tenantId: string, jobFamilyId: string, dto: CreateJobLevelDto) {
-    // Verify family belongs to tenant
-    const family = await this.db.client.jobFamily.findFirst({
-      where: { id: jobFamilyId, tenantId },
-    });
-    if (!family) throw new NotFoundException('Job family not found');
+    return this.db.forTenant(tenantId, async (tx) => {
+      const family = await tx.jobFamily.findFirst({
+        where: { id: jobFamilyId, tenantId },
+      });
+      if (!family) throw new NotFoundException('Job family not found');
 
-    return this.db.client.jobLevel.create({
-      data: {
-        tenantId,
-        jobFamilyId,
-        name: dto.name,
-        code: dto.code,
-        grade: dto.grade,
-        description: dto.description,
-        minSalary: dto.minSalary,
-        midSalary: dto.midSalary,
-        maxSalary: dto.maxSalary,
-        currency: dto.currency,
-        competencies: dto.competencies ?? [],
-        nextLevelId: dto.nextLevelId,
-        isActive: dto.isActive,
-      },
+      return tx.jobLevel.create({
+        data: {
+          tenantId,
+          jobFamilyId,
+          name: dto.name,
+          code: dto.code,
+          grade: dto.grade,
+          description: dto.description,
+          minSalary: dto.minSalary,
+          midSalary: dto.midSalary,
+          maxSalary: dto.maxSalary,
+          currency: dto.currency,
+          competencies: dto.competencies ?? [],
+          nextLevelId: dto.nextLevelId,
+          isActive: dto.isActive,
+        },
+      });
     });
   }
 
   async updateLevel(tenantId: string, id: string, dto: UpdateJobLevelDto) {
-    const existing = await this.db.client.jobLevel.findFirst({ where: { id, tenantId } });
-    if (!existing) throw new NotFoundException('Job level not found');
-    return this.db.client.jobLevel.update({ where: { id }, data: dto as Record<string, unknown> });
+    return this.db.forTenant(tenantId, async (tx) => {
+      const existing = await tx.jobLevel.findFirst({ where: { id, tenantId } });
+      if (!existing) throw new NotFoundException('Job level not found');
+      return tx.jobLevel.update({ where: { id }, data: dto as Record<string, unknown> });
+    });
   }
 
   async deleteLevel(tenantId: string, id: string) {
-    const existing = await this.db.client.jobLevel.findFirst({ where: { id, tenantId } });
-    if (!existing) throw new NotFoundException('Job level not found');
-    // Unassign employees first
-    await this.db.client.employee.updateMany({
-      where: { jobLevelId: id },
-      data: { jobLevelId: null },
+    return this.db.forTenant(tenantId, async (tx) => {
+      const existing = await tx.jobLevel.findFirst({ where: { id, tenantId } });
+      if (!existing) throw new NotFoundException('Job level not found');
+      await tx.employee.updateMany({
+        where: { jobLevelId: id },
+        data: { jobLevelId: null },
+      });
+      await tx.jobLevel.delete({ where: { id } });
+      return { deleted: true };
     });
-    await this.db.client.jobLevel.delete({ where: { id } });
-    return { deleted: true };
   }
 
   async assignEmployees(tenantId: string, levelId: string, dto: AssignEmployeesDto) {
-    const level = await this.db.client.jobLevel.findFirst({ where: { id: levelId, tenantId } });
-    if (!level) throw new NotFoundException('Job level not found');
+    return this.db.forTenant(tenantId, async (tx) => {
+      const level = await tx.jobLevel.findFirst({ where: { id: levelId, tenantId } });
+      if (!level) throw new NotFoundException('Job level not found');
 
-    const result = await this.db.client.employee.updateMany({
-      where: { id: { in: dto.employeeIds }, tenantId },
-      data: { jobLevelId: levelId },
+      const result = await tx.employee.updateMany({
+        where: { id: { in: dto.employeeIds }, tenantId },
+        data: { jobLevelId: levelId },
+      });
+
+      return { assigned: result.count, levelId };
     });
-
-    return { assigned: result.count, levelId };
   }
 
   async autoAssignEmployees(tenantId: string) {
-    // Match employees to levels by jobFamily + level string matching
-    const levels = await this.db.client.jobLevel.findMany({
-      where: { tenantId, isActive: true },
-      include: { jobFamily: { select: { name: true } } },
-    });
-
-    let assigned = 0;
-    for (const level of levels) {
-      const result = await this.db.client.employee.updateMany({
-        where: {
-          tenantId,
-          jobFamily: level.jobFamily.name,
-          level: level.name,
-          jobLevelId: null,
-        },
-        data: { jobLevelId: level.id },
+    return this.db.forTenant(tenantId, async (tx) => {
+      const levels = await tx.jobLevel.findMany({
+        where: { tenantId, isActive: true },
+        include: { jobFamily: { select: { name: true } } },
       });
-      assigned += result.count;
-    }
 
-    return { assigned, totalLevels: levels.length };
+      let assigned = 0;
+      for (const level of levels) {
+        const result = await tx.employee.updateMany({
+          where: {
+            tenantId,
+            jobFamily: level.jobFamily.name,
+            level: level.name,
+            jobLevelId: null,
+          },
+          data: { jobLevelId: level.id },
+        });
+        assigned += result.count;
+      }
+
+      return { assigned, totalLevels: levels.length };
+    });
   }
 
   // ─── Career Ladders ─────────────────────────────────────────
@@ -223,57 +243,75 @@ export class JobArchitectureService {
     const where: Record<string, unknown> = { tenantId };
     if (query.isActive !== undefined) where.isActive = query.isActive === 'true';
 
-    const [data, total] = await Promise.all([
-      this.db.client.careerLadder.findMany({ where, skip, take: limit, orderBy: { name: 'asc' } }),
-      this.db.client.careerLadder.count({ where }),
-    ]);
+    const [data, total] = await this.db.forTenant(tenantId, async (tx) => {
+      const d = await tx.careerLadder.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { name: 'asc' },
+      });
+      const t = await tx.careerLadder.count({ where });
+      return [d, t] as const;
+    });
 
     return { data, total, page, limit };
   }
 
   async getLadder(tenantId: string, id: string) {
-    const ladder = await this.db.client.careerLadder.findFirst({ where: { id, tenantId } });
+    const ladder = await this.db.forTenant(tenantId, (tx) =>
+      tx.careerLadder.findFirst({ where: { id, tenantId } }),
+    );
     if (!ladder) throw new NotFoundException('Career ladder not found');
     return ladder;
   }
 
   async createLadder(tenantId: string, dto: CreateCareerLadderDto) {
-    return this.db.client.careerLadder.create({
-      data: {
-        tenantId,
-        name: dto.name,
-        description: dto.description,
-        tracks: dto.tracks,
-        isActive: dto.isActive,
-      },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.careerLadder.create({
+        data: {
+          tenantId,
+          name: dto.name,
+          description: dto.description,
+          tracks: dto.tracks,
+          isActive: dto.isActive,
+        },
+      }),
+    );
   }
 
   async updateLadder(tenantId: string, id: string, dto: UpdateCareerLadderDto) {
-    const existing = await this.db.client.careerLadder.findFirst({ where: { id, tenantId } });
-    if (!existing) throw new NotFoundException('Career ladder not found');
-    return this.db.client.careerLadder.update({
-      where: { id },
-      data: dto as Record<string, unknown>,
+    return this.db.forTenant(tenantId, async (tx) => {
+      const existing = await tx.careerLadder.findFirst({ where: { id, tenantId } });
+      if (!existing) throw new NotFoundException('Career ladder not found');
+      return tx.careerLadder.update({
+        where: { id },
+        data: dto as Record<string, unknown>,
+      });
     });
   }
 
   async deleteLadder(tenantId: string, id: string) {
-    const existing = await this.db.client.careerLadder.findFirst({ where: { id, tenantId } });
-    if (!existing) throw new NotFoundException('Career ladder not found');
-    await this.db.client.careerLadder.delete({ where: { id } });
-    return { deleted: true };
+    return this.db.forTenant(tenantId, async (tx) => {
+      const existing = await tx.careerLadder.findFirst({ where: { id, tenantId } });
+      if (!existing) throw new NotFoundException('Career ladder not found');
+      await tx.careerLadder.delete({ where: { id } });
+      return { deleted: true };
+    });
   }
 
   // ─── Summary ────────────────────────────────────────────────
 
   async getSummary(tenantId: string) {
-    const [familyCount, levelCount, assignedCount, unassignedCount] = await Promise.all([
-      this.db.client.jobFamily.count({ where: { tenantId, isActive: true } }),
-      this.db.client.jobLevel.count({ where: { tenantId, isActive: true } }),
-      this.db.client.employee.count({ where: { tenantId, jobLevelId: { not: null } } }),
-      this.db.client.employee.count({ where: { tenantId, jobLevelId: null } }),
-    ]);
+    const [familyCount, levelCount, assignedCount, unassignedCount] = await this.db.forTenant(
+      tenantId,
+      async (tx) => {
+        const f = await tx.jobFamily.count({ where: { tenantId, isActive: true } });
+        const l = await tx.jobLevel.count({ where: { tenantId, isActive: true } });
+        const a = await tx.employee.count({ where: { tenantId, jobLevelId: { not: null } } });
+        const u = await tx.employee.count({ where: { tenantId, jobLevelId: null } });
+        return [f, l, a, u] as const;
+      },
+    );
 
     return {
       families: familyCount,

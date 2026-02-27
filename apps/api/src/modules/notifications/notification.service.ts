@@ -19,16 +19,18 @@ export class NotificationService {
     body?: string,
     metadata?: Record<string, unknown>,
   ) {
-    return this.db.client.notification.create({
-      data: {
-        tenantId,
-        userId,
-        type,
-        title,
-        body: body ?? null,
-        metadata: (metadata ?? {}) as never,
-      },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.notification.create({
+        data: {
+          tenantId,
+          userId,
+          type,
+          title,
+          body: body ?? null,
+          metadata: (metadata ?? {}) as never,
+        },
+      }),
+    );
   }
 
   /** Notify all users with a given role in a tenant */
@@ -40,10 +42,12 @@ export class NotificationService {
     body?: string,
     metadata?: Record<string, unknown>,
   ) {
-    const users = await this.db.client.user.findMany({
-      where: { tenantId, role: role as never },
-      select: { id: true },
-    });
+    const users = await this.db.forTenant(tenantId, (tx) =>
+      tx.user.findMany({
+        where: { tenantId, role: role as never },
+        select: { id: true },
+      }),
+    );
 
     const notifications = users.map((u) => ({
       tenantId,
@@ -55,7 +59,9 @@ export class NotificationService {
     }));
 
     if (notifications.length > 0) {
-      await this.db.client.notification.createMany({ data: notifications });
+      await this.db.forTenant(tenantId, (tx) =>
+        tx.notification.createMany({ data: notifications }),
+      );
     }
 
     this.logger.log(`Sent "${type}" notification to ${notifications.length} ${role} users`);
@@ -73,54 +79,61 @@ export class NotificationService {
     if (query.type) where['type'] = query.type;
     if (query.read !== undefined) where['read'] = query.read;
 
-    const [data, total] = await Promise.all([
-      this.db.client.notification.findMany({
+    const [data, total] = await this.db.forTenant(tenantId, async (tx) => {
+      const d = await tx.notification.findMany({
         where,
         skip,
         take: limit,
         orderBy: { createdAt: 'desc' },
-      }),
-      this.db.client.notification.count({ where }),
-    ]);
+      });
+      const t = await tx.notification.count({ where });
+      return [d, t] as const;
+    });
 
     return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 
   async unreadCount(userId: string, tenantId: string) {
-    const count = await this.db.client.notification.count({
-      where: { userId, tenantId, read: false },
-    });
+    const count = await this.db.forTenant(tenantId, (tx) =>
+      tx.notification.count({ where: { userId, tenantId, read: false } }),
+    );
     return { count };
   }
 
   async markAsRead(userId: string, tenantId: string, notificationId: string) {
-    const notif = await this.db.client.notification.findFirst({
-      where: { id: notificationId, userId, tenantId },
-    });
-    if (!notif) throw new NotFoundException('Notification not found');
+    return this.db.forTenant(tenantId, async (tx) => {
+      const notif = await tx.notification.findFirst({
+        where: { id: notificationId, userId, tenantId },
+      });
+      if (!notif) throw new NotFoundException('Notification not found');
 
-    return this.db.client.notification.update({
-      where: { id: notificationId },
-      data: { read: true },
+      return tx.notification.update({
+        where: { id: notificationId },
+        data: { read: true },
+      });
     });
   }
 
   async markAllAsRead(userId: string, tenantId: string) {
-    const result = await this.db.client.notification.updateMany({
-      where: { userId, tenantId, read: false },
-      data: { read: true },
-    });
+    const result = await this.db.forTenant(tenantId, (tx) =>
+      tx.notification.updateMany({
+        where: { userId, tenantId, read: false },
+        data: { read: true },
+      }),
+    );
     return { count: result.count };
   }
 
   async dismiss(userId: string, tenantId: string, notificationId: string) {
-    const notif = await this.db.client.notification.findFirst({
-      where: { id: notificationId, userId, tenantId },
-    });
-    if (!notif) throw new NotFoundException('Notification not found');
+    return this.db.forTenant(tenantId, async (tx) => {
+      const notif = await tx.notification.findFirst({
+        where: { id: notificationId, userId, tenantId },
+      });
+      if (!notif) throw new NotFoundException('Notification not found');
 
-    return this.db.client.notification.delete({
-      where: { id: notificationId },
+      return tx.notification.delete({
+        where: { id: notificationId },
+      });
     });
   }
 }

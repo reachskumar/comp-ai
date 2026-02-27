@@ -53,55 +53,67 @@ export class DashboardService {
   }
 
   private async getEmployeeCount(tenantId: string): Promise<number> {
-    return this.db.client.employee.count({
-      where: { tenantId, terminationDate: null },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.employee.count({
+        where: { tenantId, terminationDate: null },
+      }),
+    );
   }
 
   private async getActiveCycleCount(tenantId: string): Promise<number> {
-    return this.db.client.compCycle.count({
-      where: { tenantId, status: 'ACTIVE' },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.compCycle.count({
+        where: { tenantId, status: 'ACTIVE' },
+      }),
+    );
   }
 
   private async getLatestComplianceScore(tenantId: string): Promise<number | null> {
-    const scan = await this.db.client.complianceScan.findFirst({
-      where: { tenantId, status: 'COMPLETED' },
-      orderBy: { completedAt: 'desc' },
-      select: { overallScore: true },
-    });
+    const scan = await this.db.forTenant(tenantId, (tx) =>
+      tx.complianceScan.findFirst({
+        where: { tenantId, status: 'COMPLETED' },
+        orderBy: { completedAt: 'desc' },
+        select: { overallScore: true },
+      }),
+    );
     return scan?.overallScore ?? null;
   }
 
   private async getPendingAnomalyCount(tenantId: string): Promise<number> {
-    return this.db.client.payrollAnomaly.count({
-      where: {
-        resolved: false,
-        payrollRun: { tenantId },
-      },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.payrollAnomaly.count({
+        where: {
+          resolved: false,
+          payrollRun: { tenantId },
+        },
+      }),
+    );
   }
 
   private async getRecentImportCount(tenantId: string): Promise<number> {
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-    return this.db.client.importJob.count({
-      where: {
-        tenantId,
-        createdAt: { gte: thirtyDaysAgo },
-      },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.importJob.count({
+        where: {
+          tenantId,
+          createdAt: { gte: thirtyDaysAgo },
+        },
+      }),
+    );
   }
 
   private async getRecentActivity(tenantId: string): Promise<ActivityEntry[]> {
-    const logs = await this.db.client.auditLog.findMany({
-      where: { tenantId },
-      orderBy: { createdAt: 'desc' },
-      take: 5,
-      include: {
-        user: { select: { name: true } },
-      },
-    });
+    const logs = await this.db.forTenant(tenantId, (tx) =>
+      tx.auditLog.findMany({
+        where: { tenantId },
+        orderBy: { createdAt: 'desc' },
+        take: 5,
+        include: {
+          user: { select: { name: true } },
+        },
+      }),
+    );
 
     return logs.map((log) => ({
       id: log.id,
@@ -113,4 +125,3 @@ export class DashboardService {
     }));
   }
 }
-

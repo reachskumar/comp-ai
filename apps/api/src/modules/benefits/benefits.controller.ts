@@ -84,28 +84,19 @@ export class BenefitsController {
   @Post('enrollments')
   @ApiOperation({ summary: 'Create a benefit enrollment' })
   @HttpCode(HttpStatus.CREATED)
-  async createEnrollment(
-    @Body() dto: CreateEnrollmentDto,
-    @Request() req: AuthRequest,
-  ) {
+  async createEnrollment(@Body() dto: CreateEnrollmentDto, @Request() req: AuthRequest) {
     return this.benefitsService.createEnrollment(req.user.tenantId, dto);
   }
 
   @Get('enrollments')
   @ApiOperation({ summary: 'List enrollments (paginated)' })
-  async listEnrollments(
-    @Query() query: EnrollmentQueryDto,
-    @Request() req: AuthRequest,
-  ) {
+  async listEnrollments(@Query() query: EnrollmentQueryDto, @Request() req: AuthRequest) {
     return this.benefitsService.listEnrollments(req.user.tenantId, query);
   }
 
   @Get('enrollments/:id')
   @ApiOperation({ summary: 'Get enrollment details' })
-  async getEnrollment(
-    @Param('id') id: string,
-    @Request() req: AuthRequest,
-  ) {
+  async getEnrollment(@Param('id') id: string, @Request() req: AuthRequest) {
     return this.benefitsService.getEnrollment(req.user.tenantId, id);
   }
 
@@ -116,11 +107,7 @@ export class BenefitsController {
     @Body() dto: UpdateEnrollmentStatusDto,
     @Request() req: AuthRequest,
   ) {
-    return this.benefitsService.updateEnrollmentStatus(
-      req.user.tenantId,
-      id,
-      dto.status,
-    );
+    return this.benefitsService.updateEnrollmentStatus(req.user.tenantId, id, dto.status);
   }
 
   // ─── Premium Calculator ─────────────────────────────────────────────
@@ -132,11 +119,7 @@ export class BenefitsController {
     @Param('tier') tier: string,
     @Request() req: AuthRequest,
   ) {
-    return this.benefitsService.calculatePremiums(
-      req.user.tenantId,
-      planId,
-      tier,
-    );
+    return this.benefitsService.calculatePremiums(req.user.tenantId, planId, tier);
   }
 
   // ─── Dependents ─────────────────────────────────────────────────────
@@ -144,17 +127,14 @@ export class BenefitsController {
   @Post('dependents')
   @ApiOperation({ summary: 'Add a dependent' })
   @HttpCode(HttpStatus.CREATED)
-  async createDependent(
-    @Body() dto: CreateDependentDto,
-    @Request() req: AuthRequest,
-  ) {
+  async createDependent(@Body() dto: CreateDependentDto, @Request() req: AuthRequest) {
     return this.benefitsService.createDependent(req.user.tenantId, dto);
   }
 
   @Get('employees/:employeeId/dependents')
   @ApiOperation({ summary: 'List dependents for an employee' })
-  async listDependents(@Param('employeeId') employeeId: string) {
-    return this.benefitsService.listDependents(employeeId);
+  async listDependents(@Param('employeeId') employeeId: string, @Request() req: AuthRequest) {
+    return this.benefitsService.listDependents(req.user.tenantId, employeeId);
   }
 
   @Patch('dependents/:id')
@@ -162,14 +142,15 @@ export class BenefitsController {
   async updateDependent(
     @Param('id') id: string,
     @Body() dto: UpdateDependentDto,
+    @Request() req: AuthRequest,
   ) {
-    return this.benefitsService.updateDependent(id, dto);
+    return this.benefitsService.updateDependent(req.user.tenantId, id, dto);
   }
 
   @Delete('dependents/:id')
   @ApiOperation({ summary: 'Delete a dependent' })
-  async deleteDependent(@Param('id') id: string) {
-    return this.benefitsService.deleteDependent(id);
+  async deleteDependent(@Param('id') id: string, @Request() req: AuthRequest) {
+    return this.benefitsService.deleteDependent(req.user.tenantId, id);
   }
 
   // ─── Life Events ────────────────────────────────────────────────────
@@ -177,10 +158,7 @@ export class BenefitsController {
   @Post('life-events')
   @ApiOperation({ summary: 'File a life event' })
   @HttpCode(HttpStatus.CREATED)
-  async createLifeEvent(
-    @Body() dto: CreateLifeEventDto,
-    @Request() req: AuthRequest,
-  ) {
+  async createLifeEvent(@Body() dto: CreateLifeEventDto, @Request() req: AuthRequest) {
     return this.benefitsService.createLifeEvent(req.user.tenantId, dto);
   }
 
@@ -200,12 +178,7 @@ export class BenefitsController {
     @Body() dto: ReviewLifeEventDto,
     @Request() req: AuthRequest,
   ) {
-    return this.benefitsService.reviewLifeEvent(
-      req.user.tenantId,
-      id,
-      dto.status,
-      req.user.userId,
-    );
+    return this.benefitsService.reviewLifeEvent(req.user.tenantId, id, dto.status, req.user.userId);
   }
 
   // ─── Enrollment Windows ─────────────────────────────────────────────
@@ -233,11 +206,6 @@ export class BenefitsController {
     @Body() dto: UpdateEnrollmentWindowDto,
     @Request() req: AuthRequest,
   ) {
-    return this.benefitsService.updateEnrollmentWindow(
-      req.user.tenantId,
-      id,
-      dto,
-    );
+    return this.benefitsService.updateEnrollmentWindow(req.user.tenantId, id, dto);
   }
 }
-

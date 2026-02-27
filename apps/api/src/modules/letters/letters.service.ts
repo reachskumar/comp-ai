@@ -42,9 +42,9 @@ export class LettersService {
 
   async generateLetter(tenantId: string, userId: string, dto: GenerateLetterDto) {
     // Fetch employee data
-    const employee = await this.db.client.employee.findFirst({
-      where: { id: dto.employeeId, tenantId },
-    });
+    const employee = await this.db.forTenant(tenantId, (tx) =>
+      tx.employee.findFirst({ where: { id: dto.employeeId, tenantId } }),
+    );
     if (!employee) {
       throw new NotFoundException(`Employee ${dto.employeeId} not found`);
     }
@@ -75,20 +75,22 @@ export class LettersService {
     };
 
     // Create letter record in GENERATING status
-    const letter = await this.db.client.compensationLetter.create({
-      data: {
-        tenantId,
-        userId,
-        employeeId: dto.employeeId,
-        letterType: mapLetterTypeToEnum(dto.letterType) as never,
-        status: 'GENERATING' as never,
-        subject: `${dto.letterType} letter - ${employee.firstName} ${employee.lastName}`,
-        content: '',
-        compData: compData as unknown as Prisma.InputJsonValue,
-        tone: dto.tone ?? 'professional',
-        language: dto.language ?? 'en',
-      },
-    });
+    const letter = await this.db.forTenant(tenantId, (tx) =>
+      tx.compensationLetter.create({
+        data: {
+          tenantId,
+          userId,
+          employeeId: dto.employeeId,
+          letterType: mapLetterTypeToEnum(dto.letterType) as never,
+          status: 'GENERATING' as never,
+          subject: `${dto.letterType} letter - ${employee.firstName} ${employee.lastName}`,
+          content: '',
+          compData: compData as unknown as Prisma.InputJsonValue,
+          tone: dto.tone ?? 'professional',
+          language: dto.language ?? 'en',
+        },
+      }),
+    );
 
     // Generate letter asynchronously
     try {
@@ -103,25 +105,33 @@ export class LettersService {
       });
 
       // Update letter with generated content
-      return this.db.client.compensationLetter.update({
-        where: { id: letter.id },
-        data: {
-          subject: result.subject,
-          content: result.content,
-          status: 'REVIEW' as never,
-          generatedAt: new Date(),
-        },
-        include: { employee: { select: { firstName: true, lastName: true, department: true, email: true } } },
-      });
+      return this.db.forTenant(tenantId, (tx) =>
+        tx.compensationLetter.update({
+          where: { id: letter.id },
+          data: {
+            subject: result.subject,
+            content: result.content,
+            status: 'REVIEW' as never,
+            generatedAt: new Date(),
+          },
+          include: {
+            employee: {
+              select: { firstName: true, lastName: true, department: true, email: true },
+            },
+          },
+        }),
+      );
     } catch (error) {
       this.logger.error(`Letter generation failed for ${letter.id}`, error);
-      await this.db.client.compensationLetter.update({
-        where: { id: letter.id },
-        data: {
-          status: 'FAILED' as never,
-          errorMsg: error instanceof Error ? error.message : 'Generation failed',
-        },
-      });
+      await this.db.forTenant(tenantId, (tx) =>
+        tx.compensationLetter.update({
+          where: { id: letter.id },
+          data: {
+            status: 'FAILED' as never,
+            errorMsg: error instanceof Error ? error.message : 'Generation failed',
+          },
+        }),
+      );
       throw error;
     }
   }
@@ -144,10 +154,12 @@ export class LettersService {
         };
         const letter = await this.generateLetter(tenantId, userId, letterDto);
         // Tag with batch ID
-        await this.db.client.compensationLetter.update({
-          where: { id: letter.id },
-          data: { batchId },
-        });
+        await this.db.forTenant(tenantId, (tx) =>
+          tx.compensationLetter.update({
+            where: { id: letter.id },
+            data: { batchId },
+          }),
+        );
         results.push({ employeeId, letterId: letter.id, status: 'success' });
       } catch (error) {
         results.push({
@@ -178,8 +190,8 @@ export class LettersService {
       ];
     }
 
-    const [items, total] = await Promise.all([
-      this.db.client.compensationLetter.findMany({
+    const [items, total] = await this.db.forTenant(tenantId, async (tx) => {
+      const i = await tx.compensationLetter.findMany({
         where,
         skip,
         take: limit,
@@ -189,53 +201,64 @@ export class LettersService {
             select: { firstName: true, lastName: true, department: true, email: true },
           },
         },
-      }),
-      this.db.client.compensationLetter.count({ where }),
-    ]);
+      });
+      const t = await tx.compensationLetter.count({ where });
+      return [i, t] as const;
+    });
 
     return { items, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 
   async getLetterById(tenantId: string, letterId: string) {
-    const letter = await this.db.client.compensationLetter.findFirst({
-      where: { id: letterId, tenantId },
-      include: {
-        employee: {
-          select: {
-            firstName: true, lastName: true, department: true,
-            email: true, level: true, location: true,
-            baseSalary: true, totalComp: true, currency: true,
+    const letter = await this.db.forTenant(tenantId, (tx) =>
+      tx.compensationLetter.findFirst({
+        where: { id: letterId, tenantId },
+        include: {
+          employee: {
+            select: {
+              firstName: true,
+              lastName: true,
+              department: true,
+              email: true,
+              level: true,
+              location: true,
+              baseSalary: true,
+              totalComp: true,
+              currency: true,
+            },
           },
         },
-      },
-    });
+      }),
+    );
     if (!letter) throw new NotFoundException(`Letter ${letterId} not found`);
     return letter;
   }
 
   async updateLetter(tenantId: string, letterId: string, dto: UpdateLetterDto) {
-    const letter = await this.db.client.compensationLetter.findFirst({
-      where: { id: letterId, tenantId },
-    });
-    if (!letter) throw new NotFoundException(`Letter ${letterId} not found`);
+    return this.db.forTenant(tenantId, async (tx) => {
+      const letter = await tx.compensationLetter.findFirst({
+        where: { id: letterId, tenantId },
+      });
+      if (!letter) throw new NotFoundException(`Letter ${letterId} not found`);
 
-    const data: Prisma.CompensationLetterUpdateInput = {};
-    if (dto.subject) data.subject = dto.subject;
-    if (dto.content) data.content = dto.content;
-    if (dto.status) {
-      data.status = dto.status as never;
-      if (dto.status === 'APPROVED') data.approvedAt = new Date();
-      if (dto.status === 'SENT') data.sentAt = new Date();
-    }
+      const data: Prisma.CompensationLetterUpdateInput = {};
+      if (dto.subject) data.subject = dto.subject;
+      if (dto.content) data.content = dto.content;
+      if (dto.status) {
+        data.status = dto.status as never;
+        if (dto.status === 'APPROVED') data.approvedAt = new Date();
+        if (dto.status === 'SENT') data.sentAt = new Date();
+      }
 
-    return this.db.client.compensationLetter.update({
-      where: { id: letterId },
-      data,
-      include: {
-        employee: {
-          select: { firstName: true, lastName: true, department: true, email: true },
+      return tx.compensationLetter.update({
+        where: { id: letterId },
+        data,
+        include: {
+          employee: {
+            select: { firstName: true, lastName: true, department: true, email: true },
+          },
         },
-      },
+      });
     });
   }
 
@@ -255,4 +278,3 @@ export class LettersService {
     };
   }
 }
-

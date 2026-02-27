@@ -74,14 +74,16 @@ export class BudgetOptimizerService implements BudgetOptimizerDbAdapter {
   // ─── BudgetOptimizerDbAdapter Implementation ────────────────
 
   async getDepartmentStats(tenantId: string, cycleId: string): Promise<unknown[]> {
-    const employees = await this.db.client.employee.findMany({
-      where: { tenantId, terminationDate: null },
-      select: {
-        department: true,
-        baseSalary: true,
-        compaRatio: true,
-      },
-    });
+    const employees = await this.db.forTenant(tenantId, (tx) =>
+      tx.employee.findMany({
+        where: { tenantId, terminationDate: null },
+        select: {
+          department: true,
+          baseSalary: true,
+          compaRatio: true,
+        },
+      }),
+    );
 
     const deptMap: Record<
       string,
@@ -111,10 +113,12 @@ export class BudgetOptimizerService implements BudgetOptimizerDbAdapter {
   }
 
   async getAttritionRiskByDepartment(tenantId: string): Promise<unknown[]> {
-    const scores = await this.db.client.attritionRiskScore.findMany({
-      where: { tenantId },
-      include: { employee: { select: { department: true } } },
-    });
+    const scores = await this.db.forTenant(tenantId, (tx) =>
+      tx.attritionRiskScore.findMany({
+        where: { tenantId },
+        include: { employee: { select: { department: true } } },
+      }),
+    );
 
     const deptMap: Record<
       string,
@@ -153,15 +157,17 @@ export class BudgetOptimizerService implements BudgetOptimizerDbAdapter {
   }
 
   async getEquityGapsByDepartment(tenantId: string): Promise<unknown[]> {
-    const employees = await this.db.client.employee.findMany({
-      where: { tenantId, terminationDate: null },
-      select: {
-        department: true,
-        baseSalary: true,
-        compaRatio: true,
-        salaryBand: { select: { p50: true } },
-      },
-    });
+    const employees = await this.db.forTenant(tenantId, (tx) =>
+      tx.employee.findMany({
+        where: { tenantId, terminationDate: null },
+        select: {
+          department: true,
+          baseSalary: true,
+          compaRatio: true,
+          salaryBand: { select: { p50: true } },
+        },
+      }),
+    );
 
     const deptMap: Record<
       string,
@@ -204,9 +210,11 @@ export class BudgetOptimizerService implements BudgetOptimizerDbAdapter {
   async getCurrentBudgetAllocations(tenantId: string, cycleId: string): Promise<unknown[]> {
     await this.cycleService.getCycle(tenantId, cycleId);
 
-    const budgets = await this.db.client.cycleBudget.findMany({
-      where: { cycleId },
-    });
+    const budgets = await this.db.forTenant(tenantId, (tx) =>
+      tx.cycleBudget.findMany({
+        where: { cycleId },
+      }),
+    );
 
     return budgets.map((b) => ({
       department: b.department,
@@ -218,12 +226,14 @@ export class BudgetOptimizerService implements BudgetOptimizerDbAdapter {
   }
 
   async getHistoricalUtilization(tenantId: string): Promise<unknown[]> {
-    const cycles = await this.db.client.compCycle.findMany({
-      where: { tenantId, status: 'COMPLETED' },
-      include: { budgets: true },
-      orderBy: { endDate: 'desc' },
-      take: 5,
-    });
+    const cycles = await this.db.forTenant(tenantId, (tx) =>
+      tx.compCycle.findMany({
+        where: { tenantId, status: 'COMPLETED' },
+        include: { budgets: true },
+        orderBy: { endDate: 'desc' },
+        take: 5,
+      }),
+    );
 
     return cycles.map((cycle) => {
       const deptUtil: Record<string, { allocated: number; spent: number }> = {};

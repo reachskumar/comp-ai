@@ -15,15 +15,17 @@ export class RewardsStatementService {
   async generate(tenantId: string, employeeId: string, year?: number) {
     const currentYear = year ?? new Date().getFullYear();
 
-    const employee = await this.db.client.employee.findFirst({
-      where: { id: employeeId, tenantId },
-    });
+    const employee = await this.db.forTenant(tenantId, (tx) =>
+      tx.employee.findFirst({ where: { id: employeeId, tenantId } }),
+    );
     if (!employee) throw new NotFoundException('Employee not found');
 
     // Get benefit enrollments
-    const enrollments = await this.db.client.benefitEnrollment.findMany({
-      where: { tenantId, employeeId: employee.id, status: 'ACTIVE' },
-    });
+    const enrollments = await this.db.forTenant(tenantId, (tx) =>
+      tx.benefitEnrollment.findMany({
+        where: { tenantId, employeeId: employee.id, status: 'ACTIVE' },
+      }),
+    );
     const benefitsValue = enrollments.reduce((sum, e) => sum + Number(e.employerPremium) * 12, 0);
 
     const baseSalary = Number(employee.baseSalary);
@@ -62,28 +64,29 @@ export class RewardsStatementService {
     });
 
     // Upsert statement record
-    const existing = await this.db.client.rewardsStatement.findFirst({
-      where: { tenantId, employeeId: employee.id, year: currentYear },
-    });
+    const statement = await this.db.forTenant(tenantId, async (tx) => {
+      const existing = await tx.rewardsStatement.findFirst({
+        where: { tenantId, employeeId: employee.id, year: currentYear },
+      });
 
-    let statement;
-    if (existing) {
-      statement = await this.db.client.rewardsStatement.update({
-        where: { id: existing.id },
-        data: { pdfUrl, status: 'GENERATED', generatedAt: new Date() },
-      });
-    } else {
-      statement = await this.db.client.rewardsStatement.create({
-        data: {
-          tenantId,
-          employeeId: employee.id,
-          year: currentYear,
-          pdfUrl,
-          status: 'GENERATED',
-          config: { breakdown, totalRewardsValue },
-        },
-      });
-    }
+      if (existing) {
+        return tx.rewardsStatement.update({
+          where: { id: existing.id },
+          data: { pdfUrl, status: 'GENERATED', generatedAt: new Date() },
+        });
+      } else {
+        return tx.rewardsStatement.create({
+          data: {
+            tenantId,
+            employeeId: employee.id,
+            year: currentYear,
+            pdfUrl,
+            status: 'GENERATED',
+            config: { breakdown, totalRewardsValue },
+          },
+        });
+      }
+    });
 
     this.logger.log(`Generated statement for employee=${employee.id} year=${currentYear}`);
     return statement;
@@ -93,7 +96,9 @@ export class RewardsStatementService {
     const where: Record<string, unknown> = { tenantId, terminationDate: null };
     if (department) where.department = department;
 
-    const employees = await this.db.client.employee.findMany({ where: where as never });
+    const employees = await this.db.forTenant(tenantId, (tx) =>
+      tx.employee.findMany({ where: where as never }),
+    );
     const results = [];
 
     for (const emp of employees) {
@@ -125,8 +130,8 @@ export class RewardsStatementService {
     if (query.status) where.status = query.status;
     if (query.employeeId) where.employeeId = query.employeeId;
 
-    const [data, total] = await Promise.all([
-      this.db.client.rewardsStatement.findMany({
+    const [data, total] = await this.db.forTenant(tenantId, async (tx) => {
+      const d = await tx.rewardsStatement.findMany({
         where: where as never,
         skip,
         take: limit,
@@ -134,59 +139,66 @@ export class RewardsStatementService {
         include: {
           employee: { select: { firstName: true, lastName: true, department: true, email: true } },
         },
-      }),
-      this.db.client.rewardsStatement.count({ where: where as never }),
-    ]);
+      });
+      const t = await tx.rewardsStatement.count({ where: where as never });
+      return [d, t] as const;
+    });
 
     return { data, total, page, limit };
   }
 
   async getById(tenantId: string, id: string) {
-    const statement = await this.db.client.rewardsStatement.findFirst({
-      where: { id, tenantId },
-      include: {
-        employee: { select: { firstName: true, lastName: true, department: true, email: true } },
-      },
-    });
+    const statement = await this.db.forTenant(tenantId, (tx) =>
+      tx.rewardsStatement.findFirst({
+        where: { id, tenantId },
+        include: {
+          employee: { select: { firstName: true, lastName: true, department: true, email: true } },
+        },
+      }),
+    );
     if (!statement) throw new NotFoundException('Statement not found');
     return statement;
   }
 
   async getMyStatement(tenantId: string, userId: string) {
-    const user = await this.db.client.user.findUnique({ where: { id: userId } });
-    if (!user) throw new NotFoundException('User not found');
+    return this.db.forTenant(tenantId, async (tx) => {
+      const user = await tx.user.findUnique({ where: { id: userId } });
+      if (!user) throw new NotFoundException('User not found');
 
-    const employee = await this.db.client.employee.findFirst({
-      where: { tenantId, email: user.email },
-    });
-    if (!employee) return [];
+      const employee = await tx.employee.findFirst({
+        where: { tenantId, email: user.email },
+      });
+      if (!employee) return [];
 
-    return this.db.client.rewardsStatement.findMany({
-      where: { tenantId, employeeId: employee.id },
-      orderBy: { year: 'desc' },
+      return tx.rewardsStatement.findMany({
+        where: { tenantId, employeeId: employee.id },
+        orderBy: { year: 'desc' },
+      });
     });
   }
 
   async sendEmail(tenantId: string, id: string) {
-    const statement = await this.db.client.rewardsStatement.findFirst({
-      where: { id, tenantId },
-      include: { employee: { select: { email: true, firstName: true, lastName: true } } },
-    });
-    if (!statement) throw new NotFoundException('Statement not found');
+    return this.db.forTenant(tenantId, async (tx) => {
+      const statement = await tx.rewardsStatement.findFirst({
+        where: { id, tenantId },
+        include: { employee: { select: { email: true, firstName: true, lastName: true } } },
+      });
+      if (!statement) throw new NotFoundException('Statement not found');
 
-    const emailTo = statement.employee.email;
-    this.logger.log(`Would send email to ${emailTo} for statement ${id}`);
+      const emailTo = statement.employee.email;
+      this.logger.log(`Would send email to ${emailTo} for statement ${id}`);
 
-    return this.db.client.rewardsStatement.update({
-      where: { id },
-      data: { emailSentAt: new Date(), emailTo, status: 'SENT' },
+      return tx.rewardsStatement.update({
+        where: { id },
+        data: { emailSentAt: new Date(), emailTo, status: 'SENT' },
+      });
     });
   }
 
   async getDownloadPath(tenantId: string, id: string): Promise<string> {
-    const statement = await this.db.client.rewardsStatement.findFirst({
-      where: { id, tenantId },
-    });
+    const statement = await this.db.forTenant(tenantId, (tx) =>
+      tx.rewardsStatement.findFirst({ where: { id, tenantId } }),
+    );
     if (!statement || !statement.pdfUrl) {
       throw new NotFoundException('Statement PDF not found');
     }

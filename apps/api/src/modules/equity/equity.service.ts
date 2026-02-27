@@ -28,81 +28,91 @@ export class EquityService {
     if (query.planType) where.planType = query.planType;
     if (query.isActive !== undefined) where.isActive = query.isActive === 'true';
 
-    const [data, total] = await Promise.all([
-      this.db.client.equityPlan.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { createdAt: 'desc' },
-        include: { _count: { select: { grants: true } } },
-      }),
-      this.db.client.equityPlan.count({ where }),
-    ]);
+    const [data, total] = await this.db.forTenant(tenantId, (tx) =>
+      Promise.all([
+        tx.equityPlan.findMany({
+          where,
+          skip,
+          take: limit,
+          orderBy: { createdAt: 'desc' },
+          include: { _count: { select: { grants: true } } },
+        }),
+        tx.equityPlan.count({ where }),
+      ]),
+    );
 
     return { data, total, page, limit };
   }
 
   async getPlan(tenantId: string, id: string) {
-    const plan = await this.db.client.equityPlan.findFirst({
-      where: { id, tenantId },
-      include: {
-        grants: {
-          include: {
-            employee: { select: { id: true, firstName: true, lastName: true, department: true } },
+    const plan = await this.db.forTenant(tenantId, (tx) =>
+      tx.equityPlan.findFirst({
+        where: { id, tenantId },
+        include: {
+          grants: {
+            include: {
+              employee: { select: { id: true, firstName: true, lastName: true, department: true } },
+            },
+            orderBy: { grantDate: 'desc' },
           },
-          orderBy: { grantDate: 'desc' },
+          _count: { select: { grants: true } },
         },
-        _count: { select: { grants: true } },
-      },
-    });
+      }),
+    );
     if (!plan) throw new NotFoundException('Equity plan not found');
     return plan;
   }
 
   async createPlan(tenantId: string, dto: CreateEquityPlanDto) {
-    return this.db.client.equityPlan.create({
-      data: {
-        tenantId,
-        name: dto.name,
-        planType: dto.planType as any,
-        totalSharesAuthorized: dto.totalSharesAuthorized,
-        sharesAvailable: dto.totalSharesAuthorized,
-        sharePrice: dto.sharePrice,
-        currency: dto.currency || 'USD',
-        effectiveDate: new Date(dto.effectiveDate),
-        expirationDate: dto.expirationDate ? new Date(dto.expirationDate) : undefined,
-        description: dto.description,
-        isActive: dto.isActive ?? true,
-      },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.equityPlan.create({
+        data: {
+          tenantId,
+          name: dto.name,
+          planType: dto.planType as any,
+          totalSharesAuthorized: dto.totalSharesAuthorized,
+          sharesAvailable: dto.totalSharesAuthorized,
+          sharePrice: dto.sharePrice,
+          currency: dto.currency || 'USD',
+          effectiveDate: new Date(dto.effectiveDate),
+          expirationDate: dto.expirationDate ? new Date(dto.expirationDate) : undefined,
+          description: dto.description,
+          isActive: dto.isActive ?? true,
+        },
+      }),
+    );
   }
 
   async updatePlan(tenantId: string, id: string, dto: UpdateEquityPlanDto) {
-    const plan = await this.db.client.equityPlan.findFirst({ where: { id, tenantId } });
-    if (!plan) throw new NotFoundException('Equity plan not found');
+    return this.db.forTenant(tenantId, async (tx) => {
+      const plan = await tx.equityPlan.findFirst({ where: { id, tenantId } });
+      if (!plan) throw new NotFoundException('Equity plan not found');
 
-    const data: Record<string, unknown> = {};
-    if (dto.name !== undefined) data.name = dto.name;
-    if (dto.planType !== undefined) data.planType = dto.planType;
-    if (dto.totalSharesAuthorized !== undefined) {
-      data.totalSharesAuthorized = dto.totalSharesAuthorized;
-      data.sharesAvailable = dto.totalSharesAuthorized - Number(plan.sharesIssued);
-    }
-    if (dto.sharePrice !== undefined) data.sharePrice = dto.sharePrice;
-    if (dto.currency !== undefined) data.currency = dto.currency;
-    if (dto.effectiveDate !== undefined) data.effectiveDate = new Date(dto.effectiveDate);
-    if (dto.expirationDate !== undefined) data.expirationDate = new Date(dto.expirationDate);
-    if (dto.description !== undefined) data.description = dto.description;
-    if (dto.isActive !== undefined) data.isActive = dto.isActive;
+      const data: Record<string, unknown> = {};
+      if (dto.name !== undefined) data.name = dto.name;
+      if (dto.planType !== undefined) data.planType = dto.planType;
+      if (dto.totalSharesAuthorized !== undefined) {
+        data.totalSharesAuthorized = dto.totalSharesAuthorized;
+        data.sharesAvailable = dto.totalSharesAuthorized - Number(plan.sharesIssued);
+      }
+      if (dto.sharePrice !== undefined) data.sharePrice = dto.sharePrice;
+      if (dto.currency !== undefined) data.currency = dto.currency;
+      if (dto.effectiveDate !== undefined) data.effectiveDate = new Date(dto.effectiveDate);
+      if (dto.expirationDate !== undefined) data.expirationDate = new Date(dto.expirationDate);
+      if (dto.description !== undefined) data.description = dto.description;
+      if (dto.isActive !== undefined) data.isActive = dto.isActive;
 
-    return this.db.client.equityPlan.update({ where: { id }, data });
+      return tx.equityPlan.update({ where: { id }, data });
+    });
   }
 
   async deletePlan(tenantId: string, id: string) {
-    const plan = await this.db.client.equityPlan.findFirst({ where: { id, tenantId } });
-    if (!plan) throw new NotFoundException('Equity plan not found');
-    await this.db.client.equityPlan.delete({ where: { id } });
-    return { deleted: true };
+    return this.db.forTenant(tenantId, async (tx) => {
+      const plan = await tx.equityPlan.findFirst({ where: { id, tenantId } });
+      if (!plan) throw new NotFoundException('Equity plan not found');
+      await tx.equityPlan.delete({ where: { id } });
+      return { deleted: true };
+    });
   }
 
   // ─── Equity Grants ────────────────────────────────────────────
@@ -118,163 +128,173 @@ export class EquityService {
     if (query.status) where.status = query.status;
     if (query.grantType) where.grantType = query.grantType;
 
-    const [data, total] = await Promise.all([
-      this.db.client.equityGrant.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { grantDate: 'desc' },
-        include: {
-          employee: {
-            select: { id: true, firstName: true, lastName: true, department: true, email: true },
+    const [data, total] = await this.db.forTenant(tenantId, (tx) =>
+      Promise.all([
+        tx.equityGrant.findMany({
+          where,
+          skip,
+          take: limit,
+          orderBy: { grantDate: 'desc' },
+          include: {
+            employee: {
+              select: { id: true, firstName: true, lastName: true, department: true, email: true },
+            },
+            plan: { select: { id: true, name: true, planType: true } },
+            _count: { select: { vestingEvents: true } },
           },
-          plan: { select: { id: true, name: true, planType: true } },
-          _count: { select: { vestingEvents: true } },
-        },
-      }),
-      this.db.client.equityGrant.count({ where }),
-    ]);
+        }),
+        tx.equityGrant.count({ where }),
+      ]),
+    );
 
     return { data, total, page, limit };
   }
 
   async getGrant(tenantId: string, id: string) {
-    const grant = await this.db.client.equityGrant.findFirst({
-      where: { id, tenantId },
-      include: {
-        employee: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            department: true,
-            email: true,
-            level: true,
+    const grant = await this.db.forTenant(tenantId, (tx) =>
+      tx.equityGrant.findFirst({
+        where: { id, tenantId },
+        include: {
+          employee: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              department: true,
+              email: true,
+              level: true,
+            },
           },
+          plan: { select: { id: true, name: true, planType: true, sharePrice: true } },
+          vestingEvents: { orderBy: { vestDate: 'asc' } },
         },
-        plan: { select: { id: true, name: true, planType: true, sharePrice: true } },
-        vestingEvents: { orderBy: { vestDate: 'asc' } },
-      },
-    });
+      }),
+    );
     if (!grant) throw new NotFoundException('Equity grant not found');
     return grant;
   }
 
   async createGrant(tenantId: string, dto: CreateEquityGrantDto) {
-    // Verify plan exists and has available shares
-    const plan = await this.db.client.equityPlan.findFirst({
-      where: { id: dto.planId, tenantId },
-    });
-    if (!plan) throw new NotFoundException('Equity plan not found');
+    return this.db.forTenant(tenantId, async (tx) => {
+      // Verify plan exists and has available shares
+      const plan = await tx.equityPlan.findFirst({
+        where: { id: dto.planId, tenantId },
+      });
+      if (!plan) throw new NotFoundException('Equity plan not found');
 
-    const vestingStartDate = dto.vestingStartDate
-      ? new Date(dto.vestingStartDate)
-      : new Date(dto.grantDate);
-    const cliffMonths = dto.cliffMonths ?? 12;
-    const vestingMonths = dto.vestingMonths ?? 48;
+      const vestingStartDate = dto.vestingStartDate
+        ? new Date(dto.vestingStartDate)
+        : new Date(dto.grantDate);
+      const cliffMonths = dto.cliffMonths ?? 12;
+      const vestingMonths = dto.vestingMonths ?? 48;
 
-    const grant = await this.db.client.equityGrant.create({
-      data: {
-        tenantId,
-        employeeId: dto.employeeId,
-        planId: dto.planId,
-        grantType: dto.grantType as any,
-        grantDate: new Date(dto.grantDate),
-        totalShares: dto.totalShares,
-        grantPrice: dto.grantPrice,
-        currentPrice: dto.currentPrice ?? dto.grantPrice,
-        vestingScheduleType: (dto.vestingScheduleType as any) || 'STANDARD_4Y_1Y_CLIFF',
+      const grant = await tx.equityGrant.create({
+        data: {
+          tenantId,
+          employeeId: dto.employeeId,
+          planId: dto.planId,
+          grantType: dto.grantType as any,
+          grantDate: new Date(dto.grantDate),
+          totalShares: dto.totalShares,
+          grantPrice: dto.grantPrice,
+          currentPrice: dto.currentPrice ?? dto.grantPrice,
+          vestingScheduleType: (dto.vestingScheduleType as any) || 'STANDARD_4Y_1Y_CLIFF',
+          vestingStartDate,
+          cliffMonths,
+          vestingMonths,
+          status: 'ACTIVE',
+          expirationDate: dto.expirationDate ? new Date(dto.expirationDate) : undefined,
+        },
+      });
+
+      // Auto-generate vesting events
+      const events = this.generateVestingEvents(
+        grant.id,
+        dto.totalShares,
         vestingStartDate,
         cliffMonths,
         vestingMonths,
-        status: 'ACTIVE',
-        expirationDate: dto.expirationDate ? new Date(dto.expirationDate) : undefined,
-      },
+        dto.vestingScheduleType || 'STANDARD_4Y_1Y_CLIFF',
+      );
+
+      if (events.length > 0) {
+        await tx.vestingEvent.createMany({ data: events });
+      }
+
+      // Update plan shares issued/available
+      await tx.equityPlan.update({
+        where: { id: dto.planId },
+        data: {
+          sharesIssued: { increment: dto.totalShares },
+          sharesAvailable: { decrement: dto.totalShares },
+        },
+      });
+
+      this.logger.log(`Created equity grant ${grant.id} with ${events.length} vesting events`);
+
+      return grant;
     });
-
-    // Auto-generate vesting events
-    const events = this.generateVestingEvents(
-      grant.id,
-      dto.totalShares,
-      vestingStartDate,
-      cliffMonths,
-      vestingMonths,
-      dto.vestingScheduleType || 'STANDARD_4Y_1Y_CLIFF',
-    );
-
-    if (events.length > 0) {
-      await this.db.client.vestingEvent.createMany({ data: events });
-    }
-
-    // Update plan shares issued/available
-    await this.db.client.equityPlan.update({
-      where: { id: dto.planId },
-      data: {
-        sharesIssued: { increment: dto.totalShares },
-        sharesAvailable: { decrement: dto.totalShares },
-      },
-    });
-
-    this.logger.log(`Created equity grant ${grant.id} with ${events.length} vesting events`);
-
-    return this.getGrant(tenantId, grant.id);
   }
 
   async updateGrant(tenantId: string, id: string, dto: UpdateEquityGrantDto) {
-    const grant = await this.db.client.equityGrant.findFirst({ where: { id, tenantId } });
-    if (!grant) throw new NotFoundException('Equity grant not found');
+    return this.db.forTenant(tenantId, async (tx) => {
+      const grant = await tx.equityGrant.findFirst({ where: { id, tenantId } });
+      if (!grant) throw new NotFoundException('Equity grant not found');
 
-    const data: Record<string, unknown> = {};
-    if (dto.currentPrice !== undefined) data.currentPrice = dto.currentPrice;
-    if (dto.grantType !== undefined) data.grantType = dto.grantType;
-    if (dto.expirationDate !== undefined) data.expirationDate = new Date(dto.expirationDate);
+      const data: Record<string, unknown> = {};
+      if (dto.currentPrice !== undefined) data.currentPrice = dto.currentPrice;
+      if (dto.grantType !== undefined) data.grantType = dto.grantType;
+      if (dto.expirationDate !== undefined) data.expirationDate = new Date(dto.expirationDate);
 
-    return this.db.client.equityGrant.update({
-      where: { id },
-      data,
-      include: {
-        employee: { select: { id: true, firstName: true, lastName: true } },
-        plan: { select: { id: true, name: true } },
-      },
+      return tx.equityGrant.update({
+        where: { id },
+        data,
+        include: {
+          employee: { select: { id: true, firstName: true, lastName: true } },
+          plan: { select: { id: true, name: true } },
+        },
+      });
     });
   }
 
   async cancelGrant(tenantId: string, id: string) {
-    const grant = await this.db.client.equityGrant.findFirst({ where: { id, tenantId } });
-    if (!grant) throw new NotFoundException('Equity grant not found');
+    return this.db.forTenant(tenantId, async (tx) => {
+      const grant = await tx.equityGrant.findFirst({ where: { id, tenantId } });
+      if (!grant) throw new NotFoundException('Equity grant not found');
 
-    await this.db.client.$transaction([
-      this.db.client.equityGrant.update({
+      await tx.equityGrant.update({
         where: { id },
         data: { status: 'CANCELLED' },
-      }),
-      this.db.client.vestingEvent.updateMany({
+      });
+      await tx.vestingEvent.updateMany({
         where: { grantId: id, status: 'SCHEDULED' },
         data: { status: 'CANCELLED' },
-      }),
-      this.db.client.equityPlan.update({
+      });
+      await tx.equityPlan.update({
         where: { id: grant.planId },
         data: {
           sharesIssued: { decrement: grant.totalShares - grant.vestedShares },
           sharesAvailable: { increment: grant.totalShares - grant.vestedShares },
         },
-      }),
-    ]);
+      });
 
-    return { cancelled: true };
+      return { cancelled: true };
+    });
   }
 
   // ─── Employee Portfolio ───────────────────────────────────────
 
   async getEmployeePortfolio(tenantId: string, employeeId: string) {
-    const grants = await this.db.client.equityGrant.findMany({
-      where: { tenantId, employeeId },
-      include: {
-        plan: { select: { id: true, name: true, planType: true, sharePrice: true } },
-        vestingEvents: { orderBy: { vestDate: 'asc' } },
-      },
-      orderBy: { grantDate: 'desc' },
-    });
+    const grants = await this.db.forTenant(tenantId, (tx) =>
+      tx.equityGrant.findMany({
+        where: { tenantId, employeeId },
+        include: {
+          plan: { select: { id: true, name: true, planType: true, sharePrice: true } },
+          vestingEvents: { orderBy: { vestDate: 'asc' } },
+        },
+        orderBy: { grantDate: 'desc' },
+      }),
+    );
 
     let totalGrantedShares = 0;
     let totalVestedShares = 0;
@@ -308,36 +328,38 @@ export class EquityService {
   // ─── Dashboard ────────────────────────────────────────────────
 
   async getDashboard(tenantId: string) {
-    const [plans, grants, upcomingVests] = await Promise.all([
-      this.db.client.equityPlan.findMany({
-        where: { tenantId, isActive: true },
-        include: { _count: { select: { grants: true } } },
-      }),
-      this.db.client.equityGrant.findMany({
-        where: { tenantId, status: { not: 'CANCELLED' } },
-      }),
-      this.db.client.vestingEvent.findMany({
-        where: {
-          grant: { tenantId },
-          status: 'SCHEDULED',
-          vestDate: {
-            gte: new Date(),
-            lte: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000), // next 90 days
-          },
-        },
-        include: {
-          grant: {
-            select: {
-              id: true,
-              currentPrice: true,
-              employee: { select: { firstName: true, lastName: true } },
+    const [plans, grants, upcomingVests] = await this.db.forTenant(tenantId, (tx) =>
+      Promise.all([
+        tx.equityPlan.findMany({
+          where: { tenantId, isActive: true },
+          include: { _count: { select: { grants: true } } },
+        }),
+        tx.equityGrant.findMany({
+          where: { tenantId, status: { not: 'CANCELLED' } },
+        }),
+        tx.vestingEvent.findMany({
+          where: {
+            grant: { tenantId },
+            status: 'SCHEDULED',
+            vestDate: {
+              gte: new Date(),
+              lte: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000), // next 90 days
             },
           },
-        },
-        orderBy: { vestDate: 'asc' },
-        take: 20,
-      }),
-    ]);
+          include: {
+            grant: {
+              select: {
+                id: true,
+                currentPrice: true,
+                employee: { select: { firstName: true, lastName: true } },
+              },
+            },
+          },
+          orderBy: { vestDate: 'asc' },
+          take: 20,
+        }),
+      ]),
+    );
 
     let totalSharesAuthorized = 0;
     let totalSharesIssued = 0;

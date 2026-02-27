@@ -10,21 +10,23 @@ export class AdHocService {
   constructor(private readonly db: DatabaseService) {}
 
   async create(tenantId: string, userId: string, dto: CreateAdHocDto) {
-    return this.db.client.adHocIncrease.create({
-      data: {
-        tenantId,
-        employeeId: dto.employeeId,
-        requestedById: userId,
-        type: dto.type as any,
-        reason: dto.reason,
-        currentValue: dto.currentValue,
-        proposedValue: dto.proposedValue,
-        currency: dto.currency ?? 'USD',
-        effectiveDate: new Date(dto.effectiveDate),
-        metadata: (dto.metadata ?? {}) as any,
-      },
-      include: { employee: true, requestedBy: true },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.adHocIncrease.create({
+        data: {
+          tenantId,
+          employeeId: dto.employeeId,
+          requestedById: userId,
+          type: dto.type as any,
+          reason: dto.reason,
+          currentValue: dto.currentValue,
+          proposedValue: dto.proposedValue,
+          currency: dto.currency ?? 'USD',
+          effectiveDate: new Date(dto.effectiveDate),
+          metadata: (dto.metadata ?? {}) as any,
+        },
+        include: { employee: true, requestedBy: true },
+      }),
+    );
   }
 
   async list(tenantId: string, query: AdHocQueryDto) {
@@ -44,33 +46,37 @@ export class AdHocService {
       if (query.dateTo) where.effectiveDate.lte = new Date(query.dateTo);
     }
 
-    const [data, total] = await Promise.all([
-      this.db.client.adHocIncrease.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { createdAt: 'desc' },
+    const [data, total] = await this.db.forTenant(tenantId, (tx) =>
+      Promise.all([
+        tx.adHocIncrease.findMany({
+          where,
+          skip,
+          take: limit,
+          orderBy: { createdAt: 'desc' },
+          include: {
+            employee: true,
+            requestedBy: { select: { id: true, name: true, email: true } },
+            approver: { select: { id: true, name: true, email: true } },
+          },
+        }),
+        tx.adHocIncrease.count({ where }),
+      ]),
+    );
+
+    return { data, total, page, limit };
+  }
+
+  async getById(tenantId: string, id: string) {
+    const record = await this.db.forTenant(tenantId, (tx) =>
+      tx.adHocIncrease.findFirst({
+        where: { id, tenantId },
         include: {
           employee: true,
           requestedBy: { select: { id: true, name: true, email: true } },
           approver: { select: { id: true, name: true, email: true } },
         },
       }),
-      this.db.client.adHocIncrease.count({ where }),
-    ]);
-
-    return { data, total, page, limit };
-  }
-
-  async getById(tenantId: string, id: string) {
-    const record = await this.db.client.adHocIncrease.findFirst({
-      where: { id, tenantId },
-      include: {
-        employee: true,
-        requestedBy: { select: { id: true, name: true, email: true } },
-        approver: { select: { id: true, name: true, email: true } },
-      },
-    });
+    );
     if (!record) throw new NotFoundException('Ad hoc request not found');
     return record;
   }
@@ -92,11 +98,13 @@ export class AdHocService {
       updateData.employee = { connect: { id: dto.employeeId } };
     }
 
-    return this.db.client.adHocIncrease.update({
-      where: { id },
-      data: updateData as any,
-      include: { employee: true, requestedBy: true },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.adHocIncrease.update({
+        where: { id },
+        data: updateData as any,
+        include: { employee: true, requestedBy: true },
+      }),
+    );
   }
 
   async submit(tenantId: string, id: string) {
@@ -104,11 +112,13 @@ export class AdHocService {
     if (existing.status !== 'DRAFT') {
       throw new BadRequestException('Only DRAFT requests can be submitted');
     }
-    return this.db.client.adHocIncrease.update({
-      where: { id },
-      data: { status: 'PENDING_APPROVAL' },
-      include: { employee: true },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.adHocIncrease.update({
+        where: { id },
+        data: { status: 'PENDING_APPROVAL' },
+        include: { employee: true },
+      }),
+    );
   }
 
   async approve(tenantId: string, id: string, userId: string) {
@@ -116,15 +126,17 @@ export class AdHocService {
     if (existing.status !== 'PENDING_APPROVAL') {
       throw new BadRequestException('Only PENDING_APPROVAL requests can be approved');
     }
-    return this.db.client.adHocIncrease.update({
-      where: { id },
-      data: {
-        status: 'APPROVED',
-        approverUserId: userId,
-        approvedAt: new Date(),
-      },
-      include: { employee: true },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.adHocIncrease.update({
+        where: { id },
+        data: {
+          status: 'APPROVED',
+          approverUserId: userId,
+          approvedAt: new Date(),
+        },
+        include: { employee: true },
+      }),
+    );
   }
 
   async reject(tenantId: string, id: string, userId: string, reason?: string) {
@@ -132,15 +144,17 @@ export class AdHocService {
     if (existing.status !== 'PENDING_APPROVAL') {
       throw new BadRequestException('Only PENDING_APPROVAL requests can be rejected');
     }
-    return this.db.client.adHocIncrease.update({
-      where: { id },
-      data: {
-        status: 'REJECTED',
-        approverUserId: userId,
-        rejectionReason: reason,
-      },
-      include: { employee: true },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.adHocIncrease.update({
+        where: { id },
+        data: {
+          status: 'REJECTED',
+          approverUserId: userId,
+          rejectionReason: reason,
+        },
+        include: { employee: true },
+      }),
+    );
   }
 
   async apply(tenantId: string, id: string) {
@@ -149,9 +163,8 @@ export class AdHocService {
       throw new BadRequestException('Only APPROVED requests can be applied');
     }
 
-    // Apply the change to the employee record in a transaction
-    return this.db.client.$transaction(async (tx) => {
-      // Update employee baseSalary and totalComp
+    // Apply the change to the employee record in a tenant-scoped transaction
+    return this.db.forTenant(tenantId, async (tx) => {
       await tx.employee.update({
         where: { id: existing.employeeId },
         data: {
@@ -160,7 +173,6 @@ export class AdHocService {
         },
       });
 
-      // Mark the ad hoc request as applied
       return tx.adHocIncrease.update({
         where: { id },
         data: {
@@ -173,29 +185,33 @@ export class AdHocService {
   }
 
   async getStats(tenantId: string) {
-    const [pending, approvedThisMonth, byType, totalAmount] = await Promise.all([
-      this.db.client.adHocIncrease.count({
-        where: { tenantId, status: 'PENDING_APPROVAL' },
-      }),
-      this.db.client.adHocIncrease.count({
-        where: {
-          tenantId,
-          status: { in: ['APPROVED', 'APPLIED'] },
-          approvedAt: {
-            gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
+    const [pending, approvedThisMonth, byType, totalAmount] = await this.db.forTenant(
+      tenantId,
+      async (tx) => {
+        const p = await tx.adHocIncrease.count({
+          where: { tenantId, status: 'PENDING_APPROVAL' },
+        });
+        const a = await tx.adHocIncrease.count({
+          where: {
+            tenantId,
+            status: { in: ['APPROVED', 'APPLIED'] },
+            approvedAt: {
+              gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
+            },
           },
-        },
-      }),
-      this.db.client.adHocIncrease.groupBy({
-        by: ['type'],
-        where: { tenantId },
-        _count: { id: true },
-      }),
-      this.db.client.adHocIncrease.aggregate({
-        where: { tenantId, status: { in: ['APPROVED', 'APPLIED'] } },
-        _sum: { proposedValue: true },
-      }),
-    ]);
+        });
+        const bt = await tx.adHocIncrease.groupBy({
+          by: ['type'],
+          where: { tenantId },
+          _count: { id: true },
+        });
+        const ta = await tx.adHocIncrease.aggregate({
+          where: { tenantId, status: { in: ['APPROVED', 'APPLIED'] } },
+          _sum: { proposedValue: true },
+        });
+        return [p, a, bt, ta] as const;
+      },
+    );
 
     return {
       pendingCount: pending,
