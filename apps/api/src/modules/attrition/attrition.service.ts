@@ -110,10 +110,12 @@ export class AttritionService {
   }
 
   private async getDeptTermRates(tenantId: string): Promise<Record<string, number>> {
-    const emps = await this.db.client.employee.findMany({
-      where: { tenantId },
-      select: { department: true, terminationDate: true },
-    });
+    const emps = await this.db.forTenant(tenantId, (tx) =>
+      tx.employee.findMany({
+        where: { tenantId },
+        select: { department: true, terminationDate: true },
+      }),
+    );
     const dc: Record<string, { t: number; x: number }> = {};
     for (const e of emps) {
       if (!dc[e.department]) dc[e.department] = { t: 0, x: 0 };
@@ -147,17 +149,22 @@ export class AttritionService {
     userId: string,
     employeeId: string,
   ): Promise<EmployeeRiskResult> {
-    const employee = await this.db.client.employee.findFirst({
-      where: { id: employeeId, tenantId, terminationDate: null },
-      include: { salaryBand: true },
+    const { employee, lastRec } = await this.db.forTenant(tenantId, async (tx) => {
+      const emp = await tx.employee.findFirst({
+        where: { id: employeeId, tenantId, terminationDate: null },
+        include: { salaryBand: true },
+      });
+      const rec = emp
+        ? await tx.compRecommendation.findFirst({
+            where: { employeeId, status: 'APPROVED' },
+            orderBy: { updatedAt: 'desc' },
+            select: { updatedAt: true },
+          })
+        : null;
+      return { employee: emp, lastRec: rec };
     });
     if (!employee) throw new NotFoundException(`Employee ${employeeId} not found`);
     const deptRates = await this.getDeptTermRates(tenantId);
-    const lastRec = await this.db.client.compRecommendation.findFirst({
-      where: { employeeId, status: 'APPROVED' },
-      orderBy: { updatedAt: 'desc' },
-      select: { updatedAt: true },
-    });
     const factors = this.calculateRiskScore({
       compaRatio: employee.compaRatio ? Number(employee.compaRatio) : null,
       hireDate: employee.hireDate,
@@ -200,28 +207,30 @@ export class AttritionService {
         recommendation = this.generateFallback(factors, riskLevel);
       }
     }
-    await this.db.client.attritionRiskScore.upsert({
-      where: { id: `${tenantId}-${employeeId}` },
-      update: {
-        riskScore,
-        riskLevel: riskLevel as 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL',
-        factors: JSON.parse(JSON.stringify(factors)),
-        recommendation,
-        calculatedAt: new Date(),
-        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-      },
-      create: {
-        id: `${tenantId}-${employeeId}`,
-        tenantId,
-        employeeId,
-        riskScore,
-        riskLevel: riskLevel as 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL',
-        factors: JSON.parse(JSON.stringify(factors)),
-        recommendation,
-        calculatedAt: new Date(),
-        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-      },
-    });
+    await this.db.forTenant(tenantId, (tx) =>
+      tx.attritionRiskScore.upsert({
+        where: { id: `${tenantId}-${employeeId}` },
+        update: {
+          riskScore,
+          riskLevel: riskLevel as 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL',
+          factors: JSON.parse(JSON.stringify(factors)),
+          recommendation,
+          calculatedAt: new Date(),
+          expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+        },
+        create: {
+          id: `${tenantId}-${employeeId}`,
+          tenantId,
+          employeeId,
+          riskScore,
+          riskLevel: riskLevel as 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL',
+          factors: JSON.parse(JSON.stringify(factors)),
+          recommendation,
+          calculatedAt: new Date(),
+          expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+        },
+      }),
+    );
     return {
       employeeId,
       employeeName: `${employee.firstName} ${employee.lastName}`,
@@ -235,14 +244,18 @@ export class AttritionService {
   }
 
   async analyzeAll(tenantId: string, userId: string) {
-    const run = await this.db.client.attritionAnalysisRun.create({
-      data: { tenantId, triggeredBy: userId, status: 'RUNNING' },
-    });
+    const run = await this.db.forTenant(tenantId, (tx) =>
+      tx.attritionAnalysisRun.create({
+        data: { tenantId, triggeredBy: userId, status: 'RUNNING' },
+      }),
+    );
     try {
-      const employees = await this.db.client.employee.findMany({
-        where: { tenantId, terminationDate: null },
-        select: { id: true },
-      });
+      const employees = await this.db.forTenant(tenantId, (tx) =>
+        tx.employee.findMany({
+          where: { tenantId, terminationDate: null },
+          select: { id: true },
+        }),
+      );
       let highRiskCount = 0,
         criticalCount = 0,
         totalScore = 0;
@@ -254,17 +267,19 @@ export class AttritionService {
       }
       const avgRiskScore =
         employees.length > 0 ? Math.round((totalScore / employees.length) * 100) / 100 : 0;
-      await this.db.client.attritionAnalysisRun.update({
-        where: { id: run.id },
-        data: {
-          status: 'COMPLETED',
-          totalEmployees: employees.length,
-          highRiskCount,
-          criticalCount,
-          avgRiskScore,
-          completedAt: new Date(),
-        },
-      });
+      await this.db.forTenant(tenantId, (tx) =>
+        tx.attritionAnalysisRun.update({
+          where: { id: run.id },
+          data: {
+            status: 'COMPLETED',
+            totalEmployees: employees.length,
+            highRiskCount,
+            criticalCount,
+            avgRiskScore,
+            completedAt: new Date(),
+          },
+        }),
+      );
       return {
         runId: run.id,
         totalEmployees: employees.length,
@@ -273,10 +288,12 @@ export class AttritionService {
         avgRiskScore,
       };
     } catch (err) {
-      await this.db.client.attritionAnalysisRun.update({
-        where: { id: run.id },
-        data: { status: 'FAILED' },
-      });
+      await this.db.forTenant(tenantId, (tx) =>
+        tx.attritionAnalysisRun.update({
+          where: { id: run.id },
+          data: { status: 'FAILED' },
+        }),
+      );
       throw err;
     }
   }
@@ -284,22 +301,24 @@ export class AttritionService {
   async getScores(tenantId: string, filters?: { riskLevel?: string; department?: string }) {
     const where: Record<string, unknown> = { tenantId };
     if (filters?.riskLevel) where['riskLevel'] = filters.riskLevel;
-    const scores = await this.db.client.attritionRiskScore.findMany({
-      where,
-      include: {
-        employee: {
-          select: {
-            firstName: true,
-            lastName: true,
-            department: true,
-            level: true,
-            baseSalary: true,
-            compaRatio: true,
+    const scores = await this.db.forTenant(tenantId, (tx) =>
+      tx.attritionRiskScore.findMany({
+        where,
+        include: {
+          employee: {
+            select: {
+              firstName: true,
+              lastName: true,
+              department: true,
+              level: true,
+              baseSalary: true,
+              compaRatio: true,
+            },
           },
         },
-      },
-      orderBy: { riskScore: 'desc' },
-    });
+        orderBy: { riskScore: 'desc' },
+      }),
+    );
     let filtered = scores;
     if (filters?.department)
       filtered = scores.filter((s) => s.employee.department === filters.department);
@@ -320,23 +339,25 @@ export class AttritionService {
   }
 
   async getEmployeeScore(tenantId: string, employeeId: string) {
-    const score = await this.db.client.attritionRiskScore.findFirst({
-      where: { tenantId, employeeId },
-      include: {
-        employee: {
-          select: {
-            firstName: true,
-            lastName: true,
-            department: true,
-            level: true,
-            baseSalary: true,
-            compaRatio: true,
-            performanceRating: true,
-            hireDate: true,
+    const score = await this.db.forTenant(tenantId, (tx) =>
+      tx.attritionRiskScore.findFirst({
+        where: { tenantId, employeeId },
+        include: {
+          employee: {
+            select: {
+              firstName: true,
+              lastName: true,
+              department: true,
+              level: true,
+              baseSalary: true,
+              compaRatio: true,
+              performanceRating: true,
+              hireDate: true,
+            },
           },
         },
-      },
-    });
+      }),
+    );
     if (!score) throw new NotFoundException(`No risk score found for employee ${employeeId}`);
     return {
       ...score,
@@ -351,10 +372,12 @@ export class AttritionService {
   }
 
   async getDashboard(tenantId: string) {
-    const scores = await this.db.client.attritionRiskScore.findMany({
-      where: { tenantId },
-      include: { employee: { select: { department: true } } },
-    });
+    const scores = await this.db.forTenant(tenantId, (tx) =>
+      tx.attritionRiskScore.findMany({
+        where: { tenantId },
+        include: { employee: { select: { department: true } } },
+      }),
+    );
     const distribution = { LOW: 0, MEDIUM: 0, HIGH: 0, CRITICAL: 0 };
     const deptRisk: Record<
       string,
@@ -388,10 +411,12 @@ export class AttritionService {
   }
 
   async getRuns(tenantId: string) {
-    return this.db.client.attritionAnalysisRun.findMany({
-      where: { tenantId },
-      orderBy: { createdAt: 'desc' },
-      take: 20,
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.attritionAnalysisRun.findMany({
+        where: { tenantId },
+        orderBy: { createdAt: 'desc' },
+        take: 20,
+      }),
+    );
   }
 }

@@ -28,94 +28,106 @@ export class BenchmarkingService {
     if (query.level) where.level = query.level;
     if (query.location) where.location = query.location;
 
-    const [data, total] = await Promise.all([
-      this.db.client.salaryBand.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: [{ jobFamily: 'asc' }, { level: 'asc' }],
-      }),
-      this.db.client.salaryBand.count({ where }),
-    ]);
+    const [data, total] = await this.db.forTenant(tenantId, (tx) =>
+      Promise.all([
+        tx.salaryBand.findMany({
+          where,
+          skip,
+          take: limit,
+          orderBy: [{ jobFamily: 'asc' }, { level: 'asc' }],
+        }),
+        tx.salaryBand.count({ where }),
+      ]),
+    );
 
     return { data, total, page, limit };
   }
 
   async createBand(tenantId: string, dto: CreateSalaryBandDto) {
-    return this.db.client.salaryBand.create({
-      data: {
-        tenantId,
-        jobFamily: dto.jobFamily,
-        level: dto.level,
-        location: dto.location,
-        currency: dto.currency || 'USD',
-        p10: dto.p10,
-        p25: dto.p25,
-        p50: dto.p50,
-        p75: dto.p75,
-        p90: dto.p90,
-        source: dto.source,
-        effectiveDate: dto.effectiveDate ? new Date(dto.effectiveDate) : new Date(),
-        expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
-      },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.salaryBand.create({
+        data: {
+          tenantId,
+          jobFamily: dto.jobFamily,
+          level: dto.level,
+          location: dto.location,
+          currency: dto.currency || 'USD',
+          p10: dto.p10,
+          p25: dto.p25,
+          p50: dto.p50,
+          p75: dto.p75,
+          p90: dto.p90,
+          source: dto.source,
+          effectiveDate: dto.effectiveDate ? new Date(dto.effectiveDate) : new Date(),
+          expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
+        },
+      }),
+    );
   }
 
   async updateBand(tenantId: string, id: string, dto: UpdateSalaryBandDto) {
-    const band = await this.db.client.salaryBand.findFirst({
-      where: { id, tenantId },
+    return this.db.forTenant(tenantId, async (tx) => {
+      const band = await tx.salaryBand.findFirst({
+        where: { id, tenantId },
+      });
+      if (!band) throw new NotFoundException('Salary band not found');
+
+      const data: Record<string, unknown> = {};
+      if (dto.jobFamily !== undefined) data.jobFamily = dto.jobFamily;
+      if (dto.level !== undefined) data.level = dto.level;
+      if (dto.location !== undefined) data.location = dto.location;
+      if (dto.currency !== undefined) data.currency = dto.currency;
+      if (dto.p10 !== undefined) data.p10 = dto.p10;
+      if (dto.p25 !== undefined) data.p25 = dto.p25;
+      if (dto.p50 !== undefined) data.p50 = dto.p50;
+      if (dto.p75 !== undefined) data.p75 = dto.p75;
+      if (dto.p90 !== undefined) data.p90 = dto.p90;
+      if (dto.source !== undefined) data.source = dto.source;
+      if (dto.effectiveDate !== undefined) data.effectiveDate = new Date(dto.effectiveDate);
+      if (dto.expiresAt !== undefined) data.expiresAt = new Date(dto.expiresAt);
+
+      return tx.salaryBand.update({ where: { id }, data });
     });
-    if (!band) throw new NotFoundException('Salary band not found');
-
-    const data: Record<string, unknown> = {};
-    if (dto.jobFamily !== undefined) data.jobFamily = dto.jobFamily;
-    if (dto.level !== undefined) data.level = dto.level;
-    if (dto.location !== undefined) data.location = dto.location;
-    if (dto.currency !== undefined) data.currency = dto.currency;
-    if (dto.p10 !== undefined) data.p10 = dto.p10;
-    if (dto.p25 !== undefined) data.p25 = dto.p25;
-    if (dto.p50 !== undefined) data.p50 = dto.p50;
-    if (dto.p75 !== undefined) data.p75 = dto.p75;
-    if (dto.p90 !== undefined) data.p90 = dto.p90;
-    if (dto.source !== undefined) data.source = dto.source;
-    if (dto.effectiveDate !== undefined) data.effectiveDate = new Date(dto.effectiveDate);
-    if (dto.expiresAt !== undefined) data.expiresAt = new Date(dto.expiresAt);
-
-    return this.db.client.salaryBand.update({ where: { id }, data });
   }
 
   async deleteBand(tenantId: string, id: string) {
-    const band = await this.db.client.salaryBand.findFirst({
-      where: { id, tenantId },
-    });
-    if (!band) throw new NotFoundException('Salary band not found');
+    return this.db.forTenant(tenantId, async (tx) => {
+      const band = await tx.salaryBand.findFirst({
+        where: { id, tenantId },
+      });
+      if (!band) throw new NotFoundException('Salary band not found');
 
-    await this.db.client.salaryBand.delete({ where: { id } });
-    return { deleted: true };
+      await tx.salaryBand.delete({ where: { id } });
+      return { deleted: true };
+    });
   }
 
   async bulkImportBands(tenantId: string, bands: CreateSalaryBandDto[]) {
-    const results = await this.db.client.$transaction(
-      bands.map((dto) =>
-        this.db.client.salaryBand.create({
-          data: {
-            tenantId,
-            jobFamily: dto.jobFamily,
-            level: dto.level,
-            location: dto.location,
-            currency: dto.currency || 'USD',
-            p10: dto.p10,
-            p25: dto.p25,
-            p50: dto.p50,
-            p75: dto.p75,
-            p90: dto.p90,
-            source: dto.source,
-            effectiveDate: dto.effectiveDate ? new Date(dto.effectiveDate) : new Date(),
-            expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
-          },
-        }),
-      ),
-    );
+    const results = await this.db.forTenant(tenantId, async (tx) => {
+      const created = [];
+      for (const dto of bands) {
+        created.push(
+          await tx.salaryBand.create({
+            data: {
+              tenantId,
+              jobFamily: dto.jobFamily,
+              level: dto.level,
+              location: dto.location,
+              currency: dto.currency || 'USD',
+              p10: dto.p10,
+              p25: dto.p25,
+              p50: dto.p50,
+              p75: dto.p75,
+              p90: dto.p90,
+              source: dto.source,
+              effectiveDate: dto.effectiveDate ? new Date(dto.effectiveDate) : new Date(),
+              expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
+            },
+          }),
+        );
+      }
+      return created;
+    });
     this.logger.log(`Bulk imported ${results.length} salary bands for tenant ${tenantId}`);
     return { imported: results.length, bands: results };
   }
@@ -124,14 +136,15 @@ export class BenchmarkingService {
 
   async getAnalysis(tenantId: string) {
     // Get all employees with their salary bands
-    const employees = await this.db.client.employee.findMany({
-      where: { tenantId, terminationDate: null },
-      include: { salaryBand: true },
-    });
-
-    const bands = await this.db.client.salaryBand.findMany({
-      where: { tenantId },
-    });
+    const { employees, bands } = await this.db.forTenant(tenantId, async (tx) => ({
+      employees: await tx.employee.findMany({
+        where: { tenantId, terminationDate: null },
+        include: { salaryBand: true },
+      }),
+      bands: await tx.salaryBand.findMany({
+        where: { tenantId },
+      }),
+    }));
 
     const analysis = employees.map((emp) => {
       const band = emp.salaryBand;
@@ -193,34 +206,40 @@ export class BenchmarkingService {
   // ─── Market Data Sources ──────────────────────────────────────
 
   async listSources(tenantId: string) {
-    return this.db.client.marketDataSource.findMany({
-      where: { tenantId },
-      orderBy: { createdAt: 'desc' },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.marketDataSource.findMany({
+        where: { tenantId },
+        orderBy: { createdAt: 'desc' },
+      }),
+    );
   }
 
   async createSource(tenantId: string, dto: CreateMarketDataSourceDto) {
-    return this.db.client.marketDataSource.create({
-      data: {
-        tenantId,
-        name: dto.name,
-        provider: dto.provider as 'MANUAL' | 'SURVEY' | 'API',
-        config: (dto.config || {}) as Record<string, string>,
-      },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.marketDataSource.create({
+        data: {
+          tenantId,
+          name: dto.name,
+          provider: dto.provider as 'MANUAL' | 'SURVEY' | 'API',
+          config: (dto.config || {}) as Record<string, string>,
+        },
+      }),
+    );
   }
 
   async updateSource(tenantId: string, id: string, dto: UpdateMarketDataSourceDto) {
-    const source = await this.db.client.marketDataSource.findFirst({
-      where: { id, tenantId },
+    return this.db.forTenant(tenantId, async (tx) => {
+      const source = await tx.marketDataSource.findFirst({
+        where: { id, tenantId },
+      });
+      if (!source) throw new NotFoundException('Market data source not found');
+
+      const data: Record<string, unknown> = {};
+      if (dto.name !== undefined) data.name = dto.name;
+      if (dto.status !== undefined) data.status = dto.status;
+      if (dto.config !== undefined) data.config = dto.config;
+
+      return tx.marketDataSource.update({ where: { id }, data });
     });
-    if (!source) throw new NotFoundException('Market data source not found');
-
-    const data: Record<string, unknown> = {};
-    if (dto.name !== undefined) data.name = dto.name;
-    if (dto.status !== undefined) data.status = dto.status;
-    if (dto.config !== undefined) data.config = dto.config;
-
-    return this.db.client.marketDataSource.update({ where: { id }, data });
   }
 }

@@ -27,18 +27,17 @@ export class AnomalyExplainerService {
   /**
    * Get a cached explanation for an anomaly, or null if none exists.
    */
-  async getExplanation(
-    anomalyId: string,
-    tenantId: string,
-  ): Promise<ExplanationResponse | null> {
+  async getExplanation(anomalyId: string, tenantId: string): Promise<ExplanationResponse | null> {
     // Verify anomaly belongs to tenant
-    const anomaly = await this.db.client.payrollAnomaly.findFirst({
-      where: {
-        id: anomalyId,
-        payrollRun: { tenantId },
-      },
-      include: { explanation: true },
-    });
+    const anomaly = await this.db.forTenant(tenantId, (tx) =>
+      tx.payrollAnomaly.findFirst({
+        where: {
+          id: anomalyId,
+          payrollRun: { tenantId },
+        },
+        include: { explanation: true },
+      }),
+    );
 
     if (!anomaly) {
       throw new NotFoundException(`Anomaly ${anomalyId} not found`);
@@ -74,12 +73,14 @@ export class AnomalyExplainerService {
     if (cached) return cached;
 
     // Load anomaly data
-    const anomaly = await this.db.client.payrollAnomaly.findFirst({
-      where: {
-        id: anomalyId,
-        payrollRun: { tenantId },
-      },
-    });
+    const anomaly = await this.db.forTenant(tenantId, (tx) =>
+      tx.payrollAnomaly.findFirst({
+        where: {
+          id: anomalyId,
+          payrollRun: { tenantId },
+        },
+      }),
+    );
 
     if (!anomaly) {
       throw new NotFoundException(`Anomaly ${anomalyId} not found`);
@@ -119,6 +120,7 @@ export class AnomalyExplainerService {
 
     // Store in database
     const saved = await this.db.client.anomalyExplanation.create({
+      // RLS-exempt: no tenantId on AnomalyExplanation; scoped via anomalyId FK
       data: {
         anomalyId: anomaly.id,
         explanation: result.explanation,
@@ -163,4 +165,3 @@ export class AnomalyExplainerService {
     return results;
   }
 }
-

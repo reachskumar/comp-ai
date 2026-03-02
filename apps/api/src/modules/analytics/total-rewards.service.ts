@@ -41,12 +41,20 @@ export class TotalRewardsService {
     const currentYear = year ? parseInt(year, 10) : new Date().getFullYear();
 
     // Find the employee linked to this user (by email match or first employee)
-    const user = await this.db.client.user.findUnique({ where: { id: userId } });
-    const employee = user
-      ? await this.db.client.employee.findFirst({
-          where: { tenantId, email: user.email },
-        })
-      : null;
+    const { user, employee, enrollments } = await this.db.forTenant(tenantId, async (tx) => {
+      const u = await tx.user.findUnique({ where: { id: userId } });
+      const emp = u
+        ? await tx.employee.findFirst({
+            where: { tenantId, email: u.email },
+          })
+        : null;
+      const enr = emp
+        ? await tx.benefitEnrollment.findMany({
+            where: { tenantId, employeeId: emp.id, status: 'ACTIVE' },
+          })
+        : [];
+      return { user: u, employee: emp, enrollments: enr };
+    });
 
     if (!employee) {
       return {
@@ -62,15 +70,7 @@ export class TotalRewardsService {
 
     const baseSalary = Number(employee.baseSalary);
     const totalComp = Number(employee.totalComp);
-
-    // Get benefit enrollments for this employee
-    const enrollments = await this.db.client.benefitEnrollment.findMany({
-      where: { tenantId, employeeId: employee.id, status: 'ACTIVE' },
-    });
-    const benefitsValue = enrollments.reduce(
-      (sum, e) => sum + Number(e.employerPremium) * 12,
-      0,
-    );
+    const benefitsValue = enrollments.reduce((sum, e) => sum + Number(e.employerPremium) * 12, 0);
 
     // Estimate bonus as totalComp - baseSalary - benefits (if positive)
     const bonusEstimate = Math.max(0, totalComp - baseSalary - benefitsValue);
@@ -81,7 +81,11 @@ export class TotalRewardsService {
       { category: 'Base Salary', value: Math.round(baseSalary), previousValue: 0 },
     ];
     if (bonusEstimate > 0) {
-      breakdown.push({ category: 'Bonus / Variable', value: Math.round(bonusEstimate), previousValue: 0 });
+      breakdown.push({
+        category: 'Bonus / Variable',
+        value: Math.round(bonusEstimate),
+        previousValue: 0,
+      });
     }
     if (benefitsValue > 0) {
       breakdown.push({ category: 'Benefits', value: Math.round(benefitsValue), previousValue: 0 });
@@ -115,10 +119,12 @@ export class TotalRewardsService {
 
     this.logger.log(`Fetching team overview for manager=${userId} tenant=${tenantId}`);
 
-    const employees = await this.db.client.employee.findMany({
-      where: { tenantId, terminationDate: null },
-      select: { baseSalary: true, totalComp: true, level: true, department: true },
-    });
+    const employees = await this.db.forTenant(tenantId, (tx) =>
+      tx.employee.findMany({
+        where: { tenantId, terminationDate: null },
+        select: { baseSalary: true, totalComp: true, level: true, department: true },
+      }),
+    );
 
     if (employees.length === 0) {
       return {
@@ -133,9 +139,10 @@ export class TotalRewardsService {
     const comps = employees.map((e) => Number(e.totalComp) || Number(e.baseSalary));
     const sorted = [...comps].sort((a, b) => a - b);
     const mid = Math.floor(sorted.length / 2);
-    const medianTotalRewards = sorted.length % 2 !== 0
-      ? sorted[mid]!
-      : Math.round(((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2);
+    const medianTotalRewards =
+      sorted.length % 2 !== 0
+        ? sorted[mid]!
+        : Math.round(((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2);
     const avgTotalRewards = Math.round(comps.reduce((s, v) => s + v, 0) / comps.length);
 
     // Department breakdown: avg base salary per department
@@ -176,4 +183,3 @@ export class TotalRewardsService {
     };
   }
 }
-

@@ -1,11 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { DatabaseService } from '../../../database';
-import {
-  AnomalyType,
-  AnomalySeverity,
-  Prisma,
-  type PayrollLineItem,
-} from '@compensation/database';
+import { AnomalyType, AnomalySeverity, Prisma, type PayrollLineItem } from '@compensation/database';
 
 type Decimal = Prisma.Decimal;
 
@@ -63,11 +58,11 @@ interface LineItemGroup {
 
 const DEFAULT_CONFIG = {
   /** Max deduction as percentage of gross (0-1) */
-  maxDeductionPct: 0.60,
+  maxDeductionPct: 0.6,
   /** Month-on-month spike threshold (percentage change) */
-  spikeThresholdPct: 0.50,
+  spikeThresholdPct: 0.5,
   /** Month-on-month drop threshold (percentage change) */
-  dropThresholdPct: 0.30,
+  dropThresholdPct: 0.3,
   /** Number of historical periods for baseline */
   baselinePeriods: 6,
   /** Minimum periods needed to compute baseline */
@@ -119,9 +114,11 @@ export class AnomalyDetectorService {
     this.logger.log(`Starting anomaly detection for payroll run ${payrollRunId}`);
 
     // 1. Load payroll run
-    const payrollRun = await this.db.client.payrollRun.findFirst({
-      where: { id: payrollRunId, tenantId },
-    });
+    const payrollRun = await this.db.forTenant(tenantId, (tx) =>
+      tx.payrollRun.findFirst({
+        where: { id: payrollRunId, tenantId },
+      }),
+    );
     if (!payrollRun) {
       throw new Error(`PayrollRun ${payrollRunId} not found for tenant ${tenantId}`);
     }
@@ -159,7 +156,7 @@ export class AnomalyDetectorService {
     }
 
     // 6. Detect currency mismatches across the run
-    anomalies.push(...await this.detectCurrencyMismatches(payrollRunId, tenantId));
+    anomalies.push(...(await this.detectCurrencyMismatches(payrollRunId, tenantId)));
 
     // 7. Persist anomalies to DB
     await this.persistAnomalies(payrollRunId, anomalies);
@@ -201,7 +198,9 @@ export class AnomalyDetectorService {
     let skip = 0;
 
     while (true) {
+      // Note: payrollRunId implicitly scopes to tenant via foreign key
       const batch = await this.db.client.payrollLineItem.findMany({
+        // RLS-exempt: no tenantId on PayrollLineItem; scoped via payrollRunId FK
         where: { payrollRunId },
         skip,
         take: batchSize,
@@ -262,16 +261,18 @@ export class AnomalyDetectorService {
     if (employeeIds.length === 0) return baselines;
 
     // Get recent payroll runs for this tenant (excluding current)
-    const recentRuns = await this.db.client.payrollRun.findMany({
-      where: {
-        tenantId,
-        id: { not: currentRunId },
-        status: { in: ['APPROVED', 'FINALIZED'] },
-      },
-      orderBy: { createdAt: 'desc' },
-      take: periods,
-      select: { id: true },
-    });
+    const recentRuns = await this.db.forTenant(tenantId, (tx) =>
+      tx.payrollRun.findMany({
+        where: {
+          tenantId,
+          id: { not: currentRunId },
+          status: { in: ['APPROVED', 'FINALIZED'] },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: periods,
+        select: { id: true },
+      }),
+    );
 
     if (recentRuns.length < minPeriods) {
       this.logger.log(
@@ -287,6 +288,7 @@ export class AnomalyDetectorService {
 
     for (const empChunk of employeeChunks) {
       const historicalItems = await this.db.client.payrollLineItem.findMany({
+        // RLS-exempt: no tenantId on PayrollLineItem; scoped via payrollRunId FK
         where: {
           payrollRunId: { in: runIds },
           employeeId: { in: empChunk },
@@ -382,7 +384,8 @@ export class AnomalyDetectorService {
         details: {
           message: `Negative net pay: ${group.netPay.toFixed(2)}. Gross: ${group.grossPay.toFixed(2)}, Deductions: ${group.deductions.toFixed(2)}`,
           amount: group.netPay,
-          suggestedAction: 'Review deductions — total deductions exceed gross pay. Block payroll for this employee until resolved.',
+          suggestedAction:
+            'Review deductions — total deductions exceed gross pay. Block payroll for this employee until resolved.',
         },
       });
     }
@@ -404,12 +407,13 @@ export class AnomalyDetectorService {
       anomalies.push({
         employeeId: group.employeeId,
         anomalyType: AnomalyType.UNUSUAL_DEDUCTION,
-        severity: deductionPct > 0.80 ? AnomalySeverity.HIGH : AnomalySeverity.MEDIUM,
+        severity: deductionPct > 0.8 ? AnomalySeverity.HIGH : AnomalySeverity.MEDIUM,
         details: {
           message: `Deductions are ${(deductionPct * 100).toFixed(1)}% of gross pay (threshold: ${(cfg.maxDeductionPct * 100).toFixed(1)}%)`,
           amount: group.deductions,
           threshold: cfg.maxDeductionPct,
-          suggestedAction: 'Verify deduction amounts are correct. Check for duplicate or erroneous deduction entries.',
+          suggestedAction:
+            'Verify deduction amounts are correct. Check for duplicate or erroneous deduction entries.',
         },
       });
     }
@@ -435,7 +439,8 @@ export class AnomalyDetectorService {
         severity: AnomalySeverity.HIGH,
         details: {
           message: `No mandatory base pay component found. Expected one of: ${cfg.mandatoryComponents.join(', ')}`,
-          suggestedAction: 'Add base pay component for this employee or verify they are on leave/terminated.',
+          suggestedAction:
+            'Add base pay component for this employee or verify they are on leave/terminated.',
         },
       });
     }
@@ -455,7 +460,8 @@ export class AnomalyDetectorService {
             message: `Base pay component "${item.component}" has zero amount`,
             component: item.component,
             amount: 0,
-            suggestedAction: 'Verify base salary is correct. Zero base pay may indicate a data entry error.',
+            suggestedAction:
+              'Verify base salary is correct. Zero base pay may indicate a data entry error.',
           },
         });
       }
@@ -482,7 +488,8 @@ export class AnomalyDetectorService {
             component: item.component,
             amount: this.toNumber(item.amount),
             previousAmount: this.toNumber(existing.amount),
-            suggestedAction: 'Remove duplicate entry or verify both entries are intentional (e.g., split payments).',
+            suggestedAction:
+              'Remove duplicate entry or verify both entries are intentional (e.g., split payments).',
           },
         });
       } else {
@@ -519,21 +526,23 @@ export class AnomalyDetectorService {
               amount: current,
               previousAmount: previous,
               threshold: cfg.spikeThresholdPct,
-              suggestedAction: 'Verify the increase is expected (promotion, raise, bonus). Review approval records.',
+              suggestedAction:
+                'Verify the increase is expected (promotion, raise, bonus). Review approval records.',
             },
           });
         } else if (current < previous && changePct > cfg.dropThresholdPct) {
           anomalies.push({
             employeeId: group.employeeId,
             anomalyType: AnomalyType.DROP,
-            severity: changePct > 0.80 ? AnomalySeverity.HIGH : AnomalySeverity.MEDIUM,
+            severity: changePct > 0.8 ? AnomalySeverity.HIGH : AnomalySeverity.MEDIUM,
             details: {
               message: `${item.component} dropped ${(changePct * 100).toFixed(1)}% from ${previous.toFixed(2)} to ${current.toFixed(2)}`,
               component: item.component,
               amount: current,
               previousAmount: previous,
               threshold: cfg.dropThresholdPct,
-              suggestedAction: 'Verify the decrease is expected (demotion, part-time change, correction).',
+              suggestedAction:
+                'Verify the decrease is expected (demotion, part-time change, correction).',
             },
           });
         }
@@ -637,6 +646,7 @@ export class AnomalyDetectorService {
 
     // Get all employees in this payroll run with their currencies
     const employeesInRun = await this.db.client.payrollLineItem.findMany({
+      // RLS-exempt: no tenantId on PayrollLineItem; scoped via payrollRunId FK
       where: { payrollRunId },
       select: { employeeId: true },
       distinct: ['employeeId'],
@@ -651,10 +661,12 @@ export class AnomalyDetectorService {
     const currencyMap = new Map<string, string>();
 
     for (const empChunk of empChunks) {
-      const employees = await this.db.client.employee.findMany({
-        where: { id: { in: empChunk }, tenantId },
-        select: { id: true, currency: true },
-      });
+      const employees = await this.db.forTenant(tenantId, (tx) =>
+        tx.employee.findMany({
+          where: { id: { in: empChunk }, tenantId },
+          select: { id: true, currency: true },
+        }),
+      );
       for (const emp of employees) {
         currencyMap.set(emp.id, emp.currency);
       }
@@ -686,7 +698,8 @@ export class AnomalyDetectorService {
             severity: AnomalySeverity.MEDIUM,
             details: {
               message: `Employee currency (${currency}) differs from payroll run dominant currency (${dominantCurrency})`,
-              suggestedAction: 'Verify currency conversion has been applied or process in separate payroll run.',
+              suggestedAction:
+                'Verify currency conversion has been applied or process in separate payroll run.',
             },
           });
         }
@@ -706,6 +719,7 @@ export class AnomalyDetectorService {
 
     // Clear previous anomalies for this run
     await this.db.client.payrollAnomaly.deleteMany({
+      // RLS-exempt: no tenantId on PayrollAnomaly; scoped via payrollRunId FK
       where: { payrollRunId },
     });
 
@@ -713,6 +727,7 @@ export class AnomalyDetectorService {
     const batches = chunk(anomalies, 1000);
     for (const batch of batches) {
       await this.db.client.payrollAnomaly.createMany({
+        // RLS-exempt: no tenantId on PayrollAnomaly; scoped via payrollRunId FK
         data: batch.map((a) => ({
           payrollRunId,
           employeeId: a.employeeId,
@@ -763,7 +778,9 @@ export class AnomalyDetectorService {
     const high = anomalies.filter((a) => a.severity === AnomalySeverity.HIGH).length;
     const affectedEmployees = new Set(anomalies.map((a) => a.employeeId)).size;
 
-    const parts = [`Found ${anomalies.length} anomalies affecting ${affectedEmployees} of ${totalEmployees} employees.`];
+    const parts = [
+      `Found ${anomalies.length} anomalies affecting ${affectedEmployees} of ${totalEmployees} employees.`,
+    ];
 
     if (critical > 0) {
       parts.push(`⛔ ${critical} CRITICAL issue(s) blocking payroll.`);
@@ -775,4 +792,3 @@ export class AnomalyDetectorService {
     return parts.join(' ');
   }
 }
-

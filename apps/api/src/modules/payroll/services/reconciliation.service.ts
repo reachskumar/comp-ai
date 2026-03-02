@@ -54,20 +54,23 @@ export class ReconciliationService {
 
   async createPayrollRun(tenantId: string, dto: CreatePayrollDto) {
     // Create the payroll run
-    const run = await this.db.client.payrollRun.create({
-      data: {
-        tenantId,
-        period: dto.period,
-        status: 'DRAFT',
-        employeeCount: new Set(dto.lineItems.map((li) => li.employeeId)).size,
-      },
-    });
+    const run = await this.db.forTenant(tenantId, (tx) =>
+      tx.payrollRun.create({
+        data: {
+          tenantId,
+          period: dto.period,
+          status: 'DRAFT',
+          employeeCount: new Set(dto.lineItems.map((li) => li.employeeId)).size,
+        },
+      }),
+    );
 
     // Insert line items in batches
     const batchSize = 1000;
     for (let i = 0; i < dto.lineItems.length; i += batchSize) {
       const batch = dto.lineItems.slice(i, i + batchSize);
       await this.db.client.payrollLineItem.createMany({
+        // RLS-exempt: no tenantId on PayrollLineItem; scoped via payrollRunId FK
         data: batch.map((li) => ({
           payrollRunId: run.id,
           employeeId: li.employeeId,
@@ -81,13 +84,15 @@ export class ReconciliationService {
 
     // Update totals
     const totals = await this.computeTotals(run.id);
-    const updated = await this.db.client.payrollRun.update({
-      where: { id: run.id },
-      data: {
-        totalGross: totals.gross,
-        totalNet: totals.net,
-      },
-    });
+    const updated = await this.db.forTenant(tenantId, (tx) =>
+      tx.payrollRun.update({
+        where: { id: run.id },
+        data: {
+          totalGross: totals.gross,
+          totalNet: totals.net,
+        },
+      }),
+    );
 
     this.logger.log(`Created payroll run ${run.id} with ${dto.lineItems.length} line items`);
     return updated;
@@ -100,15 +105,18 @@ export class ReconciliationService {
 
     // Count line items to decide sync vs async
     const itemCount = await this.db.client.payrollLineItem.count({
+      // RLS-exempt: no tenantId on PayrollLineItem; scoped via payrollRunId FK
       where: { payrollRunId },
     });
 
     if (itemCount >= ASYNC_THRESHOLD) {
       // Queue for async processing
-      await this.db.client.payrollRun.update({
-        where: { id: payrollRunId },
-        data: { status: 'PROCESSING' },
-      });
+      await this.db.forTenant(tenantId, (tx) =>
+        tx.payrollRun.update({
+          where: { id: payrollRunId },
+          data: { status: 'PROCESSING' },
+        }),
+      );
 
       await this.reconciliationQueue.add('reconcile', {
         payrollRunId,
@@ -134,10 +142,12 @@ export class ReconciliationService {
 
     // Update run status based on results
     const newStatus = anomalyReport.hasBlockers ? 'REVIEW' : 'REVIEW';
-    await this.db.client.payrollRun.update({
-      where: { id: payrollRunId },
-      data: { status: newStatus },
-    });
+    await this.db.forTenant(tenantId, (tx) =>
+      tx.payrollRun.update({
+        where: { id: payrollRunId },
+        data: { status: newStatus },
+      }),
+    );
 
     this.logger.log(
       `Reconciliation complete for ${payrollRunId}: ${anomalyReport.totalAnomalies} anomalies`,
@@ -158,12 +168,14 @@ export class ReconciliationService {
 
     // Get anomalies
     const anomalies = await this.db.client.payrollAnomaly.findMany({
+      // RLS-exempt: no tenantId on PayrollAnomaly; scoped via payrollRunId FK
       where: { payrollRunId },
       orderBy: [{ severity: 'asc' }, { createdAt: 'desc' }],
     });
 
     // Get line item count
     const lineItemCount = await this.db.client.payrollLineItem.count({
+      // RLS-exempt: no tenantId on PayrollLineItem; scoped via payrollRunId FK
       where: { payrollRunId },
     });
 
@@ -179,11 +191,7 @@ export class ReconciliationService {
     const traces: TraceReport[] = [];
     for (const employeeId of criticalEmployeeIds) {
       try {
-        const trace = await this.traceability.traceEmployee(
-          tenantId,
-          payrollRunId,
-          employeeId,
-        );
+        const trace = await this.traceability.traceEmployee(tenantId, payrollRunId, employeeId);
         traces.push(trace);
       } catch (err) {
         this.logger.warn(`Failed to trace employee ${employeeId}: ${err}`);
@@ -248,12 +256,13 @@ export class ReconciliationService {
 
     const [anomalies, total] = await Promise.all([
       this.db.client.payrollAnomaly.findMany({
+        // RLS-exempt: no tenantId on PayrollAnomaly; scoped via payrollRunId FK
         where,
         orderBy: [{ severity: 'asc' }, { createdAt: 'desc' }],
         skip,
         take: limit,
       }),
-      this.db.client.payrollAnomaly.count({ where }),
+      this.db.client.payrollAnomaly.count({ where }), // RLS-exempt: no tenantId on PayrollAnomaly; scoped via payrollRunId FK
     ]);
 
     return {
@@ -279,6 +288,7 @@ export class ReconciliationService {
     await this.findRun(payrollRunId, tenantId);
 
     const anomaly = await this.db.client.payrollAnomaly.findFirst({
+      // RLS-exempt: no tenantId on PayrollAnomaly; scoped via payrollRunId FK
       where: { id: anomalyId, payrollRunId },
     });
     if (!anomaly) {
@@ -298,6 +308,7 @@ export class ReconciliationService {
     };
 
     return this.db.client.payrollAnomaly.update({
+      // RLS-exempt: no tenantId on PayrollAnomaly; scoped via payrollRunId FK
       where: { id: anomalyId },
       data: {
         resolved: true,
@@ -319,18 +330,20 @@ export class ReconciliationService {
     const where: any = { tenantId };
     if (query.status) where.status = query.status;
 
-    const [runs, total] = await Promise.all([
-      this.db.client.payrollRun.findMany({
-        where,
-        orderBy: { createdAt: 'desc' },
-        skip,
-        take: limit,
-        include: {
-          _count: { select: { anomalies: true, lineItems: true } },
-        },
-      }),
-      this.db.client.payrollRun.count({ where }),
-    ]);
+    const [runs, total] = await this.db.forTenant(tenantId, (tx) =>
+      Promise.all([
+        tx.payrollRun.findMany({
+          where,
+          orderBy: { createdAt: 'desc' },
+          skip,
+          take: limit,
+          include: {
+            _count: { select: { anomalies: true, lineItems: true } },
+          },
+        }),
+        tx.payrollRun.count({ where }),
+      ]),
+    );
 
     return {
       data: runs,
@@ -358,9 +371,11 @@ export class ReconciliationService {
     return this.exportAsCsv(report);
   }
 
-  private exportAsCsv(
-    report: ReconciliationReport,
-  ): { content: string; contentType: string; filename: string } {
+  private exportAsCsv(report: ReconciliationReport): {
+    content: string;
+    contentType: string;
+    filename: string;
+  } {
     const lines: string[] = [];
 
     // Header
@@ -390,9 +405,11 @@ export class ReconciliationService {
     };
   }
 
-  private exportAsPdf(
-    report: ReconciliationReport,
-  ): { content: string; contentType: string; filename: string } {
+  private exportAsPdf(report: ReconciliationReport): {
+    content: string;
+    contentType: string;
+    filename: string;
+  } {
     // Generate a structured text report (MVP — no heavy PDF lib)
     const s = report.summary;
     const sections: string[] = [];
@@ -433,13 +450,17 @@ export class ReconciliationService {
 
     for (const anomaly of report.anomalies as Array<Record<string, unknown>>) {
       const details = anomaly.details as Record<string, unknown>;
-      sections.push(`[${anomaly.severity}] ${anomaly.anomalyType} — Employee: ${anomaly.employeeId}`);
+      sections.push(
+        `[${anomaly.severity}] ${anomaly.anomalyType} — Employee: ${anomaly.employeeId}`,
+      );
       sections.push(`  ${details?.message ?? 'No details'}`);
       if (details?.suggestedAction) {
         sections.push(`  Action: ${details.suggestedAction}`);
       }
       if (anomaly.resolved) {
-        sections.push(`  ✓ Resolved by ${(details as Record<string, unknown>)?.resolvedByUserId ?? anomaly.resolvedBy}`);
+        sections.push(
+          `  ✓ Resolved by ${(details as Record<string, unknown>)?.resolvedByUserId ?? anomaly.resolvedBy}`,
+        );
         if (details?.resolutionNotes) {
           sections.push(`  Notes: ${details.resolutionNotes}`);
         }
@@ -472,9 +493,11 @@ export class ReconciliationService {
   // ─── Helpers ───────────────────────────────────────────────
 
   private async findRun(payrollRunId: string, tenantId: string) {
-    const run = await this.db.client.payrollRun.findFirst({
-      where: { id: payrollRunId, tenantId },
-    });
+    const run = await this.db.forTenant(tenantId, (tx) =>
+      tx.payrollRun.findFirst({
+        where: { id: payrollRunId, tenantId },
+      }),
+    );
     if (!run) {
       throw new NotFoundException(`Payroll run ${payrollRunId} not found`);
     }
@@ -483,6 +506,7 @@ export class ReconciliationService {
 
   private async computeTotals(payrollRunId: string) {
     const items = await this.db.client.payrollLineItem.findMany({
+      // RLS-exempt: no tenantId on PayrollLineItem; scoped via payrollRunId FK
       where: { payrollRunId },
       select: { component: true, amount: true },
     });
@@ -504,4 +528,3 @@ export class ReconciliationService {
     return { gross, net: gross - deductions };
   }
 }
-

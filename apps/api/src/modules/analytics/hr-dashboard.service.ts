@@ -22,14 +22,16 @@ export class HrDashboardService {
   async getDashboard(tenantId: string): Promise<HrDashboardResponse> {
     this.logger.log(`HR Dashboard request: tenant=${tenantId}`);
 
-    const employees = await this.db.client.employee.findMany({
-      where: { tenantId, terminationDate: null },
-      select: {
-        department: true,
-        level: true,
-        baseSalary: true,
-      },
-    });
+    const employees = await this.db.forTenant(tenantId, (tx) =>
+      tx.employee.findMany({
+        where: { tenantId, terminationDate: null },
+        select: {
+          department: true,
+          level: true,
+          baseSalary: true,
+        },
+      }),
+    );
 
     if (employees.length === 0) {
       return {
@@ -76,9 +78,10 @@ export class HrDashboardService {
     const avgSalary = salaries.length > 0 ? Math.round(totalPayroll / salaries.length) : 0;
     const sorted = [...salaries].sort((a, b) => a - b);
     const mid = Math.floor(sorted.length / 2);
-    const medianSalary = sorted.length % 2 !== 0
-      ? sorted[mid]!
-      : Math.round(((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2);
+    const medianSalary =
+      sorted.length % 2 !== 0
+        ? sorted[mid]!
+        : Math.round(((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2);
 
     return {
       headcountByDepartment,
@@ -112,4 +115,3 @@ export class HrDashboardService {
     return [...buckets.entries()].map(([range, count]) => ({ range, count }));
   }
 }
-
