@@ -17,6 +17,18 @@ export const CompportEmployeeSchema = z.object({
   hire_date: z.string().optional().nullable(),
   status: z.string().max(50).optional().default('active'),
   tenant_id: z.union([z.string(), z.number()]).transform(String).optional(),
+  // ─── Extended fields for AI agents (Phase 3) ─────────────
+  performance_rating: z.union([z.string(), z.number()]).transform(Number).optional().nullable(),
+  manager_id: z.union([z.string(), z.number()]).transform(String).optional().nullable(),
+  gender: z.string().max(50).optional().nullable(),
+  ethnicity: z.string().max(100).optional().nullable(),
+  location: z.string().max(255).optional().nullable(),
+  compa_ratio: z.union([z.string(), z.number()]).transform(Number).optional().nullable(),
+  job_family: z.string().max(255).optional().nullable(),
+  job_level: z.string().max(100).optional().nullable(),
+  total_comp: z.union([z.string(), z.number()]).transform(Number).optional().nullable(),
+  base_salary: z.union([z.string(), z.number()]).transform(Number).optional().nullable(),
+  currency: z.string().max(3).optional().nullable(),
 });
 
 export type CompportEmployee = z.infer<typeof CompportEmployeeSchema>;
@@ -35,6 +47,12 @@ export const CompportCompensationSchema = z.object({
   equity_value: z.number().nonnegative().optional().default(0),
   pay_grade: z.string().max(50).optional().nullable(),
   tenant_id: z.union([z.string(), z.number()]).transform(String).optional(),
+  // ─── Extended fields for AI agents (Phase 3) ─────────────
+  total_comp: z.union([z.string(), z.number()]).transform(Number).optional().nullable(),
+  compa_ratio: z.union([z.string(), z.number()]).transform(Number).optional().nullable(),
+  pay_band_min: z.union([z.string(), z.number()]).transform(Number).optional().nullable(),
+  pay_band_max: z.union([z.string(), z.number()]).transform(Number).optional().nullable(),
+  performance_rating: z.union([z.string(), z.number()]).transform(Number).optional().nullable(),
 });
 
 export type CompportCompensation = z.infer<typeof CompportCompensationSchema>;
@@ -90,3 +108,37 @@ export const SyncResultSchema = z.object({
 
 export type SyncResult = z.infer<typeof SyncResultSchema>;
 
+// ─── Cloud SQL Raw Row Schema (Inbound Sync) ─────────────────
+
+/**
+ * Raw employee row from Cloud SQL (MySQL).
+ * Very loose — Cloud SQL schemas vary per tenant.
+ * All fields optional except employee_id.
+ * The InboundSyncService applies FieldMapping transforms after validation.
+ */
+export const CloudSqlEmployeeRowSchema = z
+  .object({
+    employee_id: z.union([z.string(), z.number()]).transform(String),
+    first_name: z.string().optional().nullable(),
+    last_name: z.string().optional().nullable(),
+    email: z.string().optional().nullable(),
+    department: z.string().optional().nullable(),
+    title: z.string().optional().nullable(),
+    job_title: z.string().optional().nullable(),
+    job_level: z.string().optional().nullable(),
+    job_family: z.string().optional().nullable(),
+    hire_date: z.string().optional().nullable(),
+    status: z.string().optional().nullable(),
+    manager_id: z.union([z.string(), z.number()]).transform(String).optional().nullable(),
+    gender: z.string().optional().nullable(),
+    ethnicity: z.string().optional().nullable(),
+    location: z.string().optional().nullable(),
+    base_salary: z.union([z.string(), z.number()]).transform(Number).optional().nullable(),
+    total_comp: z.union([z.string(), z.number()]).transform(Number).optional().nullable(),
+    currency: z.string().optional().nullable(),
+    compa_ratio: z.union([z.string(), z.number()]).transform(Number).optional().nullable(),
+    performance_rating: z.union([z.string(), z.number()]).transform(Number).optional().nullable(),
+  })
+  .passthrough(); // Allow extra columns we don't know about
+
+export type CloudSqlEmployeeRow = z.infer<typeof CloudSqlEmployeeRowSchema>;
