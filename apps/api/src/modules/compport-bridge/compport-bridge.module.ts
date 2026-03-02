@@ -5,8 +5,14 @@ import { CompportBridgeConfig } from './config/compport-bridge.config';
 import { CompportDbService } from './services/compport-db.service';
 import { CompportApiService } from './services/compport-api.service';
 import { CompportSessionService } from './services/compport-session.service';
+import { CompportCloudSqlService } from './services/compport-cloudsql.service';
+import { WriteBackService } from './services/write-back.service';
 import { CompportBridgeController } from './compport-bridge.controller';
+import { WriteBackController } from './controllers/write-back.controller';
 import { BridgeRateLimitGuard } from './guards/bridge-rate-limit.guard';
+import { WriteBackProcessor, WRITE_BACK_QUEUE } from './processors/write-back.processor';
+import { IntegrationModule } from '../integrations/integrations.module';
+import { BullModule } from '@nestjs/bullmq';
 
 /**
  * Compport PHP Bridge Module.
@@ -29,6 +35,8 @@ export class CompportBridgeModule {
     return {
       module: CompportBridgeModule,
       imports: [
+        IntegrationModule,
+        BullModule.registerQueue({ name: WRITE_BACK_QUEUE }),
         JwtModule.registerAsync({
           inject: [ConfigService],
           useFactory: (configService: ConfigService) => ({
@@ -37,12 +45,15 @@ export class CompportBridgeModule {
           }),
         }),
       ],
-      controllers: [CompportBridgeController],
+      controllers: [CompportBridgeController, WriteBackController],
       providers: [
         CompportBridgeConfig,
         CompportDbService,
         CompportApiService,
         CompportSessionService,
+        CompportCloudSqlService,
+        WriteBackService,
+        WriteBackProcessor,
         BridgeRateLimitGuard,
       ],
       exports: [
@@ -50,8 +61,9 @@ export class CompportBridgeModule {
         CompportDbService,
         CompportApiService,
         CompportSessionService,
+        CompportCloudSqlService,
+        WriteBackService,
       ],
     };
   }
 }
-

@@ -11,14 +11,8 @@ import { WebhookService } from './services/webhook.service';
 import { SyncProcessor } from './processors/sync.processor';
 
 @Module({
-  imports: [
-    BullModule.registerQueue({ name: 'integration-sync' }),
-  ],
-  controllers: [
-    ConnectorController,
-    FieldMappingController,
-    WebhookController,
-  ],
+  imports: [BullModule.registerQueue({ name: 'integration-sync' })],
+  controllers: [ConnectorController, FieldMappingController, WebhookController],
   providers: [
     ConnectorService,
     CredentialVaultService,
@@ -29,10 +23,10 @@ import { SyncProcessor } from './processors/sync.processor';
   ],
   exports: [
     ConnectorService,
+    CredentialVaultService,
     FieldMappingService,
     WebhookService,
     SyncEngineService,
   ],
 })
 export class IntegrationModule {}
-

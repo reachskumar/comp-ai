@@ -114,6 +114,10 @@ enum RecommendationStatus {
   APPROVED
   REJECTED
   ESCALATED
+  WRITE_QUEUED
+  WRITING
+  APPLIED_TO_COMPPORT
+  WRITE_FAILED
 }
 
 enum PayrollStatus {
@@ -241,6 +245,7 @@ model Tenant {
   jobFamilies         JobFamily[]
   jobLevels           JobLevel[]
   careerLadders       CareerLadder[]
+  writeBackBatches    WriteBackBatch[]
 
   @@map("tenants")
 }
@@ -265,6 +270,7 @@ model User {
   notifications       Notification[]
   adHocRequested      AdHocIncrease[]    @relation("AdHocRequestedBy")
   adHocApproved       AdHocIncrease[]    @relation("AdHocApprover")
+  writeBackBatches    WriteBackBatch[]
 
   @@unique([tenantId, email])
   @@index([tenantId])
@@ -506,6 +512,7 @@ model CompCycle {
   budgets             CycleBudget[]
   recommendations     CompRecommendation[]
   calibrationSessions CalibrationSession[]
+  writeBackBatches    WriteBackBatch[]
 
   @@index([tenantId])
   @@index([tenantId, status])
@@ -549,6 +556,7 @@ model CompRecommendation {
   cycle    CompCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
   employee Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
   approver User?     @relation(fields: [approverUserId], references: [id], onDelete: SetNull)
+  writeBackRecords WriteBackRecord[]
 
   @@index([cycleId])
   @@index([employeeId])
@@ -664,6 +672,7 @@ enum ConnectorType {
   BENEFITS
   SSO
   CUSTOM
+  COMPPORT_CLOUDSQL
 }
 
 enum ConnectorStatus {
@@ -732,6 +741,7 @@ model IntegrationConnector {
   syncJobs        SyncJob[]
   fieldMappings   FieldMapping[]
   webhookEndpoints WebhookEndpoint[]
+  writeBackBatches WriteBackBatch[]
 
   @@index([tenantId])
   @@index([tenantId, connectorType])
@@ -1759,4 +1769,85 @@ model CareerLadder {
   @@index([tenantId])
   @@index([tenantId, isActive])
   @@map("career_ladders")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Write-Back (Cloud SQL Sync)
+// ─────────────────────────────────────────────────────────────
+
+enum WriteBackBatchStatus {
+  PENDING_REVIEW
+  PREVIEWED
+  DRY_RUN_PASSED
+  DRY_RUN_FAILED
+  APPLYING
+  APPLIED
+  PARTIALLY_APPLIED
+  FAILED
+  ROLLED_BACK
+}
+
+enum WriteBackRecordStatus {
+  PENDING
+  APPLIED
+  FAILED
+  SKIPPED
+}
+
+model WriteBackBatch {
+  id                String               @id @default(cuid())
+  tenantId          String
+  cycleId           String
+  connectorId       String
+  status            WriteBackBatchStatus @default(PENDING_REVIEW)
+  totalRecords      Int                  @default(0)
+  appliedRecords    Int                  @default(0)
+  failedRecords     Int                  @default(0)
+  skippedRecords    Int                  @default(0)
+  previewSql        String?              @db.Text
+  dryRunResult      Json?
+  rollbackSql       String?              @db.Text
+  appliedByUserId   String?
+  appliedAt         DateTime?
+  confirmedWithPhrase String?
+  idempotencyKey    String               @unique @default(cuid())
+  errorMessage      String?              @db.Text
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+
+  tenant    Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  cycle     CompCycle             @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+  connector IntegrationConnector  @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+  appliedBy User?                @relation(fields: [appliedByUserId], references: [id], onDelete: SetNull)
+  records   WriteBackRecord[]
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([tenantId, cycleId])
+  @@index([idempotencyKey])
+  @@map("write_back_batches")
+}
+
+model WriteBackRecord {
+  id                String                @id @default(cuid())
+  batchId           String
+  recommendationId  String
+  employeeId        String
+  fieldName         String
+  previousValue     String?
+  newValue          String
+  status            WriteBackRecordStatus @default(PENDING)
+  cloudSqlQuery     String?               @db.Text
+  errorMessage      String?               @db.Text
+  appliedAt         DateTime?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+
+  batch          WriteBackBatch     @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  recommendation CompRecommendation @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
+
+  @@index([batchId])
+  @@index([recommendationId])
+  @@index([batchId, status])
+  @@map("write_back_records")
 }

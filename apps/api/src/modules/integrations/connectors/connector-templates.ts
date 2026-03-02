@@ -11,7 +11,7 @@ export interface ConnectorTemplate {
   id: string;
   name: string;
   description: string;
-  connectorType: 'HRIS' | 'PAYROLL' | 'BENEFITS' | 'SSO' | 'CUSTOM';
+  connectorType: 'HRIS' | 'PAYROLL' | 'BENEFITS' | 'SSO' | 'CUSTOM' | 'COMPPORT_CLOUDSQL';
   vendor: string;
   logoUrl?: string;
   category: string;
@@ -39,9 +39,27 @@ export const COMPPORT_TARGET_SCHEMA: FieldSchema[] = [
   { name: 'hireDate', type: 'date', required: false, description: 'Date of hire' },
   { name: 'baseSalary', type: 'number', required: false, description: 'Base salary amount' },
   { name: 'currency', type: 'string', required: false, description: 'Salary currency code' },
-  { name: 'payFrequency', type: 'enum', required: false, description: 'Pay frequency', enumValues: ['ANNUAL', 'MONTHLY', 'BIWEEKLY', 'WEEKLY'] },
-  { name: 'employmentStatus', type: 'enum', required: false, description: 'Employment status', enumValues: ['ACTIVE', 'INACTIVE', 'TERMINATED', 'ON_LEAVE'] },
-  { name: 'employmentType', type: 'enum', required: false, description: 'Employment type', enumValues: ['FULL_TIME', 'PART_TIME', 'CONTRACT', 'INTERN'] },
+  {
+    name: 'payFrequency',
+    type: 'enum',
+    required: false,
+    description: 'Pay frequency',
+    enumValues: ['ANNUAL', 'MONTHLY', 'BIWEEKLY', 'WEEKLY'],
+  },
+  {
+    name: 'employmentStatus',
+    type: 'enum',
+    required: false,
+    description: 'Employment status',
+    enumValues: ['ACTIVE', 'INACTIVE', 'TERMINATED', 'ON_LEAVE'],
+  },
+  {
+    name: 'employmentType',
+    type: 'enum',
+    required: false,
+    description: 'Employment type',
+    enumValues: ['FULL_TIME', 'PART_TIME', 'CONTRACT', 'INTERN'],
+  },
 ];
 
 // ─── Workday ────────────────────────────────────────────────
@@ -64,7 +82,12 @@ export const WORKDAY_TEMPLATE: ConnectorTemplate = {
     { name: 'First_Name', type: 'string', required: true, description: 'Legal first name' },
     { name: 'Last_Name', type: 'string', required: true, description: 'Legal last name' },
     { name: 'Email_Address', type: 'string', required: true, description: 'Primary email' },
-    { name: 'Supervisory_Organization', type: 'string', required: false, description: 'Department/org' },
+    {
+      name: 'Supervisory_Organization',
+      type: 'string',
+      required: false,
+      description: 'Department/org',
+    },
     { name: 'Business_Title', type: 'string', required: false, description: 'Business title' },
     { name: 'Job_Profile', type: 'string', required: false, description: 'Job profile name' },
     { name: 'Manager_ID', type: 'string', required: false, description: 'Manager Worker ID' },
@@ -72,9 +95,27 @@ export const WORKDAY_TEMPLATE: ConnectorTemplate = {
     { name: 'Hire_Date', type: 'date', required: false, description: 'Original hire date' },
     { name: 'Annual_Rate', type: 'number', required: false, description: 'Annual base pay' },
     { name: 'Currency_Code', type: 'string', required: false, description: 'Pay currency' },
-    { name: 'Pay_Rate_Type', type: 'enum', required: false, description: 'Pay rate type', enumValues: ['Salary', 'Hourly'] },
-    { name: 'Worker_Status', type: 'enum', required: false, description: 'Worker status', enumValues: ['Active', 'Inactive', 'Terminated', 'On Leave'] },
-    { name: 'Worker_Type', type: 'enum', required: false, description: 'Worker type', enumValues: ['Regular', 'Temporary', 'Contractor'] },
+    {
+      name: 'Pay_Rate_Type',
+      type: 'enum',
+      required: false,
+      description: 'Pay rate type',
+      enumValues: ['Salary', 'Hourly'],
+    },
+    {
+      name: 'Worker_Status',
+      type: 'enum',
+      required: false,
+      description: 'Worker status',
+      enumValues: ['Active', 'Inactive', 'Terminated', 'On Leave'],
+    },
+    {
+      name: 'Worker_Type',
+      type: 'enum',
+      required: false,
+      description: 'Worker type',
+      enumValues: ['Regular', 'Temporary', 'Contractor'],
+    },
   ],
   defaultSyncDirection: 'INBOUND',
   defaultSyncSchedule: 'DAILY',
@@ -104,8 +145,20 @@ export const BAMBOOHR_TEMPLATE: ConnectorTemplate = {
     { name: 'location', type: 'string', required: false, description: 'Location' },
     { name: 'hireDate', type: 'date', required: false, description: 'Hire date' },
     { name: 'payRate', type: 'number', required: false, description: 'Pay rate' },
-    { name: 'payType', type: 'enum', required: false, description: 'Pay type', enumValues: ['Salary', 'Hourly'] },
-    { name: 'status', type: 'enum', required: false, description: 'Status', enumValues: ['Active', 'Inactive'] },
+    {
+      name: 'payType',
+      type: 'enum',
+      required: false,
+      description: 'Pay type',
+      enumValues: ['Salary', 'Hourly'],
+    },
+    {
+      name: 'status',
+      type: 'enum',
+      required: false,
+      description: 'Status',
+      enumValues: ['Active', 'Inactive'],
+    },
   ],
   defaultSyncDirection: 'INBOUND',
   defaultSyncSchedule: 'DAILY',
@@ -130,18 +183,55 @@ export const ADP_TEMPLATE: ConnectorTemplate = {
   },
   sourceSchema: [
     { name: 'associateOID', type: 'string', required: true, description: 'ADP Associate OID' },
-    { name: 'person.legalName.givenName', type: 'string', required: true, description: 'Given name' },
-    { name: 'person.legalName.familyName1', type: 'string', required: true, description: 'Family name' },
-    { name: 'businessCommunication.emailUri', type: 'string', required: false, description: 'Email' },
-    { name: 'organizationUnit', type: 'string', required: false, description: 'Org unit/department' },
+    {
+      name: 'person.legalName.givenName',
+      type: 'string',
+      required: true,
+      description: 'Given name',
+    },
+    {
+      name: 'person.legalName.familyName1',
+      type: 'string',
+      required: true,
+      description: 'Family name',
+    },
+    {
+      name: 'businessCommunication.emailUri',
+      type: 'string',
+      required: false,
+      description: 'Email',
+    },
+    {
+      name: 'organizationUnit',
+      type: 'string',
+      required: false,
+      description: 'Org unit/department',
+    },
     { name: 'jobTitle', type: 'string', required: false, description: 'Job title' },
     { name: 'reportsTo.associateOID', type: 'string', required: false, description: 'Manager OID' },
     { name: 'workLocation', type: 'string', required: false, description: 'Work location' },
     { name: 'hireDate', type: 'date', required: false, description: 'Hire date' },
     { name: 'baseRemuneration.amount', type: 'number', required: false, description: 'Base pay' },
-    { name: 'baseRemuneration.currencyCode', type: 'string', required: false, description: 'Currency' },
-    { name: 'payFrequency', type: 'enum', required: false, description: 'Pay frequency', enumValues: ['Annual', 'Monthly', 'Biweekly', 'Weekly'] },
-    { name: 'workerStatus', type: 'enum', required: false, description: 'Status', enumValues: ['Active', 'Inactive', 'Terminated'] },
+    {
+      name: 'baseRemuneration.currencyCode',
+      type: 'string',
+      required: false,
+      description: 'Currency',
+    },
+    {
+      name: 'payFrequency',
+      type: 'enum',
+      required: false,
+      description: 'Pay frequency',
+      enumValues: ['Annual', 'Monthly', 'Biweekly', 'Weekly'],
+    },
+    {
+      name: 'workerStatus',
+      type: 'enum',
+      required: false,
+      description: 'Status',
+      enumValues: ['Active', 'Inactive', 'Terminated'],
+    },
   ],
   defaultSyncDirection: 'INBOUND',
   defaultSyncSchedule: 'DAILY',
@@ -177,14 +267,72 @@ export const SAP_SF_TEMPLATE: ConnectorTemplate = {
     { name: 'startDate', type: 'date', required: false, description: 'Start date' },
     { name: 'compensation.salary', type: 'number', required: false, description: 'Base salary' },
     { name: 'compensation.currency', type: 'string', required: false, description: 'Currency' },
-    { name: 'compensation.frequency', type: 'enum', required: false, description: 'Pay frequency', enumValues: ['ANNUAL', 'MONTHLY', 'BIWEEKLY'] },
-    { name: 'employmentStatus', type: 'enum', required: false, description: 'Status', enumValues: ['A', 'I', 'T', 'L'] },
-    { name: 'employeeClass', type: 'enum', required: false, description: 'Employee class', enumValues: ['FT', 'PT', 'CT', 'IN'] },
+    {
+      name: 'compensation.frequency',
+      type: 'enum',
+      required: false,
+      description: 'Pay frequency',
+      enumValues: ['ANNUAL', 'MONTHLY', 'BIWEEKLY'],
+    },
+    {
+      name: 'employmentStatus',
+      type: 'enum',
+      required: false,
+      description: 'Status',
+      enumValues: ['A', 'I', 'T', 'L'],
+    },
+    {
+      name: 'employeeClass',
+      type: 'enum',
+      required: false,
+      description: 'Employee class',
+      enumValues: ['FT', 'PT', 'CT', 'IN'],
+    },
   ],
   defaultSyncDirection: 'INBOUND',
   defaultSyncSchedule: 'DAILY',
   supportedEntities: ['employees', 'compensation', 'job_info', 'org_info'],
   sandboxMode: true,
+};
+
+// ─── Compport Cloud SQL ──────────────────────────────────
+
+export const COMPPORT_CLOUDSQL_TEMPLATE: ConnectorTemplate = {
+  id: 'compport-cloudsql',
+  name: 'Compport Cloud SQL',
+  description:
+    'Bi-directional sync with existing Compport PHP system via Google Cloud SQL private IP. Read employee/compensation data and write back approved changes.',
+  connectorType: 'COMPPORT_CLOUDSQL',
+  vendor: 'Compport',
+  category: 'HRIS',
+  authType: 'basic',
+  authConfig: {
+    fields: ['host', 'port', 'user', 'password', 'schemaName', 'tableName'],
+    requiredFields: ['host', 'user', 'password', 'schemaName'],
+    defaults: { port: 3306, tableName: 'employees' },
+    description:
+      'Cloud SQL private IP credentials. Connection via VPC peering — no SSL certificates needed.',
+  },
+  sourceSchema: [
+    {
+      name: 'employee_id',
+      type: 'string',
+      required: true,
+      description: 'Employee identifier in Compport',
+    },
+    { name: 'first_name', type: 'string', required: false, description: 'First name' },
+    { name: 'last_name', type: 'string', required: false, description: 'Last name' },
+    { name: 'email', type: 'string', required: false, description: 'Work email' },
+    { name: 'department', type: 'string', required: false, description: 'Department' },
+    { name: 'base_salary', type: 'number', required: false, description: 'Base salary' },
+    { name: 'total_comp', type: 'number', required: false, description: 'Total compensation' },
+    { name: 'job_title', type: 'string', required: false, description: 'Job title' },
+    { name: 'job_level', type: 'string', required: false, description: 'Job level/grade' },
+  ],
+  defaultSyncDirection: 'BIDIRECTIONAL',
+  defaultSyncSchedule: 'DAILY',
+  supportedEntities: ['employees', 'compensation'],
+  sandboxMode: false,
 };
 
 // ─── Template Registry ──────────────────────────────────────
@@ -194,6 +342,7 @@ export const CONNECTOR_TEMPLATES: Record<string, ConnectorTemplate> = {
   bamboohr: BAMBOOHR_TEMPLATE,
   adp: ADP_TEMPLATE,
   'sap-successfactors': SAP_SF_TEMPLATE,
+  'compport-cloudsql': COMPPORT_CLOUDSQL_TEMPLATE,
 };
 
 export function getConnectorTemplate(id: string): ConnectorTemplate | undefined {
