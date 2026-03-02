@@ -47,6 +47,7 @@ import {
   UserX,
   Network,
   Layers,
+  DatabaseBackup,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -175,5 +176,6 @@ export const settingsGroup: NavGroup = {
     { title: 'Users & Roles', href: '/dashboard/settings/users', icon: Users },
     { title: 'Audit Log', href: '/dashboard/settings/audit-log', icon: ScrollText },
     { title: 'Currency', href: '/dashboard/settings/currency', icon: Coins },
+    { title: 'Write-Back', href: '/dashboard/settings/writeback', icon: DatabaseBackup },
   ],
 };
