@@ -299,7 +299,7 @@ export class TestGeneratorService {
     data: { name: string; input: EmployeeData; expectedOutput: ExpectedOutput },
   ): Promise<TestCaseData> {
     const record = await this.db.client.testCase.create({
-      // RLS-exempt: called within generateTestCases which already verified tenant ownership
+      // RLS-exempt: no tenantId on TestCase; scoped via ruleSetId FK (tenant verified in caller)
       data: {
         ruleSetId,
         name: data.name,

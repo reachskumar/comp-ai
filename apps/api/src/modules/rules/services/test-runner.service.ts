@@ -60,7 +60,7 @@ export class TestRunnerService {
     const skip = (page - 1) * limit;
     const [data, total] = await Promise.all([
       this.db.client.testCase.findMany({
-        // RLS-exempt: testCase is not tenant-scoped directly, accessed via ruleSetId
+        // RLS-exempt: no tenantId on TestCase; scoped via ruleSetId FK
         where: { ruleSetId },
         orderBy: { createdAt: 'asc' },
         skip,
@@ -101,7 +101,7 @@ export class TestRunnerService {
 
     // Load all test cases for this rule set
     const testCases = await this.db.client.testCase.findMany({
-      // RLS-exempt: testCase accessed via tenant-verified ruleSetId
+      // RLS-exempt: no tenantId on TestCase; scoped via ruleSetId FK
       where: { ruleSetId },
       orderBy: { createdAt: 'asc' },
     });
@@ -121,7 +121,7 @@ export class TestRunnerService {
 
       // Update test case record
       await this.db.client.testCase.update({
-        // RLS-exempt: testCase accessed via tenant-verified ruleSetId
+        // RLS-exempt: no tenantId on TestCase; scoped via ruleSetId FK
         where: { id: tc.id },
         data: {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
