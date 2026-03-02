@@ -1,9 +1,4 @@
-import {
-  Injectable,
-  Logger,
-  NotFoundException,
-  BadRequestException,
-} from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { DatabaseService } from '../../../database';
 import { CreateFieldMappingDto } from '../dto/create-field-mapping.dto';
 import { SuggestFieldMappingDto } from '../dto/suggest-field-mapping.dto';
@@ -22,10 +17,7 @@ import {
   type FieldSchema,
   type FieldMappingGraphOutput,
 } from '@compensation/ai';
-import {
-  getConnectorTemplate,
-  COMPPORT_TARGET_SCHEMA,
-} from '../connectors/connector-templates';
+import { getConnectorTemplate, COMPPORT_TARGET_SCHEMA } from '../connectors/connector-templates';
 
 @Injectable()
 export class FieldMappingService {
@@ -34,39 +26,43 @@ export class FieldMappingService {
   constructor(private readonly db: DatabaseService) {}
 
   async create(tenantId: string, dto: CreateFieldMappingDto) {
-    // Verify connector belongs to tenant
-    const connector = await this.db.client.integrationConnector.findFirst({
-      where: { id: dto.connectorId, tenantId },
-    });
-    if (!connector) {
-      throw new NotFoundException(`Connector ${dto.connectorId} not found`);
-    }
+    return this.db.forTenant(tenantId, async (tx) => {
+      // Verify connector belongs to tenant
+      const connector = await tx.integrationConnector.findFirst({
+        where: { id: dto.connectorId, tenantId },
+      });
+      if (!connector) {
+        throw new NotFoundException(`Connector ${dto.connectorId} not found`);
+      }
 
-    return this.db.client.fieldMapping.create({
-      data: {
-        connectorId: dto.connectorId,
-        tenantId,
-        sourceField: dto.sourceField,
-        targetField: dto.targetField,
-        transformType: dto.transformType ?? 'direct',
-        transformConfig: (dto.transformConfig ?? {}) as never,
-        isRequired: dto.isRequired ?? false,
-        defaultValue: dto.defaultValue,
-      },
+      return tx.fieldMapping.create({
+        data: {
+          connectorId: dto.connectorId,
+          tenantId,
+          sourceField: dto.sourceField,
+          targetField: dto.targetField,
+          transformType: dto.transformType ?? 'direct',
+          transformConfig: (dto.transformConfig ?? {}) as never,
+          isRequired: dto.isRequired ?? false,
+          defaultValue: dto.defaultValue,
+        },
+      });
     });
   }
 
   async findByConnector(tenantId: string, connectorId: string) {
-    const connector = await this.db.client.integrationConnector.findFirst({
-      where: { id: connectorId, tenantId },
-    });
-    if (!connector) {
-      throw new NotFoundException(`Connector ${connectorId} not found`);
-    }
+    return this.db.forTenant(tenantId, async (tx) => {
+      const connector = await tx.integrationConnector.findFirst({
+        where: { id: connectorId, tenantId },
+      });
+      if (!connector) {
+        throw new NotFoundException(`Connector ${connectorId} not found`);
+      }
 
-    return this.db.client.fieldMapping.findMany({
-      where: { connectorId, tenantId, enabled: true },
-      orderBy: { createdAt: 'asc' },
+      return tx.fieldMapping.findMany({
+        where: { connectorId, tenantId, enabled: true },
+        orderBy: { createdAt: 'asc' },
+      });
     });
   }
 
@@ -89,9 +85,7 @@ export class FieldMappingService {
       sourceFields = dto.sourceFields;
       connectorType = dto.connectorType ?? 'Custom';
     } else {
-      throw new BadRequestException(
-        'Either templateId or sourceFields must be provided',
-      );
+      throw new BadRequestException('Either templateId or sourceFields must be provided');
     }
 
     this.logger.log(
@@ -108,14 +102,16 @@ export class FieldMappingService {
   }
 
   async delete(tenantId: string, id: string) {
-    const mapping = await this.db.client.fieldMapping.findFirst({
-      where: { id, tenantId },
+    return this.db.forTenant(tenantId, async (tx) => {
+      const mapping = await tx.fieldMapping.findFirst({
+        where: { id, tenantId },
+      });
+      if (!mapping) {
+        throw new NotFoundException(`Field mapping ${id} not found`);
+      }
+      await tx.fieldMapping.delete({ where: { id } });
+      return { deleted: true };
     });
-    if (!mapping) {
-      throw new NotFoundException(`Field mapping ${id} not found`);
-    }
-    await this.db.client.fieldMapping.delete({ where: { id } });
-    return { deleted: true };
   }
 
   /**
@@ -296,6 +292,4 @@ export class FieldMappingService {
         throw new Error(`Unknown transform type: ${transformType}`);
     }
   }
-
-
 }

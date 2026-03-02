@@ -66,6 +66,8 @@ export function createMockDatabaseService() {
   const mockClient = createMockPrismaClient();
   return {
     client: mockClient,
+    // forTenant wraps the callback in RLS context — in tests, just pass the mock client through
+    forTenant: vi.fn((_tenantId: string, callback: (tx: any) => any) => callback(mockClient)),
     onModuleInit: vi.fn(),
     onModuleDestroy: vi.fn(),
     isHealthy: vi.fn().mockResolvedValue(true),
@@ -120,4 +122,3 @@ export function generateTestToken(
 
 export type MockDatabaseService = ReturnType<typeof createMockDatabaseService>;
 export type MockConfigService = ReturnType<typeof createMockConfigService>;
-

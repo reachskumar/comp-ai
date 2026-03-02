@@ -1,9 +1,4 @@
-import {
-  Injectable,
-  Logger,
-  NotFoundException,
-  BadRequestException,
-} from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { DatabaseService } from '../../../database';
 import { CredentialVaultService } from './credential-vault.service';
 import { CreateConnectorDto } from '../dto/create-connector.dto';
@@ -31,21 +26,23 @@ export class ConnectorService {
       credentialTag = encrypted.tag;
     }
 
-    const connector = await this.db.client.integrationConnector.create({
-      data: {
-        tenantId,
-        name: dto.name,
-        connectorType: dto.connectorType as never,
-        config: (dto.config ?? {}) as never,
-        encryptedCredentials,
-        credentialIv,
-        credentialTag,
-        syncDirection: (dto.syncDirection as never) ?? 'INBOUND',
-        syncSchedule: (dto.syncSchedule as never) ?? 'MANUAL',
-        conflictStrategy: (dto.conflictStrategy as never) ?? 'LAST_WRITE_WINS',
-        metadata: (dto.metadata ?? {}) as never,
-      },
-    });
+    const connector = await this.db.forTenant(tenantId, (tx) =>
+      tx.integrationConnector.create({
+        data: {
+          tenantId,
+          name: dto.name,
+          connectorType: dto.connectorType as never,
+          config: (dto.config ?? {}) as never,
+          encryptedCredentials,
+          credentialIv,
+          credentialTag,
+          syncDirection: (dto.syncDirection as never) ?? 'INBOUND',
+          syncSchedule: (dto.syncSchedule as never) ?? 'MANUAL',
+          conflictStrategy: (dto.conflictStrategy as never) ?? 'LAST_WRITE_WINS',
+          metadata: (dto.metadata ?? {}) as never,
+        },
+      }),
+    );
 
     this.logger.log(`Connector created: ${connector.id} for tenant ${tenantId}`);
 
@@ -61,15 +58,17 @@ export class ConnectorService {
     if (query.connectorType) where['connectorType'] = query.connectorType;
     if (query.status) where['status'] = query.status;
 
-    const [data, total] = await Promise.all([
-      this.db.client.integrationConnector.findMany({
-        where: where as never,
-        skip,
-        take: limit,
-        orderBy: { createdAt: 'desc' },
-      }),
-      this.db.client.integrationConnector.count({ where: where as never }),
-    ]);
+    const [data, total] = await this.db.forTenant(tenantId, (tx) =>
+      Promise.all([
+        tx.integrationConnector.findMany({
+          where: where as never,
+          skip,
+          take: limit,
+          orderBy: { createdAt: 'desc' },
+        }),
+        tx.integrationConnector.count({ where: where as never }),
+      ]),
+    );
 
     return {
       data: data.map((c: Record<string, unknown>) => this.sanitizeConnector(c)),
@@ -81,10 +80,12 @@ export class ConnectorService {
   }
 
   async findOne(tenantId: string, id: string) {
-    const connector = await this.db.client.integrationConnector.findFirst({
-      where: { id, tenantId },
-      include: { fieldMappings: true, webhookEndpoints: true },
-    });
+    const connector = await this.db.forTenant(tenantId, (tx) =>
+      tx.integrationConnector.findFirst({
+        where: { id, tenantId },
+        include: { fieldMappings: true, webhookEndpoints: true },
+      }),
+    );
 
     if (!connector) {
       throw new NotFoundException(`Connector ${id} not found`);
@@ -112,43 +113,51 @@ export class ConnectorService {
       updateData['credentialTag'] = encrypted.tag;
     }
 
-    const updated = await this.db.client.integrationConnector.update({
-      where: { id },
-      data: updateData as never,
-    });
+    const updated = await this.db.forTenant(tenantId, (tx) =>
+      tx.integrationConnector.update({
+        where: { id },
+        data: updateData as never,
+      }),
+    );
 
     return this.sanitizeConnector(updated);
   }
 
   async delete(tenantId: string, id: string) {
     await this.findOne(tenantId, id);
-    await this.db.client.integrationConnector.delete({ where: { id } });
+    await this.db.forTenant(tenantId, (tx) => tx.integrationConnector.delete({ where: { id } }));
     return { deleted: true };
   }
 
   async healthCheck(tenantId: string, id: string) {
-    const connector = await this.db.client.integrationConnector.findFirst({
-      where: { id, tenantId },
-    });
+    const connector = await this.db.forTenant(tenantId, (tx) =>
+      tx.integrationConnector.findFirst({
+        where: { id, tenantId },
+      }),
+    );
     if (!connector) throw new NotFoundException(`Connector ${id} not found`);
 
     // Update health check timestamp
     const now = new Date();
-    await this.db.client.integrationConnector.update({
-      where: { id },
-      data: { lastHealthCheck: now, healthStatus: 'ok' },
-    });
+    await this.db.forTenant(tenantId, (tx) =>
+      tx.integrationConnector.update({
+        where: { id },
+        data: { lastHealthCheck: now, healthStatus: 'ok' },
+      }),
+    );
 
     return { healthy: true, checkedAt: now, connectorId: id };
   }
 
   /** Remove encrypted credentials from response — never expose secrets */
   private sanitizeConnector(connector: Record<string, unknown>) {
-    const { encryptedCredentials, credentialIv, credentialTag, ...safe } = connector as Record<string, unknown>;
+    const { encryptedCredentials, credentialIv, credentialTag, ...safe } = connector as Record<
+      string,
+      unknown
+    >;
     return {
       ...safe,
       hasCredentials: !!encryptedCredentials,
     };
   }
 }
-

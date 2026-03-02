@@ -1,9 +1,4 @@
-import {
-  Injectable,
-  Logger,
-  NotFoundException,
-  BadRequestException,
-} from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { DatabaseService } from '../../../database';
@@ -25,9 +20,11 @@ export class SyncEngineService {
 
   async triggerSync(tenantId: string, connectorId: string, dto: TriggerSyncDto) {
     // Verify connector exists and belongs to tenant
-    const connector = await this.db.client.integrationConnector.findFirst({
-      where: { id: connectorId, tenantId },
-    });
+    const connector = await this.db.forTenant(tenantId, (tx) =>
+      tx.integrationConnector.findFirst({
+        where: { id: connectorId, tenantId },
+      }),
+    );
     if (!connector) {
       throw new NotFoundException(`Connector ${connectorId} not found`);
     }
@@ -39,20 +36,22 @@ export class SyncEngineService {
     await this.checkRateLimit(tenantId);
 
     // Create sync job record
-    const syncJob = await this.db.client.syncJob.create({
-      data: {
-        connectorId,
-        tenantId,
-        direction: (dto.direction as never) ?? connector.syncDirection,
-        entityType: dto.entityType,
-        status: 'PENDING',
-        metadata: {
-          since: dto.since ?? null,
-          batchSize: dto.batchSize ?? 100,
-          triggeredBy: 'manual',
+    const syncJob = await this.db.forTenant(tenantId, (tx) =>
+      tx.syncJob.create({
+        data: {
+          connectorId,
+          tenantId,
+          direction: (dto.direction as never) ?? connector.syncDirection,
+          entityType: dto.entityType,
+          status: 'PENDING',
+          metadata: {
+            since: dto.since ?? null,
+            batchSize: dto.batchSize ?? 100,
+            triggeredBy: 'manual',
+          },
         },
-      },
-    });
+      }),
+    );
 
     // Queue the sync job for async processing
     await this.syncQueue.add(
@@ -85,9 +84,11 @@ export class SyncEngineService {
 
   async listSyncJobs(tenantId: string, connectorId: string, query: ConnectorQueryDto) {
     // Verify connector belongs to tenant
-    const connector = await this.db.client.integrationConnector.findFirst({
-      where: { id: connectorId, tenantId },
-    });
+    const connector = await this.db.forTenant(tenantId, (tx) =>
+      tx.integrationConnector.findFirst({
+        where: { id: connectorId, tenantId },
+      }),
+    );
     if (!connector) {
       throw new NotFoundException(`Connector ${connectorId} not found`);
     }
@@ -98,24 +99,28 @@ export class SyncEngineService {
 
     const where = { connectorId, tenantId };
 
-    const [data, total] = await Promise.all([
-      this.db.client.syncJob.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { createdAt: 'desc' },
-      }),
-      this.db.client.syncJob.count({ where }),
-    ]);
+    const [data, total] = await this.db.forTenant(tenantId, (tx) =>
+      Promise.all([
+        tx.syncJob.findMany({
+          where,
+          skip,
+          take: limit,
+          orderBy: { createdAt: 'desc' },
+        }),
+        tx.syncJob.count({ where }),
+      ]),
+    );
 
     return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 
   async getSyncLogs(tenantId: string, connectorId: string, query: SyncLogQueryDto) {
     // Verify connector belongs to tenant
-    const connector = await this.db.client.integrationConnector.findFirst({
-      where: { id: connectorId, tenantId },
-    });
+    const connector = await this.db.forTenant(tenantId, (tx) =>
+      tx.integrationConnector.findFirst({
+        where: { id: connectorId, tenantId },
+      }),
+    );
     if (!connector) {
       throw new NotFoundException(`Connector ${connectorId} not found`);
     }
@@ -129,27 +134,31 @@ export class SyncEngineService {
     };
     if (query.action) where['action'] = query.action;
 
-    const [data, total] = await Promise.all([
-      this.db.client.syncLog.findMany({
-        where: where as never,
-        skip,
-        take: limit,
-        orderBy: { createdAt: 'desc' },
-      }),
-      this.db.client.syncLog.count({ where: where as never }),
-    ]);
+    const [data, total] = await this.db.forTenant(tenantId, (tx) =>
+      Promise.all([
+        tx.syncLog.findMany({
+          where: where as never,
+          skip,
+          take: limit,
+          orderBy: { createdAt: 'desc' },
+        }),
+        tx.syncLog.count({ where: where as never }),
+      ]),
+    );
 
     return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 
   private async checkRateLimit(tenantId: string): Promise<void> {
     const windowStart = new Date(Date.now() - RATE_LIMIT_WINDOW_MS);
-    const recentSyncs = await this.db.client.syncJob.count({
-      where: {
-        tenantId,
-        createdAt: { gte: windowStart },
-      },
-    });
+    const recentSyncs = await this.db.forTenant(tenantId, (tx) =>
+      tx.syncJob.count({
+        where: {
+          tenantId,
+          createdAt: { gte: windowStart },
+        },
+      }),
+    );
 
     if (recentSyncs >= MANUAL_SYNC_RATE_LIMIT) {
       throw new BadRequestException(
@@ -158,4 +167,3 @@ export class SyncEngineService {
     }
   }
 }
-

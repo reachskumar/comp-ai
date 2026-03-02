@@ -60,22 +60,25 @@ export class TestRunnerService {
     const skip = (page - 1) * limit;
     const [data, total] = await Promise.all([
       this.db.client.testCase.findMany({
+        // RLS-exempt: testCase is not tenant-scoped directly, accessed via ruleSetId
         where: { ruleSetId },
         orderBy: { createdAt: 'asc' },
         skip,
         take: limit,
       }),
-      this.db.client.testCase.count({ where: { ruleSetId } }),
+      this.db.client.testCase.count({ where: { ruleSetId } }), // RLS-exempt: same as above
     ]);
     return { data, total, page, limit };
   }
 
   async runTestCases(tenantId: string, ruleSetId: string): Promise<TestRunReport> {
     // Load RuleSet with rules
-    const dbRuleSet = await this.db.client.ruleSet.findFirst({
-      where: { id: ruleSetId, tenantId },
-      include: { rules: true },
-    });
+    const dbRuleSet = await this.db.forTenant(tenantId, (tx) =>
+      tx.ruleSet.findFirst({
+        where: { id: ruleSetId, tenantId },
+        include: { rules: true },
+      }),
+    );
     if (!dbRuleSet) {
       throw new NotFoundException(`RuleSet ${ruleSetId} not found`);
     }
@@ -98,6 +101,7 @@ export class TestRunnerService {
 
     // Load all test cases for this rule set
     const testCases = await this.db.client.testCase.findMany({
+      // RLS-exempt: testCase accessed via tenant-verified ruleSetId
       where: { ruleSetId },
       orderBy: { createdAt: 'asc' },
     });
@@ -117,6 +121,7 @@ export class TestRunnerService {
 
       // Update test case record
       await this.db.client.testCase.update({
+        // RLS-exempt: testCase accessed via tenant-verified ruleSetId
         where: { id: tc.id },
         data: {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -155,13 +160,17 @@ export class TestRunnerService {
     // Check applied rules
     const appliedMatch = expectedApplied.every((id) => actual.appliedRules.includes(id));
     if (!appliedMatch) {
-      mismatches.push(`Expected rules [${expectedApplied.join(', ')}] to apply, got [${actual.appliedRules.join(', ')}]`);
+      mismatches.push(
+        `Expected rules [${expectedApplied.join(', ')}] to apply, got [${actual.appliedRules.join(', ')}]`,
+      );
     }
 
     // Check skipped rules
     const skippedMatch = expectedSkipped.every((id) => actual.skippedRules.includes(id));
     if (!skippedMatch) {
-      mismatches.push(`Expected rules [${expectedSkipped.join(', ')}] to be skipped, got [${actual.skippedRules.join(', ')}]`);
+      mismatches.push(
+        `Expected rules [${expectedSkipped.join(', ')}] to be skipped, got [${actual.skippedRules.join(', ')}]`,
+      );
     }
 
     // Check blocked status
@@ -175,7 +184,9 @@ export class TestRunnerService {
     if (meritRange) {
       meritInRange = actual.totalMerit >= meritRange.min && actual.totalMerit <= meritRange.max;
       if (!meritInRange) {
-        mismatches.push(`Merit ${actual.totalMerit} not in range [${meritRange.min}, ${meritRange.max}]`);
+        mismatches.push(
+          `Merit ${actual.totalMerit} not in range [${meritRange.min}, ${meritRange.max}]`,
+        );
       }
     }
 
@@ -185,7 +196,9 @@ export class TestRunnerService {
     if (bonusRange) {
       bonusInRange = actual.totalBonus >= bonusRange.min && actual.totalBonus <= bonusRange.max;
       if (!bonusInRange) {
-        mismatches.push(`Bonus ${actual.totalBonus} not in range [${bonusRange.min}, ${bonusRange.max}]`);
+        mismatches.push(
+          `Bonus ${actual.totalBonus} not in range [${bonusRange.min}, ${bonusRange.max}]`,
+        );
       }
     }
 
@@ -218,4 +231,3 @@ export class TestRunnerService {
     };
   }
 }
-

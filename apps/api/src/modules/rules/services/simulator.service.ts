@@ -100,9 +100,20 @@ function toEmployeeData(employee: {
   };
 }
 
-function buildRuleSet(
-  dbRuleSet: { id: string; name: string; effectiveDate: Date | null; rules: Array<{ id: string; name: string; ruleType: string; priority: number; conditions: unknown; actions: unknown; enabled: boolean }> },
-): RuleSet {
+function buildRuleSet(dbRuleSet: {
+  id: string;
+  name: string;
+  effectiveDate: Date | null;
+  rules: Array<{
+    id: string;
+    name: string;
+    ruleType: string;
+    priority: number;
+    conditions: unknown;
+    actions: unknown;
+    enabled: boolean;
+  }>;
+}): RuleSet {
   return {
     id: dbRuleSet.id,
     name: dbRuleSet.name,
@@ -153,7 +164,12 @@ function buildImpactSummary(results: EmployeeSimResult[]): ImpactSummary {
 
     // By department
     if (!byDepartment[r.department]) {
-      byDepartment[r.department] = { totalBudgetImpact: 0, avgChangePercent: 0, employeesAffected: 0, employeesBlocked: 0 };
+      byDepartment[r.department] = {
+        totalBudgetImpact: 0,
+        avgChangePercent: 0,
+        employeesAffected: 0,
+        employeesBlocked: 0,
+      };
     }
     const dept = byDepartment[r.department]!;
     dept.totalBudgetImpact += impact;
@@ -172,22 +188,25 @@ function buildImpactSummary(results: EmployeeSimResult[]): ImpactSummary {
   // Compute averages per department
   for (const [dept, summary] of Object.entries(byDepartment)) {
     const deptResults = results.filter((r) => r.department === dept);
-    summary.avgChangePercent = deptResults.length > 0
-      ? deptResults.reduce((a, b) => a + b.changePercent, 0) / deptResults.length
-      : 0;
+    summary.avgChangePercent =
+      deptResults.length > 0
+        ? deptResults.reduce((a, b) => a + b.changePercent, 0) / deptResults.length
+        : 0;
   }
 
   // Compute averages per level
   for (const [level, summary] of Object.entries(byLevel)) {
     const lvlResults = results.filter((r) => r.level === level);
-    summary.avgChangePercent = lvlResults.length > 0
-      ? lvlResults.reduce((a, b) => a + b.changePercent, 0) / lvlResults.length
-      : 0;
+    summary.avgChangePercent =
+      lvlResults.length > 0
+        ? lvlResults.reduce((a, b) => a + b.changePercent, 0) / lvlResults.length
+        : 0;
   }
 
-  const avgChangePercent = changePercents.length > 0
-    ? changePercents.reduce((a, b) => a + b, 0) / changePercents.length
-    : 0;
+  const avgChangePercent =
+    changePercents.length > 0
+      ? changePercents.reduce((a, b) => a + b, 0) / changePercents.length
+      : 0;
 
   return {
     totalBudgetImpact,
@@ -199,7 +218,6 @@ function buildImpactSummary(results: EmployeeSimResult[]): ImpactSummary {
     employeesBlocked,
   };
 }
-
 
 // ─────────────────────────────────────────────────────────────
 // Service
@@ -220,142 +238,148 @@ export class SimulatorService {
     ruleSetId: string,
     params: SimulationParams,
   ): Promise<SimulationReport> {
-    // 1. Verify RuleSet exists and belongs to tenant
-    const dbRuleSet = await this.db.client.ruleSet.findFirst({
-      where: { id: ruleSetId, tenantId },
-      include: { rules: true },
-    });
-    if (!dbRuleSet) {
-      throw new NotFoundException(`RuleSet ${ruleSetId} not found`);
-    }
-
-    // 2. Create SimulationRun record
-    const simulationRun = await this.db.client.simulationRun.create({
-      data: {
-        tenantId,
-        ruleSetId,
-        userId,
-        status: 'RUNNING',
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        parameters: params as any,
-      },
-    });
-
-    try {
-      // 3. Build the engine RuleSet
-      const ruleSet = buildRuleSet(dbRuleSet);
-
-      // 4. Load employees with optional filters
-      const employeeWhere: Record<string, unknown> = { tenantId };
-      if (params.departmentFilter?.length) {
-        employeeWhere['department'] = { in: params.departmentFilter };
-      }
-      if (params.levelFilter?.length) {
-        employeeWhere['level'] = { in: params.levelFilter };
-      }
-      if (params.locationFilter?.length) {
-        employeeWhere['location'] = { in: params.locationFilter };
-      }
-
-      const employees = await this.db.client.employee.findMany({
-        where: employeeWhere,
-        take: params.maxEmployees ?? undefined,
+    return this.db.forTenant(tenantId, async (tx) => {
+      // 1. Verify RuleSet exists and belongs to tenant
+      const dbRuleSet = await tx.ruleSet.findFirst({
+        where: { id: ruleSetId, tenantId },
+        include: { rules: true },
       });
-
-      // 5. Evaluate each employee
-      const results: EmployeeSimResult[] = [];
-      for (const emp of employees) {
-        const empData = toEmployeeData(emp);
-        const evalResult = evaluateRules(empData, ruleSet);
-
-        const baseSalary = Number(emp.baseSalary);
-        const totalComp = Number(emp.totalComp);
-        const totalChange = evalResult.totalMerit + evalResult.totalBonus + evalResult.totalLTI;
-        const changePercent = baseSalary > 0 ? (totalChange / baseSalary) * 100 : 0;
-
-        const simResult: EmployeeSimResult = {
-          employeeId: emp.id,
-          employeeCode: emp.employeeCode,
-          name: `${emp.firstName} ${emp.lastName}`,
-          department: emp.department,
-          level: emp.level,
-          before: { baseSalary, totalComp },
-          after: {
-            merit: evalResult.totalMerit,
-            bonus: evalResult.totalBonus,
-            lti: evalResult.totalLTI,
-            newTotal: totalComp + totalChange,
-          },
-          changePercent: Math.round(changePercent * 100) / 100,
-          blocked: evalResult.blocked,
-          flags: evalResult.flags,
-        };
-
-        results.push(simResult);
-
-        // Store individual result
-        await this.db.client.simulationResult.create({
-          data: {
-            simulationRunId: simulationRun.id,
-            employeeId: emp.id,
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            input: empData as any,
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            output: evalResult as any,
-            delta: {
-              merit: evalResult.totalMerit,
-              bonus: evalResult.totalBonus,
-              lti: evalResult.totalLTI,
-              changePercent: simResult.changePercent,
-              blocked: evalResult.blocked,
-            },
-          },
-        });
+      if (!dbRuleSet) {
+        throw new NotFoundException(`RuleSet ${ruleSetId} not found`);
       }
 
-      // 6. Build impact summary and detect outliers
-      const impactSummary = buildImpactSummary(results);
-      const outliers = detectOutliers(results);
-
-      // 7. Update SimulationRun as completed
-      await this.db.client.simulationRun.update({
-        where: { id: simulationRun.id },
+      // 2. Create SimulationRun record
+      const simulationRun = await tx.simulationRun.create({
         data: {
-          status: 'COMPLETED',
+          tenantId,
+          ruleSetId,
+          userId,
+          status: 'RUNNING',
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          impactSummary: impactSummary as any,
-          completedAt: new Date(),
+          parameters: params as any,
         },
       });
 
-      this.logger.log(`Simulation ${simulationRun.id} completed: ${results.length} employees processed`);
+      try {
+        // 3. Build the engine RuleSet
+        const ruleSet = buildRuleSet(dbRuleSet);
 
-      return {
-        simulationRunId: simulationRun.id,
-        ruleSetId,
-        totalEmployees: results.length,
-        results,
-        impactSummary,
-        outliers,
-      };
-    } catch (error) {
-      // Mark as failed
-      await this.db.client.simulationRun.update({
-        where: { id: simulationRun.id },
-        data: { status: 'FAILED' },
-      });
-      throw error;
-    }
+        // 4. Load employees with optional filters
+        const employeeWhere: Record<string, unknown> = { tenantId };
+        if (params.departmentFilter?.length) {
+          employeeWhere['department'] = { in: params.departmentFilter };
+        }
+        if (params.levelFilter?.length) {
+          employeeWhere['level'] = { in: params.levelFilter };
+        }
+        if (params.locationFilter?.length) {
+          employeeWhere['location'] = { in: params.locationFilter };
+        }
+
+        const employees = await tx.employee.findMany({
+          where: employeeWhere,
+          take: params.maxEmployees ?? undefined,
+        });
+
+        // 5. Evaluate each employee
+        const results: EmployeeSimResult[] = [];
+        for (const emp of employees) {
+          const empData = toEmployeeData(emp);
+          const evalResult = evaluateRules(empData, ruleSet);
+
+          const baseSalary = Number(emp.baseSalary);
+          const totalComp = Number(emp.totalComp);
+          const totalChange = evalResult.totalMerit + evalResult.totalBonus + evalResult.totalLTI;
+          const changePercent = baseSalary > 0 ? (totalChange / baseSalary) * 100 : 0;
+
+          const simResult: EmployeeSimResult = {
+            employeeId: emp.id,
+            employeeCode: emp.employeeCode,
+            name: `${emp.firstName} ${emp.lastName}`,
+            department: emp.department,
+            level: emp.level,
+            before: { baseSalary, totalComp },
+            after: {
+              merit: evalResult.totalMerit,
+              bonus: evalResult.totalBonus,
+              lti: evalResult.totalLTI,
+              newTotal: totalComp + totalChange,
+            },
+            changePercent: Math.round(changePercent * 100) / 100,
+            blocked: evalResult.blocked,
+            flags: evalResult.flags,
+          };
+
+          results.push(simResult);
+
+          // Store individual result
+          await tx.simulationResult.create({
+            data: {
+              simulationRunId: simulationRun.id,
+              employeeId: emp.id,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              input: empData as any,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              output: evalResult as any,
+              delta: {
+                merit: evalResult.totalMerit,
+                bonus: evalResult.totalBonus,
+                lti: evalResult.totalLTI,
+                changePercent: simResult.changePercent,
+                blocked: evalResult.blocked,
+              },
+            },
+          });
+        }
+
+        // 6. Build impact summary and detect outliers
+        const impactSummary = buildImpactSummary(results);
+        const outliers = detectOutliers(results);
+
+        // 7. Update SimulationRun as completed
+        await tx.simulationRun.update({
+          where: { id: simulationRun.id },
+          data: {
+            status: 'COMPLETED',
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            impactSummary: impactSummary as any,
+            completedAt: new Date(),
+          },
+        });
+
+        this.logger.log(
+          `Simulation ${simulationRun.id} completed: ${results.length} employees processed`,
+        );
+
+        return {
+          simulationRunId: simulationRun.id,
+          ruleSetId,
+          totalEmployees: results.length,
+          results,
+          impactSummary,
+          outliers,
+        };
+      } catch (error) {
+        // Mark as failed
+        await tx.simulationRun.update({
+          where: { id: simulationRun.id },
+          data: { status: 'FAILED' },
+        });
+        throw error;
+      }
+    });
   }
 
   /**
    * Retrieve a previously run simulation by ID.
    */
   async getSimulation(tenantId: string, simulationRunId: string): Promise<SimulationReport> {
-    const run = await this.db.client.simulationRun.findFirst({
-      where: { id: simulationRunId, tenantId },
-      include: { results: true },
-    });
+    const run = await this.db.forTenant(tenantId, (tx) =>
+      tx.simulationRun.findFirst({
+        where: { id: simulationRunId, tenantId },
+        include: { results: true },
+      }),
+    );
     if (!run) {
       throw new NotFoundException(`SimulationRun ${simulationRunId} not found`);
     }
@@ -377,7 +401,11 @@ export class SimulatorService {
           merit: Number(delta?.['merit'] ?? 0),
           bonus: Number(delta?.['bonus'] ?? 0),
           lti: Number(delta?.['lti'] ?? 0),
-          newTotal: Number(input['totalComp'] ?? 0) + Number(delta?.['merit'] ?? 0) + Number(delta?.['bonus'] ?? 0) + Number(delta?.['lti'] ?? 0),
+          newTotal:
+            Number(input['totalComp'] ?? 0) +
+            Number(delta?.['merit'] ?? 0) +
+            Number(delta?.['bonus'] ?? 0) +
+            Number(delta?.['lti'] ?? 0),
         },
         changePercent: Number(delta?.['changePercent'] ?? 0),
         blocked: Boolean(delta?.['blocked']),
@@ -385,7 +413,8 @@ export class SimulatorService {
       };
     });
 
-    const impactSummary = (run.impactSummary as unknown as ImpactSummary) ?? buildImpactSummary(results);
+    const impactSummary =
+      (run.impactSummary as unknown as ImpactSummary) ?? buildImpactSummary(results);
     const outliers = detectOutliers(results);
 
     return {

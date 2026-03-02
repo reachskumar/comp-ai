@@ -46,6 +46,15 @@ const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
+/**
+ * Helper: Set the RLS tenant context for the current connection.
+ * This allows seeding to work with FORCE ROW LEVEL SECURITY enabled.
+ * Uses the raw pool (not Prisma) to avoid transaction scoping issues.
+ */
+async function setRlsTenantContext(tenantId: string) {
+  await pool.query(`SET app.current_tenant_id = '${tenantId}'`);
+}
+
 async function main() {
   console.log('🌱 Seeding database...');
 
@@ -53,7 +62,7 @@ async function main() {
   const adminPasswordHash = await bcrypt.hash('Admin123!@#', 12);
   const demoPasswordHash = await bcrypt.hash('Demo123!@#', 12);
 
-  // 1. Create tenant
+  // 1. Create tenant (Tenant table is NOT subject to RLS)
   const tenant = await prisma.tenant.upsert({
     where: { slug: 'acme' },
     update: {},
@@ -65,6 +74,11 @@ async function main() {
     },
   });
   console.log(`  ✅ Tenant: ${tenant.name} (${tenant.id})`);
+
+  // Set RLS context for all subsequent operations
+  // This sets app.current_tenant_id on the pool connection so RLS policies pass
+  await setRlsTenantContext(tenant.id);
+  console.log(`  🔒 RLS context set for tenant: ${tenant.id}`);
 
   // 2. Create admin user
   const admin = await prisma.user.upsert({

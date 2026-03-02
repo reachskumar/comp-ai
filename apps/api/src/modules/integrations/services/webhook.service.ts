@@ -16,14 +16,6 @@ export class WebhookService {
   constructor(private readonly db: DatabaseService) {}
 
   async create(tenantId: string, dto: CreateWebhookDto) {
-    // Verify connector belongs to tenant
-    const connector = await this.db.client.integrationConnector.findFirst({
-      where: { id: dto.connectorId, tenantId },
-    });
-    if (!connector) {
-      throw new NotFoundException(`Connector ${dto.connectorId} not found`);
-    }
-
     // Outbound webhooks must use HTTPS
     if (dto.direction === 'outbound' && !dto.url.startsWith('https://')) {
       throw new BadRequestException('Outbound webhooks require HTTPS URLs');
@@ -31,21 +23,28 @@ export class WebhookService {
 
     // Generate a secret for HMAC signing
     const secret = crypto.randomBytes(32).toString('hex');
-    const secretHash = crypto
-      .createHash('sha256')
-      .update(secret)
-      .digest('hex');
+    const secretHash = crypto.createHash('sha256').update(secret).digest('hex');
 
-    const webhook = await this.db.client.webhookEndpoint.create({
-      data: {
-        connectorId: dto.connectorId,
-        tenantId,
-        url: dto.url,
-        direction: dto.direction ?? 'inbound',
-        events: dto.events,
-        secretHash,
-        metadata: {},
-      },
+    const webhook = await this.db.forTenant(tenantId, async (tx) => {
+      // Verify connector belongs to tenant
+      const connector = await tx.integrationConnector.findFirst({
+        where: { id: dto.connectorId, tenantId },
+      });
+      if (!connector) {
+        throw new NotFoundException(`Connector ${dto.connectorId} not found`);
+      }
+
+      return tx.webhookEndpoint.create({
+        data: {
+          connectorId: dto.connectorId,
+          tenantId,
+          url: dto.url,
+          direction: dto.direction ?? 'inbound',
+          events: dto.events,
+          secretHash,
+          metadata: {},
+        },
+      });
     });
 
     this.logger.log(`Webhook endpoint created: ${webhook.id}`);
@@ -60,16 +59,18 @@ export class WebhookService {
   }
 
   async findByConnector(tenantId: string, connectorId: string) {
-    const connector = await this.db.client.integrationConnector.findFirst({
-      where: { id: connectorId, tenantId },
-    });
-    if (!connector) {
-      throw new NotFoundException(`Connector ${connectorId} not found`);
-    }
+    const webhooks = await this.db.forTenant(tenantId, async (tx) => {
+      const connector = await tx.integrationConnector.findFirst({
+        where: { id: connectorId, tenantId },
+      });
+      if (!connector) {
+        throw new NotFoundException(`Connector ${connectorId} not found`);
+      }
 
-    const webhooks = await this.db.client.webhookEndpoint.findMany({
-      where: { connectorId, tenantId },
-      orderBy: { createdAt: 'desc' },
+      return tx.webhookEndpoint.findMany({
+        where: { connectorId, tenantId },
+        orderBy: { createdAt: 'desc' },
+      });
     });
 
     // Never expose secretHash in list responses
@@ -80,26 +81,26 @@ export class WebhookService {
   }
 
   async delete(tenantId: string, id: string) {
-    const webhook = await this.db.client.webhookEndpoint.findFirst({
-      where: { id, tenantId },
+    return this.db.forTenant(tenantId, async (tx) => {
+      const webhook = await tx.webhookEndpoint.findFirst({
+        where: { id, tenantId },
+      });
+      if (!webhook) {
+        throw new NotFoundException(`Webhook endpoint ${id} not found`);
+      }
+      await tx.webhookEndpoint.delete({ where: { id } });
+      return { deleted: true };
     });
-    if (!webhook) {
-      throw new NotFoundException(`Webhook endpoint ${id} not found`);
-    }
-    await this.db.client.webhookEndpoint.delete({ where: { id } });
-    return { deleted: true };
   }
 
   /**
    * Process an inbound webhook.
    * Verifies HMAC-SHA256 signature using constant-time comparison.
    */
-  async processInbound(
-    connectorId: string,
-    signature: string | undefined,
-    body: unknown,
-  ) {
+  async processInbound(connectorId: string, signature: string | undefined, body: unknown) {
+    // RLS-exempt: processInbound doesn't have tenantId — webhook lookup by connectorId
     const webhook = await this.db.client.webhookEndpoint.findFirst({
+      // RLS-exempt
       where: { connectorId, direction: 'inbound', isActive: true },
     });
 
@@ -113,11 +114,7 @@ export class WebhookService {
     }
 
     // Verify HMAC-SHA256 signature with constant-time comparison
-    const verified = this.verifyHmacSignature(
-      webhook.secretHash!,
-      signature,
-      body,
-    );
+    const verified = this.verifyHmacSignature(webhook.secretHash!, signature, body);
 
     if (!verified) {
       this.logger.warn(`Invalid webhook signature for connector ${connectorId}`);
@@ -126,6 +123,7 @@ export class WebhookService {
 
     // Update last triggered timestamp
     await this.db.client.webhookEndpoint.update({
+      // RLS-exempt: inbound webhook processing
       where: { id: webhook.id },
       data: { lastTriggeredAt: new Date() },
     });
@@ -154,10 +152,7 @@ export class WebhookService {
     };
 
     const payloadStr = JSON.stringify(signedPayload);
-    const signature = crypto
-      .createHmac('sha256', secret)
-      .update(payloadStr)
-      .digest('hex');
+    const signature = crypto.createHmac('sha256', secret).update(payloadStr).digest('hex');
 
     return { signature, idempotencyKey, signedPayload };
   }
@@ -193,4 +188,3 @@ export class WebhookService {
     }
   }
 }
-
