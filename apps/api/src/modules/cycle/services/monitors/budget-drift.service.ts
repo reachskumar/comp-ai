@@ -1,11 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { DatabaseService } from '../../../../database';
-import type {
-  BudgetDriftResult,
-  DepartmentDrift,
-  BudgetProjection,
-  MonitorAlert,
-} from './types';
+import type { BudgetDriftResult, DepartmentDrift, BudgetProjection, MonitorAlert } from './types';
 
 const DEFAULT_DRIFT_THRESHOLD_PCT = 5;
 
@@ -25,38 +20,30 @@ export class BudgetDriftService {
     cycleId: string,
     thresholdPct = DEFAULT_DRIFT_THRESHOLD_PCT,
   ): Promise<BudgetDriftResult> {
-    const cycle = await this.db.client.compCycle.findFirst({
-      where: { id: cycleId, tenantId },
-      include: { budgets: true },
-    });
+    const cycle = await this.db.forTenant(tenantId, (tx) =>
+      tx.compCycle.findFirst({
+        where: { id: cycleId, tenantId },
+        include: { budgets: true },
+      }),
+    );
 
     if (!cycle) {
       throw new Error(`Cycle ${cycleId} not found`);
     }
 
     const budgetTotal = Number(cycle.budgetTotal);
-    const _totalAllocated = cycle.budgets.reduce(
-      (sum, b) => sum + Number(b.allocated),
-      0,
-    );
-    const totalSpent = cycle.budgets.reduce(
-      (sum, b) => sum + Number(b.spent),
-      0,
-    );
+    const _totalAllocated = cycle.budgets.reduce((sum, b) => sum + Number(b.allocated), 0);
+    const totalSpent = cycle.budgets.reduce((sum, b) => sum + Number(b.spent), 0);
 
     const overallDriftPct =
-      budgetTotal > 0
-        ? Math.round(((totalSpent - budgetTotal) / budgetTotal) * 10000) / 100
-        : 0;
+      budgetTotal > 0 ? Math.round(((totalSpent - budgetTotal) / budgetTotal) * 10000) / 100 : 0;
 
     const departmentDrifts: DepartmentDrift[] = cycle.budgets.map((b) => {
       const allocated = Number(b.allocated);
       const spent = Number(b.spent);
       const remaining = Number(b.remaining);
       const driftPct =
-        allocated > 0
-          ? Math.round(((spent - allocated) / allocated) * 10000) / 100
-          : 0;
+        allocated > 0 ? Math.round(((spent - allocated) / allocated) * 10000) / 100 : 0;
 
       return {
         department: b.department,
@@ -144,18 +131,9 @@ export class BudgetDriftService {
     const end = new Date(cycle.endDate);
     const budgetTotal = Number(cycle.budgetTotal);
 
-    const totalDays = Math.max(
-      1,
-      (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24),
-    );
-    const daysElapsed = Math.max(
-      1,
-      (now.getTime() - start.getTime()) / (1000 * 60 * 60 * 24),
-    );
-    const daysRemaining = Math.max(
-      0,
-      (end.getTime() - now.getTime()) / (1000 * 60 * 60 * 24),
-    );
+    const totalDays = Math.max(1, (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
+    const daysElapsed = Math.max(1, (now.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
+    const daysRemaining = Math.max(0, (end.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 
     const dailyBurnRate = totalSpent / daysElapsed;
     const projectedTotal = dailyBurnRate * totalDays;
@@ -176,33 +154,34 @@ export class BudgetDriftService {
     alerts: MonitorAlert[],
   ): Promise<void> {
     // Find an admin user to associate notifications with
-    const adminUser = await this.db.client.user.findFirst({
-      where: { tenantId, role: 'ADMIN' },
-      select: { id: true },
-    });
-
-    if (!adminUser) {
-      this.logger.warn(`No admin user found for tenant ${tenantId}, skipping alert persistence`);
-      return;
-    }
-
-    for (const alert of alerts) {
-      await this.db.client.notification.create({
-        data: {
-          tenantId,
-          userId: adminUser.id,
-          type: alert.alertType,
-          title: alert.title,
-          body: `Severity: ${alert.severity}`,
-          metadata: {
-            cycleId,
-            alertType: alert.alertType,
-            severity: alert.severity,
-            ...alert.details,
-          } as never,
-        },
+    await this.db.forTenant(tenantId, async (tx) => {
+      const adminUser = await tx.user.findFirst({
+        where: { tenantId, role: 'ADMIN' },
+        select: { id: true },
       });
-    }
+
+      if (!adminUser) {
+        this.logger.warn(`No admin user found for tenant ${tenantId}, skipping alert persistence`);
+        return;
+      }
+
+      for (const alert of alerts) {
+        await tx.notification.create({
+          data: {
+            tenantId,
+            userId: adminUser.id,
+            type: alert.alertType,
+            title: alert.title,
+            body: `Severity: ${alert.severity}`,
+            metadata: {
+              cycleId,
+              alertType: alert.alertType,
+              severity: alert.severity,
+              ...alert.details,
+            } as never,
+          },
+        });
+      }
+    });
   }
 }
-

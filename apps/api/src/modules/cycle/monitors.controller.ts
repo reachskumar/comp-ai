@@ -62,14 +62,17 @@ export class MonitorsController {
     }
 
     // Filter by severity in metadata
-    const notifications = await this.db.client.notification.findMany({
-      where,
-      skip,
-      take: limit,
-      orderBy: { createdAt: 'desc' },
-    });
-
-    const total = await this.db.client.notification.count({ where });
+    const [notifications, total] = await this.db.forTenant(req.user.tenantId, (tx) =>
+      Promise.all([
+        tx.notification.findMany({
+          where,
+          skip,
+          take: limit,
+          orderBy: { createdAt: 'desc' },
+        }),
+        tx.notification.count({ where }),
+      ]),
+    );
 
     // Filter by severity if specified (post-filter since it's in metadata)
     const filtered = query.severity
@@ -110,51 +113,31 @@ export class MonitorsController {
     @Query() dto: TriggerMonitorDto,
     @Request() req: AuthRequest,
   ) {
-    return this.budgetDrift.detect(
-      req.user.tenantId,
-      cycleId,
-      dto.driftThresholdPct,
-    );
+    return this.budgetDrift.detect(req.user.tenantId, cycleId, dto.driftThresholdPct);
   }
 
   @Get('policy-violations')
   @ApiOperation({ summary: 'Get current policy violations' })
-  async getPolicyViolations(
-    @Param('cycleId') cycleId: string,
-    @Request() req: AuthRequest,
-  ) {
+  async getPolicyViolations(@Param('cycleId') cycleId: string, @Request() req: AuthRequest) {
     return this.policyViolation.detect(req.user.tenantId, cycleId);
   }
 
   @Get('outliers')
   @ApiOperation({ summary: 'Get current outlier analysis' })
-  async getOutliers(
-    @Param('cycleId') cycleId: string,
-    @Request() req: AuthRequest,
-  ) {
+  async getOutliers(@Param('cycleId') cycleId: string, @Request() req: AuthRequest) {
     return this.outlierDetector.detect(req.user.tenantId, cycleId);
   }
 
   @Get('exec-summary')
   @ApiOperation({ summary: 'Generate executive summary' })
-  async getExecSummary(
-    @Param('cycleId') cycleId: string,
-    @Request() req: AuthRequest,
-  ) {
+  async getExecSummary(@Param('cycleId') cycleId: string, @Request() req: AuthRequest) {
     return this.execSummary.generate(req.user.tenantId, cycleId);
   }
 
   @Get('exec-summary/markdown')
   @ApiOperation({ summary: 'Generate executive summary as markdown' })
-  async getExecSummaryMarkdown(
-    @Param('cycleId') cycleId: string,
-    @Request() req: AuthRequest,
-  ) {
-    const summary = await this.execSummary.generate(
-      req.user.tenantId,
-      cycleId,
-    );
+  async getExecSummaryMarkdown(@Param('cycleId') cycleId: string, @Request() req: AuthRequest) {
+    const summary = await this.execSummary.generate(req.user.tenantId, cycleId);
     return { markdown: this.execSummary.toMarkdown(summary) };
   }
 }
-

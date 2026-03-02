@@ -406,27 +406,31 @@ export class ImportService {
     await this.findJob(jobId, tenantId);
 
     // Create analysis record
-    const analysis = await this.db.client.importAIAnalysis.create({
-      data: {
-        tenantId,
-        userId,
-        importJobId: jobId,
-        status: 'RUNNING',
-        startedAt: new Date(),
-      },
-    });
+    const analysis = await this.db.forTenant(tenantId, (tx) =>
+      tx.importAIAnalysis.create({
+        data: {
+          tenantId,
+          userId,
+          importJobId: jobId,
+          status: 'RUNNING',
+          startedAt: new Date(),
+        },
+      }),
+    );
 
     // Build the DB adapter for the AI graph
     const dbAdapter: DataQualityDbAdapter = {
       getImportIssues: async (_tid, filters) => {
-        return this.db.client.importIssue.findMany({
-          where: {
-            importJobId: filters.importJobId,
-            ...(filters.severity ? { severity: filters.severity as never } : {}),
-            ...(filters.issueType ? { issueType: filters.issueType as never } : {}),
-          },
-          take: filters.limit ?? 100,
-        });
+        return this.db.forTenant(tenantId, (tx) =>
+          tx.importIssue.findMany({
+            where: {
+              importJobId: filters.importJobId,
+              ...(filters.severity ? { severity: filters.severity as never } : {}),
+              ...(filters.issueType ? { issueType: filters.issueType as never } : {}),
+            },
+            take: filters.limit ?? 100,
+          }),
+        );
       },
       getSampleData: async (_tid, filters) => {
         const job = await this.findJob(filters.importJobId, tenantId);
@@ -458,23 +462,25 @@ export class ImportService {
         return report.fieldReports;
       },
       getHistoricalImports: async (_tid, filters) => {
-        return this.db.client.importJob.findMany({
-          where: {
-            tenantId,
-            ...(filters.status ? { status: filters.status as never } : {}),
-          },
-          take: filters.limit ?? 10,
-          orderBy: { createdAt: 'desc' },
-          select: {
-            id: true,
-            fileName: true,
-            status: true,
-            totalRows: true,
-            cleanRows: true,
-            rejectRows: true,
-            createdAt: true,
-          },
-        });
+        return this.db.forTenant(tenantId, (tx) =>
+          tx.importJob.findMany({
+            where: {
+              tenantId,
+              ...(filters.status ? { status: filters.status as never } : {}),
+            },
+            take: filters.limit ?? 10,
+            orderBy: { createdAt: 'desc' },
+            select: {
+              id: true,
+              fileName: true,
+              status: true,
+              totalRows: true,
+              cleanRows: true,
+              rejectRows: true,
+              createdAt: true,
+            },
+          }),
+        );
       },
     };
 
@@ -484,17 +490,19 @@ export class ImportService {
         dbAdapter,
       );
 
-      await this.db.client.importAIAnalysis.update({
-        where: { id: analysis.id },
-        data: {
-          status: 'COMPLETED',
-          qualityScore: result.report?.qualityScore ?? null,
-          summary: result.report?.summary ?? null,
-          report: (result.report as never) ?? {},
-          rawResponse: result.rawResponse,
-          completedAt: new Date(),
-        },
-      });
+      await this.db.forTenant(tenantId, (tx) =>
+        tx.importAIAnalysis.update({
+          where: { id: analysis.id },
+          data: {
+            status: 'COMPLETED',
+            qualityScore: result.report?.qualityScore ?? null,
+            summary: result.report?.summary ?? null,
+            report: (result.report as never) ?? {},
+            rawResponse: result.rawResponse,
+            completedAt: new Date(),
+          },
+        }),
+      );
 
       return {
         id: analysis.id,
@@ -507,14 +515,16 @@ export class ImportService {
       const errMsg = error instanceof Error ? error.message : String(error);
       this.logger.error(`AI analysis failed for job ${jobId}: ${errMsg}`);
 
-      await this.db.client.importAIAnalysis.update({
-        where: { id: analysis.id },
-        data: {
-          status: 'FAILED',
-          errorMsg: errMsg,
-          completedAt: new Date(),
-        },
-      });
+      await this.db.forTenant(tenantId, (tx) =>
+        tx.importAIAnalysis.update({
+          where: { id: analysis.id },
+          data: {
+            status: 'FAILED',
+            errorMsg: errMsg,
+            completedAt: new Date(),
+          },
+        }),
+      );
 
       throw new BadRequestException(`AI analysis failed: ${errMsg}`);
     }
@@ -523,10 +533,12 @@ export class ImportService {
   async getAIReport(jobId: string, tenantId: string) {
     await this.findJob(jobId, tenantId);
 
-    const analysis = await this.db.client.importAIAnalysis.findFirst({
-      where: { importJobId: jobId, tenantId },
-      orderBy: { createdAt: 'desc' },
-    });
+    const analysis = await this.db.forTenant(tenantId, (tx) =>
+      tx.importAIAnalysis.findFirst({
+        where: { importJobId: jobId, tenantId },
+        orderBy: { createdAt: 'desc' },
+      }),
+    );
 
     if (!analysis) {
       throw new NotFoundException('No AI analysis found for this import job. Trigger one first.');
@@ -584,9 +596,11 @@ export class ImportService {
   // ─── Private Helpers ──────────────────────────────────────
 
   private async findJob(jobId: string, tenantId: string) {
-    const job = await this.db.client.importJob.findFirst({
-      where: { id: jobId, tenantId },
-    });
+    const job = await this.db.forTenant(tenantId, (tx) =>
+      tx.importJob.findFirst({
+        where: { id: jobId, tenantId },
+      }),
+    );
     if (!job) {
       throw new NotFoundException(`Import job ${jobId} not found`);
     }

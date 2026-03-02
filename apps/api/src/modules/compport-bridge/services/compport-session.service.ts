@@ -88,7 +88,9 @@ export class CompportSessionService {
       this.jwtService.signAsync(platformPayload, { expiresIn: '7d' }),
     ]);
 
-    this.logger.log(`Token exchanged for user: ${user.email} (auto-provisioned: ${user.wasCreated})`);
+    this.logger.log(
+      `Token exchanged for user: ${user.email} (auto-provisioned: ${user.wasCreated})`,
+    );
 
     return {
       accessToken,
@@ -120,10 +122,7 @@ export class CompportSessionService {
         .update(`${headerB64}.${payloadB64}`)
         .digest('base64url');
 
-      if (!crypto.timingSafeEqual(
-        Buffer.from(signatureB64!),
-        Buffer.from(expectedSig),
-      )) {
+      if (!crypto.timingSafeEqual(Buffer.from(signatureB64!), Buffer.from(expectedSig))) {
         throw new Error('Invalid signature');
       }
 
@@ -195,22 +194,6 @@ export class CompportSessionService {
     tenantId: string;
     wasCreated: boolean;
   }> {
-    // Find existing user by email within the tenant
-    const existingUser = await this.db.client.user.findFirst({
-      where: { email: payload.email, tenantId: payload.tenant_id },
-    });
-
-    if (existingUser) {
-      return {
-        id: existingUser.id,
-        email: existingUser.email,
-        name: existingUser.name,
-        role: existingUser.role,
-        tenantId: existingUser.tenantId,
-        wasCreated: false,
-      };
-    }
-
     // Auto-provision user
     const mapRole = (phpRole: string): UserRole => {
       const roleMap: Record<string, UserRole> = {
@@ -225,26 +208,44 @@ export class CompportSessionService {
       return roleMap[phpRole.toLowerCase()] ?? UserRole.EMPLOYEE;
     };
 
-    const newUser = await this.db.client.user.create({
-      data: {
-        email: payload.email,
-        name: payload.name || payload.email.split('@')[0] || 'Compport User',
-        role: mapRole(payload.role),
-        tenantId: payload.tenant_id,
-        passwordHash: '', // No password — SSO only
-      },
+    return this.db.forTenant(payload.tenant_id, async (tx) => {
+      // Find existing user by email within the tenant
+      const existingUser = await tx.user.findFirst({
+        where: { email: payload.email, tenantId: payload.tenant_id },
+      });
+
+      if (existingUser) {
+        return {
+          id: existingUser.id,
+          email: existingUser.email,
+          name: existingUser.name,
+          role: existingUser.role,
+          tenantId: existingUser.tenantId,
+          wasCreated: false,
+        };
+      }
+
+      const newUser = await tx.user.create({
+        data: {
+          email: payload.email,
+          name: payload.name || payload.email.split('@')[0] || 'Compport User',
+          role: mapRole(payload.role),
+          tenantId: payload.tenant_id,
+          passwordHash: '', // No password — SSO only
+        },
+      });
+
+      this.logger.log(`Auto-provisioned user from Compport: ${newUser.email}`);
+
+      return {
+        id: newUser.id,
+        email: newUser.email,
+        name: newUser.name,
+        role: newUser.role,
+        tenantId: newUser.tenantId,
+        wasCreated: true,
+      };
     });
-
-    this.logger.log(`Auto-provisioned user from Compport: ${newUser.email}`);
-
-    return {
-      id: newUser.id,
-      email: newUser.email,
-      name: newUser.name,
-      role: newUser.role,
-      tenantId: newUser.tenantId,
-      wasCreated: true,
-    };
   }
 
   /**
@@ -264,4 +265,3 @@ export class CompportSessionService {
     }
   }
 }
-

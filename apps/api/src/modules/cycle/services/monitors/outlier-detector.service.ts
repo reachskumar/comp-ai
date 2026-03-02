@@ -20,16 +20,15 @@ export class OutlierDetectorService {
    * Detect outliers in cycle recommendations using statistical analysis.
    * Flags: >2σ from cohort mean, large YoY changes, compression/inversion risks.
    */
-  async detect(
-    tenantId: string,
-    cycleId: string,
-  ): Promise<OutlierResult> {
-    const recommendations = await this.db.client.compRecommendation.findMany({
-      where: { cycleId },
-      include: {
-        employee: true,
-      },
-    });
+  async detect(tenantId: string, cycleId: string): Promise<OutlierResult> {
+    const recommendations = await this.db.forTenant(tenantId, (tx) =>
+      tx.compRecommendation.findMany({
+        where: { cycleId },
+        include: {
+          employee: true,
+        },
+      }),
+    );
 
     if (recommendations.length === 0) {
       return {
@@ -56,9 +55,7 @@ export class OutlierDetectorService {
     for (const [cohortKey, cohortRecs] of cohorts) {
       const changePcts = cohortRecs.map((r) => {
         const base = Number(r.currentValue);
-        return base > 0
-          ? ((Number(r.proposedValue) - base) / base) * 100
-          : 0;
+        return base > 0 ? ((Number(r.proposedValue) - base) / base) * 100 : 0;
       });
 
       const { mean, stdDev } = this.computeStats(changePcts);
@@ -121,9 +118,7 @@ export class OutlierDetectorService {
       bySeverity,
     };
 
-    this.logger.log(
-      `Outliers for cycle ${cycleId}: ${outliers.length} found`,
-    );
+    this.logger.log(`Outliers for cycle ${cycleId}: ${outliers.length} found`);
 
     return result;
   }
@@ -189,9 +184,7 @@ export class OutlierDetectorService {
 
     for (const [, deptRecs] of byDept) {
       // Sort by level to detect compression between levels
-      const sorted = [...deptRecs].sort((a, b) =>
-        a.employee.level.localeCompare(b.employee.level),
-      );
+      const sorted = [...deptRecs].sort((a, b) => a.employee.level.localeCompare(b.employee.level));
 
       for (let i = 1; i < sorted.length; i++) {
         const junior = sorted[i - 1]!;
@@ -245,8 +238,7 @@ export class OutlierDetectorService {
   private computeStats(values: number[]): { mean: number; stdDev: number } {
     if (values.length === 0) return { mean: 0, stdDev: 0 };
     const mean = values.reduce((sum, v) => sum + v, 0) / values.length;
-    const variance =
-      values.reduce((sum, v) => sum + (v - mean) ** 2, 0) / values.length;
+    const variance = values.reduce((sum, v) => sum + (v - mean) ** 2, 0) / values.length;
     return { mean, stdDev: Math.sqrt(variance) };
   }
 
@@ -264,33 +256,34 @@ export class OutlierDetectorService {
     cycleId: string,
     alerts: MonitorAlert[],
   ): Promise<void> {
-    const adminUser = await this.db.client.user.findFirst({
-      where: { tenantId, role: 'ADMIN' },
-      select: { id: true },
-    });
-
-    if (!adminUser) {
-      this.logger.warn(`No admin user found for tenant ${tenantId}, skipping alert persistence`);
-      return;
-    }
-
-    for (const alert of alerts) {
-      await this.db.client.notification.create({
-        data: {
-          tenantId,
-          userId: adminUser.id,
-          type: alert.alertType,
-          title: alert.title,
-          body: `Severity: ${alert.severity}`,
-          metadata: {
-            cycleId,
-            alertType: alert.alertType,
-            severity: alert.severity,
-            ...alert.details,
-          } as never,
-        },
+    await this.db.forTenant(tenantId, async (tx) => {
+      const adminUser = await tx.user.findFirst({
+        where: { tenantId, role: 'ADMIN' },
+        select: { id: true },
       });
-    }
+
+      if (!adminUser) {
+        this.logger.warn(`No admin user found for tenant ${tenantId}, skipping alert persistence`);
+        return;
+      }
+
+      for (const alert of alerts) {
+        await tx.notification.create({
+          data: {
+            tenantId,
+            userId: adminUser.id,
+            type: alert.alertType,
+            title: alert.title,
+            body: `Severity: ${alert.severity}`,
+            metadata: {
+              cycleId,
+              alertType: alert.alertType,
+              severity: alert.severity,
+              ...alert.details,
+            } as never,
+          },
+        });
+      }
+    });
   }
 }
-

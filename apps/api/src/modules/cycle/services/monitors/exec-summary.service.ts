@@ -3,11 +3,7 @@ import { DatabaseService } from '../../../../database';
 import { BudgetDriftService } from './budget-drift.service';
 import { PolicyViolationService } from './policy-violation.service';
 import { OutlierDetectorService } from './outlier-detector.service';
-import type {
-  ExecSummary,
-  CycleProgress,
-  MonitorAlert,
-} from './types';
+import type { ExecSummary, CycleProgress, MonitorAlert } from './types';
 
 @Injectable()
 export class ExecSummaryService {
@@ -24,13 +20,12 @@ export class ExecSummaryService {
    * Generate a comprehensive executive summary for a cycle.
    * Aggregates all monitor results into a structured report.
    */
-  async generate(
-    tenantId: string,
-    cycleId: string,
-  ): Promise<ExecSummary> {
-    const cycle = await this.db.client.compCycle.findFirst({
-      where: { id: cycleId, tenantId },
-    });
+  async generate(tenantId: string, cycleId: string): Promise<ExecSummary> {
+    const cycle = await this.db.forTenant(tenantId, (tx) =>
+      tx.compCycle.findFirst({
+        where: { id: cycleId, tenantId },
+      }),
+    );
 
     if (!cycle) {
       throw new Error(`Cycle ${cycleId} not found`);
@@ -44,7 +39,7 @@ export class ExecSummaryService {
     ]);
 
     // Get cycle progress
-    const cycleProgress = await this.getCycleProgress(cycleId, cycle);
+    const cycleProgress = await this.getCycleProgress(tenantId, cycleId, cycle);
 
     // Determine blockers
     const blockers = this.identifyBlockers(
@@ -165,14 +160,17 @@ export class ExecSummaryService {
   }
 
   private async getCycleProgress(
+    tenantId: string,
     cycleId: string,
     cycle: { status: string; startDate: Date; endDate: Date },
   ): Promise<CycleProgress> {
-    const recStatusCounts = await this.db.client.compRecommendation.groupBy({
-      by: ['status'],
-      where: { cycleId },
-      _count: { id: true },
-    });
+    const recStatusCounts = await this.db.forTenant(tenantId, (tx) =>
+      tx.compRecommendation.groupBy({
+        by: ['status'],
+        where: { cycleId },
+        _count: { id: true },
+      }),
+    );
 
     const byStatus: Record<string, number> = {};
     let total = 0;
@@ -187,8 +185,14 @@ export class ExecSummaryService {
     const now = new Date();
     const start = new Date(cycle.startDate);
     const end = new Date(cycle.endDate);
-    const daysElapsed = Math.max(0, Math.round((now.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)));
-    const daysRemaining = Math.max(0, Math.round((end.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)));
+    const daysElapsed = Math.max(
+      0,
+      Math.round((now.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)),
+    );
+    const daysRemaining = Math.max(
+      0,
+      Math.round((end.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)),
+    );
 
     return {
       status: cycle.status,
@@ -214,18 +218,25 @@ export class ExecSummaryService {
     }
 
     if (criticalViolations > 0) {
-      blockers.push(`${criticalViolations} critical policy violation(s) require immediate attention`);
+      blockers.push(
+        `${criticalViolations} critical policy violation(s) require immediate attention`,
+      );
     }
 
     if (progress.daysRemaining <= 7 && progress.completionPct < 50) {
-      blockers.push(`Only ${progress.daysRemaining} days remaining with ${progress.completionPct}% completion`);
+      blockers.push(
+        `Only ${progress.daysRemaining} days remaining with ${progress.completionPct}% completion`,
+      );
     }
 
     return blockers;
   }
 
   private generateActionItems(
-    budgetStatus: { exceeded: boolean; departmentDrifts: Array<{ department: string; exceeded: boolean; driftPct: number }> },
+    budgetStatus: {
+      exceeded: boolean;
+      departmentDrifts: Array<{ department: string; exceeded: boolean; driftPct: number }>;
+    },
     violationResult: { totalViolations: number; bySeverity: Record<string, number> },
     outlierResult: { totalOutliers: number },
     progress: CycleProgress,
@@ -244,7 +255,9 @@ export class ExecSummaryService {
     }
 
     if ((violationResult.bySeverity['CRITICAL'] ?? 0) > 0) {
-      items.push(`Escalate ${violationResult.bySeverity['CRITICAL']} critical violation(s) to HR leadership`);
+      items.push(
+        `Escalate ${violationResult.bySeverity['CRITICAL']} critical violation(s) to HR leadership`,
+      );
     }
 
     if (outlierResult.totalOutliers > 0) {
@@ -263,35 +276,33 @@ export class ExecSummaryService {
     return items;
   }
 
-  private async persistAlert(
-    tenantId: string,
-    alert: MonitorAlert,
-  ): Promise<void> {
-    const adminUser = await this.db.client.user.findFirst({
-      where: { tenantId, role: 'ADMIN' },
-      select: { id: true },
-    });
+  private async persistAlert(tenantId: string, alert: MonitorAlert): Promise<void> {
+    await this.db.forTenant(tenantId, async (tx) => {
+      const adminUser = await tx.user.findFirst({
+        where: { tenantId, role: 'ADMIN' },
+        select: { id: true },
+      });
 
-    if (!adminUser) {
-      this.logger.warn(`No admin user found for tenant ${tenantId}, skipping alert persistence`);
-      return;
-    }
+      if (!adminUser) {
+        this.logger.warn(`No admin user found for tenant ${tenantId}, skipping alert persistence`);
+        return;
+      }
 
-    await this.db.client.notification.create({
-      data: {
-        tenantId,
-        userId: adminUser.id,
-        type: alert.alertType,
-        title: alert.title,
-        body: `Severity: ${alert.severity}`,
-        metadata: {
-          cycleId: alert.cycleId,
-          alertType: alert.alertType,
-          severity: alert.severity,
-          ...alert.details,
-        } as never,
-      },
+      await tx.notification.create({
+        data: {
+          tenantId,
+          userId: adminUser.id,
+          type: alert.alertType,
+          title: alert.title,
+          body: `Severity: ${alert.severity}`,
+          metadata: {
+            cycleId: alert.cycleId,
+            alertType: alert.alertType,
+            severity: alert.severity,
+            ...alert.details,
+          } as never,
+        },
+      });
     });
   }
 }
-

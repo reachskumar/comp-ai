@@ -97,7 +97,10 @@ export class MonitorProcessor extends WorkerHost {
    * Find all active cycles and enqueue monitor runs for each.
    */
   private async handleCheckActiveCycles(): Promise<{ cyclesFound: number }> {
+    // NOTE: This is a cross-tenant query (finds all active cycles across tenants).
+    // Each cycle is then processed in its own tenant-scoped context below.
     const activeCycles = await this.db.client.compCycle.findMany({
+      // RLS-exempt: cross-tenant scheduler
       where: {
         status: { in: ['ACTIVE', 'CALIBRATION', 'APPROVAL'] },
       },
@@ -129,9 +132,7 @@ export class MonitorProcessor extends WorkerHost {
   /**
    * Run all monitors for a specific cycle.
    */
-  private async handleRunMonitors(
-    job: Job<MonitorJobData>,
-  ): Promise<MonitorRunResult> {
+  private async handleRunMonitors(job: Job<MonitorJobData>): Promise<MonitorRunResult> {
     const { cycleId, tenantId } = job.data;
 
     this.logger.log(`Running monitors for cycle ${cycleId}`);
@@ -162,9 +163,7 @@ export class MonitorProcessor extends WorkerHost {
       alertsCreated: totalAlerts,
     });
 
-    this.logger.log(
-      `Monitor run complete for cycle ${cycleId}: ${totalAlerts} alert(s) created`,
-    );
+    this.logger.log(`Monitor run complete for cycle ${cycleId}: ${totalAlerts} alert(s) created`);
 
     return {
       cycleId,
@@ -179,35 +178,40 @@ export class MonitorProcessor extends WorkerHost {
   /**
    * Store the latest monitor run result in the cycle's settings JSON.
    */
-  private async storeRunResult(
-    cycleId: string,
-    result: MonitorRunResult,
-  ): Promise<void> {
-    const cycle = await this.db.client.compCycle.findUnique({
-      where: { id: cycleId },
-      select: { settings: true },
-    });
+  private async storeRunResult(cycleId: string, result: MonitorRunResult): Promise<void> {
+    // storeRunResult is called from the processor without direct tenantId access,
+    // so we use a raw transaction to look up and update the cycle atomically.
+    await this.db.client.$transaction(async (tx) => {
+      // RLS-exempt: system job updates cycle by PK
+      const cycle = await tx.compCycle.findUnique({
+        where: { id: cycleId },
+        select: { settings: true, tenantId: true },
+      });
 
-    const settings = (typeof cycle?.settings === 'object' && cycle.settings !== null
-      ? cycle.settings as Record<string, unknown>
-      : {}) as Record<string, unknown>;
+      if (!cycle) return;
 
-    // Keep last 10 monitor runs
-    const monitorHistory = Array.isArray(settings['monitorHistory'])
-      ? (settings['monitorHistory'] as MonitorRunResult[]).slice(-9)
-      : [];
-    monitorHistory.push(result);
+      const settings = (
+        typeof cycle.settings === 'object' && cycle.settings !== null
+          ? (cycle.settings as Record<string, unknown>)
+          : {}
+      ) as Record<string, unknown>;
 
-    await this.db.client.compCycle.update({
-      where: { id: cycleId },
-      data: {
-        settings: {
-          ...settings,
-          lastMonitorRun: result,
-          monitorHistory,
-        } as never,
-      },
+      // Keep last 10 monitor runs
+      const monitorHistory = Array.isArray(settings['monitorHistory'])
+        ? (settings['monitorHistory'] as MonitorRunResult[]).slice(-9)
+        : [];
+      monitorHistory.push(result);
+
+      await tx.compCycle.update({
+        where: { id: cycleId },
+        data: {
+          settings: {
+            ...settings,
+            lastMonitorRun: result,
+            monitorHistory,
+          } as never,
+        },
+      });
     });
   }
 }
-

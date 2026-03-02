@@ -41,8 +41,10 @@ export class CompportDbService {
     try {
       const tableName = `${this.config.dbPrefix}employees`;
       // SECURITY: Using Prisma tagged template literal for parameterized query
-      const rows = await this.db.client.$queryRaw<unknown[]>(
-        Prisma.sql`SELECT * FROM ${Prisma.raw(tableName)} WHERE tenant_id = ${tenantId} AND status = 'active' LIMIT 10000`
+      const rows = await this.db.forTenant(tenantId, (tx) =>
+        tx.$queryRaw<unknown[]>(
+          Prisma.sql`SELECT * FROM ${Prisma.raw(tableName)} WHERE tenant_id = ${tenantId} AND status = 'active' LIMIT 10000`,
+        ),
       );
 
       const validated: CompportEmployee[] = [];
@@ -73,8 +75,10 @@ export class CompportDbService {
 
     try {
       const tableName = `${this.config.dbPrefix}compensation`;
-      const rows = await this.db.client.$queryRaw<unknown[]>(
-        Prisma.sql`SELECT * FROM ${Prisma.raw(tableName)} WHERE tenant_id = ${tenantId} LIMIT 10000`
+      const rows = await this.db.forTenant(tenantId, (tx) =>
+        tx.$queryRaw<unknown[]>(
+          Prisma.sql`SELECT * FROM ${Prisma.raw(tableName)} WHERE tenant_id = ${tenantId} LIMIT 10000`,
+        ),
       );
 
       const validated: CompportCompensation[] = [];
@@ -105,8 +109,10 @@ export class CompportDbService {
 
     try {
       const tableName = `${this.config.dbPrefix}users`;
-      const rows = await this.db.client.$queryRaw<unknown[]>(
-        Prisma.sql`SELECT * FROM ${Prisma.raw(tableName)} WHERE tenant_id = ${tenantId} AND is_active = true LIMIT 10000`
+      const rows = await this.db.forTenant(tenantId, (tx) =>
+        tx.$queryRaw<unknown[]>(
+          Prisma.sql`SELECT * FROM ${Prisma.raw(tableName)} WHERE tenant_id = ${tenantId} AND is_active = true LIMIT 10000`,
+        ),
       );
 
       const validated: CompportUser[] = [];
@@ -133,7 +139,8 @@ export class CompportDbService {
     try {
       const tableName = `${this.config.dbPrefix}employees`;
       await this.db.client.$queryRaw(
-        Prisma.sql`SELECT 1 FROM ${Prisma.raw(tableName)} LIMIT 1`
+        // RLS-exempt: health check, no tenant data returned
+        Prisma.sql`SELECT 1 FROM ${Prisma.raw(tableName)} LIMIT 1`,
       );
       return true;
     } catch {
@@ -141,4 +148,3 @@ export class CompportDbService {
     }
   }
 }
-

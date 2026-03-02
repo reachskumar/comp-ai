@@ -20,31 +20,32 @@ export class PolicyViolationService {
    * Detect policy violations for all recommendations in a cycle.
    * Checks each recommendation against active RuleSets.
    */
-  async detect(
-    tenantId: string,
-    cycleId: string,
-  ): Promise<PolicyViolationResult> {
+  async detect(tenantId: string, cycleId: string): Promise<PolicyViolationResult> {
     // Load active rule sets for the tenant
-    const dbRuleSets = await this.db.client.ruleSet.findMany({
-      where: { tenantId, status: 'ACTIVE' },
-      include: { rules: { where: { enabled: true }, orderBy: { priority: 'asc' } } },
-    });
-
-    // Load all recommendations with employee data
-    const recommendations = await this.db.client.compRecommendation.findMany({
-      where: { cycleId },
-      include: {
-        employee: true,
-      },
-    });
-
-    // Load budgets for budget-related violations
-    const budgets = await this.db.client.cycleBudget.findMany({
-      where: { cycleId },
-    });
+    const { dbRuleSets, recommendations, budgets } = await this.db.forTenant(
+      tenantId,
+      async (tx) => ({
+        dbRuleSets: await tx.ruleSet.findMany({
+          where: { tenantId, status: 'ACTIVE' },
+          include: { rules: { where: { enabled: true }, orderBy: { priority: 'asc' } } },
+        }),
+        recommendations: await tx.compRecommendation.findMany({
+          where: { cycleId },
+          include: {
+            employee: true,
+          },
+        }),
+        budgets: await tx.cycleBudget.findMany({
+          where: { cycleId },
+        }),
+      }),
+    );
 
     const budgetByDept = new Map(
-      budgets.map((b) => [b.department, { allocated: Number(b.allocated), spent: Number(b.spent) }]),
+      budgets.map((b) => [
+        b.department,
+        { allocated: Number(b.allocated), spent: Number(b.spent) },
+      ]),
     );
 
     const violations: PolicyViolation[] = [];
@@ -72,8 +73,10 @@ export class PolicyViolationService {
             id: r.id,
             name: r.name,
             type: r.ruleType as Rule['type'],
-            conditions: Array.isArray(r.conditions) ? r.conditions as unknown as Rule['conditions'] : [],
-            actions: Array.isArray(r.actions) ? r.actions as unknown as Rule['actions'] : [],
+            conditions: Array.isArray(r.conditions)
+              ? (r.conditions as unknown as Rule['conditions'])
+              : [],
+            actions: Array.isArray(r.actions) ? (r.actions as unknown as Rule['actions']) : [],
             priority: r.priority,
             enabled: r.enabled,
           })),
@@ -146,9 +149,7 @@ export class PolicyViolationService {
       byType,
     };
 
-    this.logger.log(
-      `Policy violations for cycle ${cycleId}: ${violations.length} found`,
-    );
+    this.logger.log(`Policy violations for cycle ${cycleId}: ${violations.length} found`);
 
     return result;
   }
@@ -188,8 +189,21 @@ export class PolicyViolationService {
 
   private checkCapFloorViolations(
     rec: { id: string; proposedValue: unknown; currentValue: unknown },
-    emp: { id: string; firstName: string; lastName: string; department: string; baseSalary: unknown },
-    result: { decisions: Array<{ ruleType: string; ruleName: string; ruleId: string; actions: Array<{ type: string; calculatedValue: number }> }> },
+    emp: {
+      id: string;
+      firstName: string;
+      lastName: string;
+      department: string;
+      baseSalary: unknown;
+    },
+    result: {
+      decisions: Array<{
+        ruleType: string;
+        ruleName: string;
+        ruleId: string;
+        actions: Array<{ type: string; calculatedValue: number }>;
+      }>;
+    },
     dbRuleSet: { id: string; name: string },
     violations: PolicyViolation[],
   ): void {
@@ -243,33 +257,34 @@ export class PolicyViolationService {
     cycleId: string,
     alerts: MonitorAlert[],
   ): Promise<void> {
-    const adminUser = await this.db.client.user.findFirst({
-      where: { tenantId, role: 'ADMIN' },
-      select: { id: true },
-    });
-
-    if (!adminUser) {
-      this.logger.warn(`No admin user found for tenant ${tenantId}, skipping alert persistence`);
-      return;
-    }
-
-    for (const alert of alerts) {
-      await this.db.client.notification.create({
-        data: {
-          tenantId,
-          userId: adminUser.id,
-          type: alert.alertType,
-          title: alert.title,
-          body: `Severity: ${alert.severity}`,
-          metadata: {
-            cycleId,
-            alertType: alert.alertType,
-            severity: alert.severity,
-            ...alert.details,
-          } as never,
-        },
+    await this.db.forTenant(tenantId, async (tx) => {
+      const adminUser = await tx.user.findFirst({
+        where: { tenantId, role: 'ADMIN' },
+        select: { id: true },
       });
-    }
+
+      if (!adminUser) {
+        this.logger.warn(`No admin user found for tenant ${tenantId}, skipping alert persistence`);
+        return;
+      }
+
+      for (const alert of alerts) {
+        await tx.notification.create({
+          data: {
+            tenantId,
+            userId: adminUser.id,
+            type: alert.alertType,
+            title: alert.title,
+            body: `Severity: ${alert.severity}`,
+            metadata: {
+              cycleId,
+              alertType: alert.alertType,
+              severity: alert.severity,
+              ...alert.details,
+            } as never,
+          },
+        });
+      }
+    });
   }
 }
-
