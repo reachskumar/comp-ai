@@ -1,66 +1,147 @@
-# ─── Database URL Secret ─────────────────────────────────────
-resource "aws_secretsmanager_secret" "database_url" {
-  name        = "${var.name_prefix}/database-url"
-  description = "PostgreSQL connection string for CompportIQ"
-}
-
-resource "aws_secretsmanager_secret_version" "database_url" {
-  secret_id     = aws_secretsmanager_secret.database_url.id
-  secret_string = "postgresql://${var.rds_username}:${var.rds_password}@${var.rds_endpoint}:${var.rds_port}/${var.rds_db_name}?sslmode=require"
-}
-
-# ─── Redis URL Secret ────────────────────────────────────────
-resource "aws_secretsmanager_secret" "redis_url" {
-  name        = "${var.name_prefix}/redis-url"
-  description = "Redis connection string for CompportIQ"
-}
-
-resource "aws_secretsmanager_secret_version" "redis_url" {
-  secret_id     = aws_secretsmanager_secret.redis_url.id
-  secret_string = "redis://${var.redis_endpoint}:${var.redis_port}"
-}
-
-# ─── JWT Secret ──────────────────────────────────────────────
+# ─── Auto-generated secrets ──────────────────────────────────
 resource "random_password" "jwt_secret" {
   length  = 64
   special = true
 }
 
-resource "aws_secretsmanager_secret" "jwt_secret" {
-  name        = "${var.name_prefix}/jwt-secret"
-  description = "JWT signing secret for CompportIQ"
-}
-
-resource "aws_secretsmanager_secret_version" "jwt_secret" {
-  secret_id     = aws_secretsmanager_secret.jwt_secret.id
-  secret_string = random_password.jwt_secret.result
-}
-
-# ─── NextAuth Secret ─────────────────────────────────────────
 resource "random_password" "nextauth_secret" {
   length  = 64
   special = true
 }
 
-resource "aws_secretsmanager_secret" "nextauth_secret" {
-  name        = "${var.name_prefix}/nextauth-secret"
-  description = "NextAuth session secret for CompportIQ"
+resource "random_password" "encryption_key" {
+  length  = 64
+  special = false
 }
 
-resource "aws_secretsmanager_secret_version" "nextauth_secret" {
-  secret_id     = aws_secretsmanager_secret.nextauth_secret.id
-  secret_string = random_password.nextauth_secret.result
+# ─── Database URL ────────────────────────────────────────────
+resource "google_secret_manager_secret" "database_url" {
+  secret_id = "${var.name_prefix}-database-url"
+
+  replication {
+    auto {}
+  }
+
+  labels = var.labels
 }
 
-# ─── Azure OpenAI Secret (placeholder) ───────────────────────
-resource "aws_secretsmanager_secret" "azure_openai" {
-  name        = "${var.name_prefix}/azure-openai"
-  description = "Azure OpenAI credentials for CompportIQ"
+resource "google_secret_manager_secret_version" "database_url" {
+  secret      = google_secret_manager_secret.database_url.id
+  secret_data = "postgresql://compportiq_admin:${var.cloudsql_password}@${var.cloudsql_private_ip}:5432/${var.cloudsql_db_name}?sslmode=require"
 }
 
-# ─── Azure AD Secret (placeholder) ───────────────────────────
-resource "aws_secretsmanager_secret" "azure_ad" {
-  name        = "${var.name_prefix}/azure-ad"
-  description = "Azure AD app credentials for CompportIQ SSO"
+# ─── Redis URL ──────────────────────────────────────────────
+resource "google_secret_manager_secret" "redis_url" {
+  secret_id = "${var.name_prefix}-redis-url"
+
+  replication {
+    auto {}
+  }
+
+  labels = var.labels
 }
 
+resource "google_secret_manager_secret_version" "redis_url" {
+  secret      = google_secret_manager_secret.redis_url.id
+  secret_data = "redis://:${var.redis_auth_string}@${var.redis_host}:${var.redis_port}"
+}
+
+# ─── JWT Secret ─────────────────────────────────────────────
+resource "google_secret_manager_secret" "jwt_secret" {
+  secret_id = "${var.name_prefix}-jwt-secret"
+
+  replication {
+    auto {}
+  }
+
+  labels = var.labels
+}
+
+resource "google_secret_manager_secret_version" "jwt_secret" {
+  secret      = google_secret_manager_secret.jwt_secret.id
+  secret_data = random_password.jwt_secret.result
+}
+
+# ─── NextAuth Secret ────────────────────────────────────────
+resource "google_secret_manager_secret" "nextauth_secret" {
+  secret_id = "${var.name_prefix}-nextauth-secret"
+
+  replication {
+    auto {}
+  }
+
+  labels = var.labels
+}
+
+resource "google_secret_manager_secret_version" "nextauth_secret" {
+  secret      = google_secret_manager_secret.nextauth_secret.id
+  secret_data = random_password.nextauth_secret.result
+}
+
+# ─── Encryption Key (AES-256-GCM for PII) ──────────────────
+resource "google_secret_manager_secret" "encryption_key" {
+  secret_id = "${var.name_prefix}-encryption-key"
+
+  replication {
+    auto {}
+  }
+
+  labels = var.labels
+}
+
+resource "google_secret_manager_secret_version" "encryption_key" {
+  secret      = google_secret_manager_secret.encryption_key.id
+  secret_data = random_password.encryption_key.result
+}
+
+# ─── Azure OpenAI (placeholder — populated manually) ────────
+resource "google_secret_manager_secret" "azure_openai_key" {
+  secret_id = "${var.name_prefix}-azure-openai-key"
+
+  replication {
+    auto {}
+  }
+
+  labels = var.labels
+}
+
+resource "google_secret_manager_secret" "azure_openai_endpoint" {
+  secret_id = "${var.name_prefix}-azure-openai-endpoint"
+
+  replication {
+    auto {}
+  }
+
+  labels = var.labels
+}
+
+
+
+# ─── IAM: API service account can access all secrets ─────────
+locals {
+  all_secrets = [
+    google_secret_manager_secret.database_url.secret_id,
+    google_secret_manager_secret.redis_url.secret_id,
+    google_secret_manager_secret.jwt_secret.secret_id,
+    google_secret_manager_secret.encryption_key.secret_id,
+    google_secret_manager_secret.azure_openai_key.secret_id,
+    google_secret_manager_secret.azure_openai_endpoint.secret_id,
+  ]
+  web_secrets = [
+    google_secret_manager_secret.nextauth_secret.secret_id,
+  ]
+}
+
+resource "google_secret_manager_secret_iam_member" "api_accessor" {
+  for_each  = toset(local.all_secrets)
+  secret_id = each.value
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${var.api_service_account}"
+}
+
+resource "google_secret_manager_secret_iam_member" "web_accessor" {
+  for_each  = toset(local.web_secrets)
+  secret_id = each.value
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${var.web_service_account}"
+}

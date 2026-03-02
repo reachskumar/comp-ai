@@ -1,103 +1,170 @@
-provider "aws" {
-  region = var.aws_region
+provider "google" {
+  project = var.gcp_project
+  region  = var.gcp_region
+}
 
-  default_tags {
-    tags = merge(var.tags, {
-      Project     = var.project
-      Environment = var.environment
-      ManagedBy   = "terraform"
-    })
-  }
+provider "google-beta" {
+  project = var.gcp_project
+  region  = var.gcp_region
 }
 
 locals {
   name_prefix = "${var.project}-${var.environment}"
+  labels = merge(var.labels, {
+    project     = var.project
+    environment = var.environment
+    managed_by  = "terraform"
+  })
 }
 
-# ─── VPC ──────────────────────────────────────────────────────
+# ─── Enable Required GCP APIs ────────────────────────────────
+resource "google_project_service" "apis" {
+  for_each = toset([
+    "compute.googleapis.com",
+    "sqladmin.googleapis.com",
+    "redis.googleapis.com",
+    "run.googleapis.com",
+    "artifactregistry.googleapis.com",
+    "secretmanager.googleapis.com",
+    "cloudkms.googleapis.com",
+    "servicenetworking.googleapis.com",
+    "iam.googleapis.com",
+    "iamcredentials.googleapis.com",
+  ])
+
+  project                    = var.gcp_project
+  service                    = each.value
+  disable_dependent_services = false
+  disable_on_destroy         = false
+}
+
+# ─── VPC + Private Services Access ───────────────────────────
 module "vpc" {
   source = "./modules/vpc"
 
-  name_prefix        = local.name_prefix
-  vpc_cidr           = var.vpc_cidr
-  availability_zones = var.availability_zones
-}
-
-# ─── ECR ──────────────────────────────────────────────────────
-module "ecr" {
-  source = "./modules/ecr"
-
   name_prefix = local.name_prefix
+  gcp_region  = var.gcp_region
+  labels      = local.labels
+
+  depends_on = [google_project_service.apis]
 }
 
-# ─── EKS ──────────────────────────────────────────────────────
-module "eks" {
-  source = "./modules/eks"
+# ─── Service Accounts (shared by Cloud Run, Secrets, AR) ────
+resource "google_service_account" "api" {
+  account_id   = "${local.name_prefix}-api"
+  display_name = "CompportIQ API Service Account"
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_service_account" "web" {
+  account_id   = "${local.name_prefix}-web"
+  display_name = "CompportIQ Web Service Account"
+
+  depends_on = [google_project_service.apis]
+}
+
+# ─── Artifact Registry ──────────────────────────────────────
+module "artifact_registry" {
+  source = "./modules/artifact-registry"
 
   name_prefix         = local.name_prefix
-  cluster_version     = var.eks_cluster_version
-  vpc_id              = module.vpc.vpc_id
-  private_subnet_ids  = module.vpc.private_subnet_ids
-  node_instance_types = var.eks_node_instance_types
-  node_desired_size   = var.eks_node_desired_size
-  node_min_size       = var.eks_node_min_size
-  node_max_size       = var.eks_node_max_size
+  gcp_region          = var.gcp_region
+  labels              = local.labels
+  api_service_account = google_service_account.api.email
+  web_service_account = google_service_account.web.email
+
+  depends_on = [google_project_service.apis]
 }
 
-# ─── RDS (PostgreSQL) ────────────────────────────────────────
-module "rds" {
-  source = "./modules/rds"
+# ─── Cloud SQL (PostgreSQL 16) ───────────────────────────────
+module "cloudsql" {
+  source = "./modules/cloudsql"
 
-  name_prefix        = local.name_prefix
-  vpc_id             = module.vpc.vpc_id
-  private_subnet_ids = module.vpc.private_subnet_ids
-  eks_security_group_id = module.eks.node_security_group_id
-  instance_class     = var.rds_instance_class
-  allocated_storage  = var.rds_allocated_storage
-  db_name            = var.rds_db_name
-  master_username    = var.rds_master_username
+  name_prefix    = local.name_prefix
+  gcp_region     = var.gcp_region
+  gcp_zone       = var.gcp_zone
+  tier           = var.cloudsql_tier
+  disk_size      = var.cloudsql_disk_size
+  db_name        = var.cloudsql_db_name
+  vpc_network_id = module.vpc.vpc_id
+  private_ip_address = module.vpc.private_services_address
+  labels         = local.labels
+
+  depends_on = [
+    google_project_service.apis,
+    module.vpc,
+  ]
 }
 
-# ─── ElastiCache (Redis) ─────────────────────────────────────
-module "elasticache" {
-  source = "./modules/elasticache"
+# ─── Memorystore (Redis 7) ──────────────────────────────────
+module "memorystore" {
+  source = "./modules/memorystore"
 
-  name_prefix           = local.name_prefix
-  vpc_id                = module.vpc.vpc_id
-  private_subnet_ids    = module.vpc.private_subnet_ids
-  eks_security_group_id = module.eks.node_security_group_id
-  node_type             = var.redis_node_type
-  num_cache_nodes       = var.redis_num_cache_nodes
+  name_prefix    = local.name_prefix
+  gcp_region     = var.gcp_region
+  memory_size_gb = var.redis_memory_size_gb
+  vpc_network_id = module.vpc.vpc_id
+  labels         = local.labels
+
+  depends_on = [
+    google_project_service.apis,
+    module.vpc,
+  ]
 }
 
-# ─── ACM (SSL Certificate) ───────────────────────────────────
-module "acm" {
-  source = "./modules/acm"
-
-  domain_name = var.domain_name
-}
-
-# ─── ALB ──────────────────────────────────────────────────────
-module "alb" {
-  source = "./modules/alb"
-
-  name_prefix       = local.name_prefix
-  vpc_id            = module.vpc.vpc_id
-  public_subnet_ids = module.vpc.public_subnet_ids
-  certificate_arn   = module.acm.certificate_arn
-}
-
-# ─── Secrets Manager ─────────────────────────────────────────
+# ─── Secret Manager ─────────────────────────────────────────
 module "secrets" {
   source = "./modules/secrets"
 
-  name_prefix  = local.name_prefix
-  rds_endpoint = module.rds.endpoint
-  rds_port     = module.rds.port
-  rds_db_name  = var.rds_db_name
-  rds_username = var.rds_master_username
-  rds_password = module.rds.master_password
-  redis_endpoint = module.elasticache.endpoint
-  redis_port     = module.elasticache.port
+  name_prefix         = local.name_prefix
+  gcp_project         = var.gcp_project
+  cloudsql_private_ip = module.cloudsql.private_ip
+  cloudsql_db_name    = var.cloudsql_db_name
+  cloudsql_password   = module.cloudsql.master_password
+  redis_host          = module.memorystore.host
+  redis_port          = module.memorystore.port
+  redis_auth_string   = module.memorystore.auth_string
+  api_service_account = google_service_account.api.email
+  web_service_account = google_service_account.web.email
+  labels              = local.labels
+
+  depends_on = [google_project_service.apis]
+}
+
+# ─── Cloud Run (API + Web) ──────────────────────────────────
+module "cloudrun" {
+  source = "./modules/cloudrun"
+
+  name_prefix              = local.name_prefix
+  gcp_project              = var.gcp_project
+  gcp_region               = var.gcp_region
+  vpc_connector_id         = module.vpc.vpc_connector_id
+  cloudsql_connection      = module.cloudsql.connection_name
+  api_min_instances        = var.api_min_instances
+  api_max_instances        = var.api_max_instances
+  web_min_instances        = var.web_min_instances
+  web_max_instances        = var.web_max_instances
+  secret_ids               = module.secrets.secret_ids
+  api_service_account_email = google_service_account.api.email
+  web_service_account_email = google_service_account.web.email
+  labels                   = local.labels
+
+  depends_on = [google_project_service.apis]
+}
+
+# ─── Cloud Load Balancing + managed SSL ─────────────────────
+module "load_balancer" {
+  source = "./modules/load-balancer"
+
+  name_prefix     = local.name_prefix
+  gcp_project     = var.gcp_project
+  domain_name     = var.domain_name
+  api_service_name = module.cloudrun.api_service_name
+  web_service_name = module.cloudrun.web_service_name
+  gcp_region       = var.gcp_region
+  labels           = local.labels
+
+  depends_on = [google_project_service.apis]
 }
 

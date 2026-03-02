@@ -4,66 +4,54 @@ output "vpc_id" {
   value       = module.vpc.vpc_id
 }
 
-# ─── EKS ──────────────────────────────────────────────────────
-output "eks_cluster_name" {
-  description = "EKS cluster name"
-  value       = module.eks.cluster_name
+# ─── Cloud SQL ────────────────────────────────────────────────
+output "cloud_sql_private_ip" {
+  description = "Cloud SQL PostgreSQL private IP"
+  value       = module.cloudsql.private_ip
 }
 
-output "eks_cluster_endpoint" {
-  description = "EKS cluster API endpoint"
-  value       = module.eks.cluster_endpoint
+output "cloud_sql_connection_name" {
+  description = "Cloud SQL connection name (project:region:instance)"
+  value       = module.cloudsql.connection_name
 }
 
-output "eks_cluster_ca_certificate" {
-  description = "EKS cluster CA certificate (base64)"
-  value       = module.eks.cluster_ca_certificate
-  sensitive   = true
+# ─── Memorystore ─────────────────────────────────────────────
+output "memorystore_host" {
+  description = "Memorystore Redis host (private IP)"
+  value       = module.memorystore.host
 }
 
-# ─── ECR ──────────────────────────────────────────────────────
-output "ecr_api_repository_url" {
-  description = "ECR repository URL for API image"
-  value       = module.ecr.api_repository_url
+# ─── Cloud Run ───────────────────────────────────────────────
+output "api_service_url" {
+  description = "API Cloud Run service URL"
+  value       = module.cloudrun.api_service_url
 }
 
-output "ecr_web_repository_url" {
-  description = "ECR repository URL for Web image"
-  value       = module.ecr.web_repository_url
+output "web_service_url" {
+  description = "Web Cloud Run service URL"
+  value       = module.cloudrun.web_service_url
 }
 
-# ─── RDS ──────────────────────────────────────────────────────
-output "rds_endpoint" {
-  description = "RDS PostgreSQL endpoint"
-  value       = module.rds.endpoint
+# ─── Load Balancer ───────────────────────────────────────────
+output "load_balancer_ip" {
+  description = "Global external IP — create DNS A record: compportiq.ai → this IP"
+  value       = module.load_balancer.load_balancer_ip
 }
 
-# ─── ElastiCache ──────────────────────────────────────────────
-output "redis_endpoint" {
-  description = "ElastiCache Redis endpoint"
-  value       = module.elasticache.endpoint
+# ─── Artifact Registry ──────────────────────────────────────
+output "artifact_registry_url" {
+  description = "Docker image repository URL"
+  value       = module.artifact_registry.repository_url
 }
 
-# ─── ALB ──────────────────────────────────────────────────────
-output "alb_dns_name" {
-  description = "ALB DNS name (point your domain CNAME here)"
-  value       = module.alb.dns_name
+# ─── Secrets ─────────────────────────────────────────────────
+output "secret_ids" {
+  description = "Map of Secret Manager secret IDs"
+  value       = module.secrets.secret_ids
 }
 
-output "alb_zone_id" {
-  description = "ALB hosted zone ID (for Route53 alias record)"
-  value       = module.alb.zone_id
-}
-
-# ─── ACM ──────────────────────────────────────────────────────
-output "acm_certificate_arn" {
-  description = "ACM certificate ARN"
-  value       = module.acm.certificate_arn
-}
-
-# ─── Secrets ──────────────────────────────────────────────────
-output "secrets_arns" {
-  description = "Map of Secrets Manager secret ARNs"
-  value       = module.secrets.secret_arns
-}
+# ─── DNS Instructions ───────────────────────────────────────
+# After terraform apply, create these DNS records at your registrar:
+#   A record:  compportiq.ai → <load_balancer_ip>
+#   The managed SSL certificate will auto-provision once DNS propagates.
 

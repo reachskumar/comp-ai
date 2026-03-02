@@ -2,17 +2,13 @@ terraform {
   required_version = ">= 1.5.0"
 
   required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
+    google = {
+      source  = "hashicorp/google"
+      version = "~> 6.0"
     }
-    kubernetes = {
-      source  = "hashicorp/kubernetes"
-      version = "~> 2.25"
-    }
-    tls = {
-      source  = "hashicorp/tls"
-      version = "~> 4.0"
+    google-beta = {
+      source  = "hashicorp/google-beta"
+      version = "~> 6.0"
     }
     random = {
       source  = "hashicorp/random"
@@ -20,12 +16,9 @@ terraform {
     }
   }
 
-  backend "s3" {
-    bucket         = "compportiq-terraform-state"
-    key            = "prod/terraform.tfstate"
-    region         = "us-east-1"
-    dynamodb_table = "compportiq-terraform-locks"
-    encrypt        = true
+  backend "gcs" {
+    bucket = "compportiq-terraform-state"
+    prefix = "prod/terraform.tfstate"
   }
 }
 

@@ -11,10 +11,21 @@ variable "environment" {
   default     = "prod"
 }
 
-variable "aws_region" {
-  description = "AWS region for all resources"
+variable "gcp_project" {
+  description = "GCP project ID"
   type        = string
-  default     = "us-east-1"
+}
+
+variable "gcp_region" {
+  description = "GCP region for all resources"
+  type        = string
+  default     = "asia-south1"
+}
+
+variable "gcp_zone" {
+  description = "GCP primary zone (for zonal resources)"
+  type        = string
+  default     = "asia-south1-a"
 }
 
 variable "domain_name" {
@@ -23,91 +34,60 @@ variable "domain_name" {
   default     = "compportiq.ai"
 }
 
-# ─── VPC ──────────────────────────────────────────────────────
-variable "vpc_cidr" {
-  description = "CIDR block for the VPC"
+# ─── Cloud SQL ────────────────────────────────────────────────
+variable "cloudsql_tier" {
+  description = "Cloud SQL machine tier"
   type        = string
-  default     = "10.0.0.0/16"
+  default     = "db-custom-2-8192"
 }
 
-variable "availability_zones" {
-  description = "List of availability zones"
-  type        = list(string)
-  default     = ["us-east-1a", "us-east-1b", "us-east-1c"]
-}
-
-# ─── EKS ──────────────────────────────────────────────────────
-variable "eks_cluster_version" {
-  description = "Kubernetes version for EKS"
-  type        = string
-  default     = "1.29"
-}
-
-variable "eks_node_instance_types" {
-  description = "EC2 instance types for EKS managed node group"
-  type        = list(string)
-  default     = ["t3.medium"]
-}
-
-variable "eks_node_desired_size" {
-  description = "Desired number of worker nodes"
-  type        = number
-  default     = 3
-}
-
-variable "eks_node_min_size" {
-  description = "Minimum number of worker nodes"
-  type        = number
-  default     = 2
-}
-
-variable "eks_node_max_size" {
-  description = "Maximum number of worker nodes"
-  type        = number
-  default     = 6
-}
-
-# ─── RDS ──────────────────────────────────────────────────────
-variable "rds_instance_class" {
-  description = "RDS instance class"
-  type        = string
-  default     = "db.t3.medium"
-}
-
-variable "rds_allocated_storage" {
-  description = "Allocated storage in GB"
+variable "cloudsql_disk_size" {
+  description = "Cloud SQL disk size in GB"
   type        = number
   default     = 50
 }
 
-variable "rds_db_name" {
+variable "cloudsql_db_name" {
   description = "PostgreSQL database name"
   type        = string
   default     = "compportiq"
 }
 
-variable "rds_master_username" {
-  description = "Master username for RDS"
-  type        = string
-  default     = "compportiq_admin"
-}
-
-# ─── ElastiCache ──────────────────────────────────────────────
-variable "redis_node_type" {
-  description = "ElastiCache node type"
-  type        = string
-  default     = "cache.t3.micro"
-}
-
-variable "redis_num_cache_nodes" {
-  description = "Number of cache nodes"
+# ─── Memorystore ─────────────────────────────────────────────
+variable "redis_memory_size_gb" {
+  description = "Memorystore Redis memory size in GB"
   type        = number
   default     = 1
 }
 
-# ─── Tags ─────────────────────────────────────────────────────
-variable "tags" {
-  description = "Common tags for all resources"
+# ─── Cloud Run ───────────────────────────────────────────────
+variable "api_min_instances" {
+  description = "Minimum API Cloud Run instances"
+  type        = number
+  default     = 1
+}
+
+variable "api_max_instances" {
+  description = "Maximum API Cloud Run instances"
+  type        = number
+  default     = 20
+}
+
+variable "web_min_instances" {
+  description = "Minimum Web Cloud Run instances"
+  type        = number
+  default     = 1
+}
+
+variable "web_max_instances" {
+  description = "Maximum Web Cloud Run instances"
+  type        = number
+  default     = 10
+}
+
+# ─── Labels ──────────────────────────────────────────────────
+variable "labels" {
+  description = "Common labels for all resources"
   type        = map(string)
   default     = {}
 }

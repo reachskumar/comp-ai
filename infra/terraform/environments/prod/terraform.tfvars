@@ -1,33 +1,28 @@
-# ─── CompportIQ Production Environment ────────────────────────
+# ─── CompportIQ Production Environment (GCP) ─────────────────
 project     = "compportiq"
 environment = "prod"
-aws_region  = "us-east-1"
+gcp_project = "compportiq-prod"
+gcp_region  = "asia-south1"
+gcp_zone    = "asia-south1-a"
 domain_name = "compportiq.ai"
 
-# ─── VPC ──────────────────────────────────────────────────────
-vpc_cidr           = "10.0.0.0/16"
-availability_zones = ["us-east-1a", "us-east-1b", "us-east-1c"]
+# ─── Cloud SQL ────────────────────────────────────────────────
+cloudsql_tier      = "db-custom-2-8192"
+cloudsql_disk_size = 50
+cloudsql_db_name   = "compportiq"
 
-# ─── EKS ──────────────────────────────────────────────────────
-eks_cluster_version     = "1.29"
-eks_node_instance_types = ["t3.medium"]
-eks_node_desired_size   = 3
-eks_node_min_size       = 2
-eks_node_max_size       = 6
+# ─── Memorystore ─────────────────────────────────────────────
+redis_memory_size_gb = 1
 
-# ─── RDS ──────────────────────────────────────────────────────
-rds_instance_class    = "db.t3.medium"
-rds_allocated_storage = 50
-rds_db_name           = "compportiq"
-rds_master_username   = "compportiq_admin"
+# ─── Cloud Run ───────────────────────────────────────────────
+api_min_instances = 1
+api_max_instances = 20
+web_min_instances = 1
+web_max_instances = 10
 
-# ─── ElastiCache ──────────────────────────────────────────────
-redis_node_type       = "cache.t3.micro"
-redis_num_cache_nodes = 1
-
-# ─── Tags ─────────────────────────────────────────────────────
-tags = {
-  Product = "CompportIQ"
-  Team    = "Platform"
+# ─── Labels ──────────────────────────────────────────────────
+labels = {
+  product = "compportiq"
+  team    = "platform"
 }
 

@@ -1,8 +1,6 @@
-name: Deploy to Production
+name: Deploy to Production (GCP)
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -10,11 +8,11 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  AWS_REGION: us-east-1
-  EKS_CLUSTER: compportiq-prod-eks
-  ECR_API_REPO: compportiq-prod/api
-  ECR_WEB_REPO: compportiq-prod/web
-  K8S_NAMESPACE: compportiq
+  GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
+  GCP_REGION: asia-south1
+  AR_REPO: compportiq-prod-docker
+  API_SERVICE: compportiq-prod-api
+  WEB_SERVICE: compportiq-prod-web
 
 permissions:
   id-token: write
@@ -25,25 +23,32 @@ jobs:
     name: Build, Push & Deploy
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    environment: production
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      # ─── Authenticate to GCP via Workload Identity Federation ──
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
         with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
 
-      - name: Login to Amazon ECR
-        id: ecr-login
-        uses: aws-actions/amazon-ecr-login@v2
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      # ─── Configure Docker for Artifact Registry ───────────────
+      - name: Configure Docker
+        run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
 
       - name: Set image tag
         id: tag
         run: echo "TAG=sha-$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
+      # ─── Build & Push Images ─────────────────────────────────
       - name: Build & push API image
         uses: docker/build-push-action@v5
         with:
@@ -51,8 +56,8 @@ jobs:
           file: apps/api/Dockerfile
           push: true
           tags: |
-            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_API_REPO }}:${{ steps.tag.outputs.TAG }}
-            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_API_REPO }}:latest
+            ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/api:${{ steps.tag.outputs.TAG }}
+            ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/api:latest
 
       - name: Build & push Web image
         uses: docker/build-push-action@v5
@@ -61,43 +66,38 @@ jobs:
           file: apps/web/Dockerfile
           push: true
           tags: |
-            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_WEB_REPO }}:${{ steps.tag.outputs.TAG }}
-            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_WEB_REPO }}:latest
+            ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/web:${{ steps.tag.outputs.TAG }}
+            ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/web:latest
 
-      - name: Install kubectl
-        uses: azure/setup-kubectl@v3
+      # ─── Deploy to Cloud Run ─────────────────────────────────
+      - name: Deploy API to Cloud Run
+        uses: google-github-actions/deploy-cloudrun@v2
         with:
-          version: 'v1.29.0'
+          service: ${{ env.API_SERVICE }}
+          region: ${{ env.GCP_REGION }}
+          image: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/api:${{ steps.tag.outputs.TAG }}
 
-      - name: Update kubeconfig
+      - name: Deploy Web to Cloud Run
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.WEB_SERVICE }}
+          region: ${{ env.GCP_REGION }}
+          image: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/web:${{ steps.tag.outputs.TAG }}
+
+      # ─── Health Check ────────────────────────────────────────
+      - name: Verify API health
         run: |
-          aws eks update-kubeconfig \
-            --region ${{ env.AWS_REGION }} \
-            --name ${{ env.EKS_CLUSTER }}
+          API_URL=$(gcloud run services describe ${{ env.API_SERVICE }} \
+            --region=${{ env.GCP_REGION }} \
+            --format='value(status.url)')
+          echo "API URL: $API_URL"
+          curl -sf "${API_URL}/api/health" || (echo "Health check failed!" && exit 1)
 
-      - name: Deploy to EKS
+      - name: Verify Web health
         run: |
-          REGISTRY="${{ steps.ecr-login.outputs.registry }}"
-          TAG="${{ steps.tag.outputs.TAG }}"
-
-          # Update image tags in kustomization
-          cd infra/k8s/overlays/prod
-          kustomize edit set image \
-            "PLACEHOLDER_API_IMAGE=${REGISTRY}/${ECR_API_REPO}:${TAG}" \
-            "PLACEHOLDER_WEB_IMAGE=${REGISTRY}/${ECR_WEB_REPO}:${TAG}"
-
-          # Apply manifests
-          kustomize build . | kubectl apply -f -
-
-          # Wait for rollout
-          kubectl rollout status deployment/compportiq-api \
-            -n ${{ env.K8S_NAMESPACE }} --timeout=300s
-          kubectl rollout status deployment/compportiq-web \
-            -n ${{ env.K8S_NAMESPACE }} --timeout=300s
-
-      - name: Verify deployment
-        run: |
-          kubectl get pods -n ${{ env.K8S_NAMESPACE }}
-          kubectl get svc -n ${{ env.K8S_NAMESPACE }}
-          kubectl get ingress -n ${{ env.K8S_NAMESPACE }}
+          WEB_URL=$(gcloud run services describe ${{ env.WEB_SERVICE }} \
+            --region=${{ env.GCP_REGION }} \
+            --format='value(status.url)')
+          echo "Web URL: $WEB_URL"
+          curl -sf "${WEB_URL}/api/health" || (echo "Health check failed!" && exit 1)
 

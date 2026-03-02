@@ -1,12 +1,16 @@
 variable "name_prefix" {
-  type = string
+  description = "Prefix for resource names"
+  type        = string
 }
 
-variable "vpc_cidr" {
-  type = string
+variable "gcp_region" {
+  description = "GCP region"
+  type        = string
 }
 
-variable "availability_zones" {
-  type = list(string)
+variable "labels" {
+  description = "Common labels"
+  type        = map(string)
+  default     = {}
 }
 

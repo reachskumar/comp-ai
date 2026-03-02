@@ -1,96 +1,105 @@
 # ─── VPC ──────────────────────────────────────────────────────
-resource "aws_vpc" "main" {
-  cidr_block           = var.vpc_cidr
-  enable_dns_hostnames = true
-  enable_dns_support   = true
-
-  tags = { Name = "${var.name_prefix}-vpc" }
+resource "google_compute_network" "main" {
+  name                    = "${var.name_prefix}-vpc"
+  auto_create_subnetworks = false
 }
 
-# ─── Internet Gateway ────────────────────────────────────────
-resource "aws_internet_gateway" "main" {
-  vpc_id = aws_vpc.main.id
-  tags   = { Name = "${var.name_prefix}-igw" }
+# ─── Subnets ─────────────────────────────────────────────────
+resource "google_compute_subnetwork" "cloudrun" {
+  name          = "${var.name_prefix}-cloudrun"
+  ip_cidr_range = "10.0.0.0/20"
+  region        = var.gcp_region
+  network       = google_compute_network.main.id
+
+  private_ip_google_access = true
 }
 
-# ─── Public Subnets ──────────────────────────────────────────
-resource "aws_subnet" "public" {
-  count = length(var.availability_zones)
+resource "google_compute_subnetwork" "data" {
+  name          = "${var.name_prefix}-data"
+  ip_cidr_range = "10.0.16.0/20"
+  region        = var.gcp_region
+  network       = google_compute_network.main.id
 
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = cidrsubnet(var.vpc_cidr, 4, count.index)
-  availability_zone       = var.availability_zones[count.index]
-  map_public_ip_on_launch = true
+  private_ip_google_access = true
+}
 
-  tags = {
-    Name                                          = "${var.name_prefix}-public-${var.availability_zones[count.index]}"
-    "kubernetes.io/role/elb"                      = "1"
-    "kubernetes.io/cluster/${var.name_prefix}-eks" = "shared"
+# ─── Cloud Router + Cloud NAT (outbound internet for Cloud Run) ─
+resource "google_compute_router" "main" {
+  name    = "${var.name_prefix}-router"
+  region  = var.gcp_region
+  network = google_compute_network.main.id
+}
+
+resource "google_compute_router_nat" "main" {
+  name                               = "${var.name_prefix}-nat"
+  router                             = google_compute_router.main.name
+  region                             = var.gcp_region
+  nat_ip_allocate_option             = "AUTO_ONLY"
+  source_subnetwork_ip_ranges_to_nat = "ALL_SUBNETWORKS_ALL_IP_RANGES"
+
+  log_config {
+    enable = true
+    filter = "ERRORS_ONLY"
   }
 }
 
-# ─── Private Subnets ─────────────────────────────────────────
-resource "aws_subnet" "private" {
-  count = length(var.availability_zones)
+# ─── Private Services Access (Cloud SQL + Memorystore) ───────
+resource "google_compute_global_address" "private_services" {
+  name          = "${var.name_prefix}-private-services"
+  purpose       = "VPC_PEERING"
+  address_type  = "INTERNAL"
+  prefix_length = 16
+  network       = google_compute_network.main.id
+}
 
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = cidrsubnet(var.vpc_cidr, 4, count.index + length(var.availability_zones))
-  availability_zone = var.availability_zones[count.index]
+resource "google_service_networking_connection" "private_services" {
+  network                 = google_compute_network.main.id
+  service                 = "servicenetworking.googleapis.com"
+  reserved_peering_ranges = [google_compute_global_address.private_services.name]
+}
 
-  tags = {
-    Name                                          = "${var.name_prefix}-private-${var.availability_zones[count.index]}"
-    "kubernetes.io/role/internal-elb"              = "1"
-    "kubernetes.io/cluster/${var.name_prefix}-eks" = "shared"
+# ─── Serverless VPC Access Connector (Cloud Run → VPC) ──────
+resource "google_vpc_access_connector" "main" {
+  name          = "${var.name_prefix}-conn"
+  region        = var.gcp_region
+  ip_cidr_range = "10.8.0.0/28"
+  network       = google_compute_network.main.name
+
+  min_instances = 2
+  max_instances = 3
+
+  machine_type = "e2-micro"
+}
+
+# ─── Firewall Rules ─────────────────────────────────────────
+resource "google_compute_firewall" "allow_internal" {
+  name    = "${var.name_prefix}-allow-internal"
+  network = google_compute_network.main.name
+
+  allow {
+    protocol = "tcp"
+    ports    = ["0-65535"]
   }
+  allow {
+    protocol = "udp"
+    ports    = ["0-65535"]
+  }
+  allow {
+    protocol = "icmp"
+  }
+
+  source_ranges = ["10.0.0.0/8"]
 }
 
-# ─── NAT Gateway (single AZ to save costs) ───────────────────
-resource "aws_eip" "nat" {
-  domain = "vpc"
-  tags   = { Name = "${var.name_prefix}-nat-eip" }
-}
+resource "google_compute_firewall" "deny_all_ingress" {
+  name    = "${var.name_prefix}-deny-all-ingress"
+  network = google_compute_network.main.name
 
-resource "aws_nat_gateway" "main" {
-  allocation_id = aws_eip.nat.id
-  subnet_id     = aws_subnet.public[0].id
+  deny {
+    protocol = "all"
+  }
 
-  tags = { Name = "${var.name_prefix}-nat" }
-
-  depends_on = [aws_internet_gateway.main]
-}
-
-# ─── Route Tables ────────────────────────────────────────────
-resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.main.id
-  tags   = { Name = "${var.name_prefix}-public-rt" }
-}
-
-resource "aws_route" "public_internet" {
-  route_table_id         = aws_route_table.public.id
-  destination_cidr_block = "0.0.0.0/0"
-  gateway_id             = aws_internet_gateway.main.id
-}
-
-resource "aws_route_table_association" "public" {
-  count          = length(var.availability_zones)
-  subnet_id      = aws_subnet.public[count.index].id
-  route_table_id = aws_route_table.public.id
-}
-
-resource "aws_route_table" "private" {
-  vpc_id = aws_vpc.main.id
-  tags   = { Name = "${var.name_prefix}-private-rt" }
-}
-
-resource "aws_route" "private_nat" {
-  route_table_id         = aws_route_table.private.id
-  destination_cidr_block = "0.0.0.0/0"
-  nat_gateway_id         = aws_nat_gateway.main.id
-}
-
-resource "aws_route_table_association" "private" {
-  count          = length(var.availability_zones)
-  subnet_id      = aws_subnet.private[count.index].id
-  route_table_id = aws_route_table.private.id
+  source_ranges = ["0.0.0.0/0"]
+  priority      = 65534
 }
 
