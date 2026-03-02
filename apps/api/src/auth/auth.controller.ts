@@ -77,7 +77,7 @@ export class AuthController {
     authUrl.searchParams.set('scope', 'openid profile email User.Read');
     authUrl.searchParams.set('response_mode', 'query');
 
-    return reply.redirect(302, authUrl.toString());
+    return reply.redirect(authUrl.toString(), 302);
   }
 
   @Get('azure/callback')
@@ -92,11 +92,11 @@ export class AuthController {
 
     if (error) {
       this.logger.error(`Azure AD error: ${error} — ${errorDescription}`);
-      return reply.redirect(302, `${frontendUrl}/login?error=azure_ad_error`);
+      return reply.redirect(`${frontendUrl}/login?error=azure_ad_error`, 302);
     }
 
     if (!code) {
-      return reply.redirect(302, `${frontendUrl}/login?error=no_code`);
+      return reply.redirect(`${frontendUrl}/login?error=no_code`, 302);
     }
 
     try {
@@ -125,7 +125,7 @@ export class AuthController {
       if (!tokenRes.ok) {
         const err = await tokenRes.text();
         this.logger.error(`Token exchange failed: ${err}`);
-        return reply.redirect(302, `${frontendUrl}/login?error=token_exchange_failed`);
+        return reply.redirect(`${frontendUrl}/login?error=token_exchange_failed`, 302);
       }
 
       const tokenData = (await tokenRes.json()) as { access_token: string };
@@ -136,7 +136,7 @@ export class AuthController {
       });
 
       if (!profileRes.ok) {
-        return reply.redirect(302, `${frontendUrl}/login?error=profile_fetch_failed`);
+        return reply.redirect(`${frontendUrl}/login?error=profile_fetch_failed`, 302);
       }
 
       const profile = (await profileRes.json()) as {
@@ -159,10 +159,10 @@ export class AuthController {
       callbackUrl.searchParams.set('refreshToken', result.refreshToken);
       callbackUrl.searchParams.set('user', JSON.stringify(result.user));
 
-      return reply.redirect(302, callbackUrl.toString());
+      return reply.redirect(callbackUrl.toString(), 302);
     } catch (err) {
       this.logger.error('Azure AD callback error', err);
-      return reply.redirect(302, `${frontendUrl}/login?error=internal_error`);
+      return reply.redirect(`${frontendUrl}/login?error=internal_error`, 302);
     }
   }
 

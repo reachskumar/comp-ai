@@ -7,7 +7,7 @@ import { AuthenticatedUser, JwtPayload } from '../interfaces/jwt-payload.interfa
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor(configService: ConfigService) {
-    const secret = configService.get<string>('JWT_SECRET');
+    const secret = configService.get<string>('JWT_SECRET') ?? 'change-me-in-production';
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
@@ -24,4 +24,3 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     };
   }
 }
-
