@@ -1,4 +1,12 @@
 /** @type {import('next').NextConfig} */
+
+const isDev = process.env.NODE_ENV !== 'production';
+
+// In production, allow connections to the API domain; in dev, allow localhost
+const connectSrc = isDev
+  ? "'self' http://localhost:* ws://localhost:*"
+  : `'self' ${process.env.NEXT_PUBLIC_API_URL || 'https://compportiq.ai'}`;
+
 const nextConfig = {
   output: 'standalone',
   transpilePackages: ['@compensation/ui', '@compensation/shared'],
@@ -39,7 +47,7 @@ const nextConfig = {
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: blob:",
               "font-src 'self' data:",
-              "connect-src 'self' http://localhost:* ws://localhost:*",
+              `connect-src ${connectSrc}`,
               "frame-ancestors 'none'",
               "base-uri 'self'",
               "form-action 'self'",

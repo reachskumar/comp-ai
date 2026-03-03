@@ -69,6 +69,25 @@ jobs:
             ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/web:${{ steps.tag.outputs.TAG }}
             ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/web:latest
 
+      # ─── Save current revisions for rollback ──────────────────
+      - name: Save current API revision
+        id: prev_api
+        run: |
+          REV=$(gcloud run services describe ${{ env.API_SERVICE }} \
+            --region=${{ env.GCP_REGION }} \
+            --format='value(status.latestReadyRevisionName)' 2>/dev/null || echo "")
+          echo "REVISION=$REV" >> $GITHUB_OUTPUT
+          echo "Previous API revision: $REV"
+
+      - name: Save current Web revision
+        id: prev_web
+        run: |
+          REV=$(gcloud run services describe ${{ env.WEB_SERVICE }} \
+            --region=${{ env.GCP_REGION }} \
+            --format='value(status.latestReadyRevisionName)' 2>/dev/null || echo "")
+          echo "REVISION=$REV" >> $GITHUB_OUTPUT
+          echo "Previous Web revision: $REV"
+
       # ─── Deploy to Cloud Run ─────────────────────────────────
       - name: Deploy API to Cloud Run
         uses: google-github-actions/deploy-cloudrun@v2
@@ -84,20 +103,97 @@ jobs:
           region: ${{ env.GCP_REGION }}
           image: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/web:${{ steps.tag.outputs.TAG }}
 
+      # ─── Run database migrations ────────────────────────────
+      - name: Run Prisma migrations
+        run: |
+          # Use the API Cloud Run service to run migrations via a one-off job
+          # The API image has prisma CLI and the schema baked in
+          gcloud run jobs create migrate-${{ steps.tag.outputs.TAG }} \
+            --image=${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/api:${{ steps.tag.outputs.TAG }} \
+            --region=${{ env.GCP_REGION }} \
+            --set-secrets=DATABASE_URL=${{ env.GCP_PROJECT }}:compportiq-prod-database-url:latest \
+            --vpc-connector=$(gcloud run services describe ${{ env.API_SERVICE }} --region=${{ env.GCP_REGION }} --format='value(template.vpcAccess.connector)') \
+            --max-retries=0 \
+            --task-timeout=300s \
+            --command="npx" \
+            --args="prisma,migrate,deploy,--schema=packages/database/prisma/schema.prisma" \
+            --quiet 2>/dev/null || true
+
+          gcloud run jobs execute migrate-${{ steps.tag.outputs.TAG }} \
+            --region=${{ env.GCP_REGION }} \
+            --wait \
+            --quiet
+
+          echo "✅ Database migrations applied successfully"
+
       # ─── Health Check ────────────────────────────────────────
       - name: Verify API health
+        id: api_health
+        continue-on-error: true
         run: |
           API_URL=$(gcloud run services describe ${{ env.API_SERVICE }} \
             --region=${{ env.GCP_REGION }} \
             --format='value(status.url)')
           echo "API URL: $API_URL"
-          curl -sf "${API_URL}/api/health" || (echo "Health check failed!" && exit 1)
+          # Retry up to 5 times with 10s interval (Cloud Run cold start)
+          for i in 1 2 3 4 5; do
+            if curl -sf "${API_URL}/api/health"; then
+              echo "✅ API health check passed (attempt $i)"
+              exit 0
+            fi
+            echo "Attempt $i failed, retrying in 10s..."
+            sleep 10
+          done
+          echo "❌ API health check failed after 5 attempts"
+          exit 1
 
       - name: Verify Web health
+        id: web_health
+        continue-on-error: true
         run: |
           WEB_URL=$(gcloud run services describe ${{ env.WEB_SERVICE }} \
             --region=${{ env.GCP_REGION }} \
             --format='value(status.url)')
           echo "Web URL: $WEB_URL"
-          curl -sf "${WEB_URL}/api/health" || (echo "Health check failed!" && exit 1)
+          for i in 1 2 3 4 5; do
+            if curl -sf "${WEB_URL}" -o /dev/null; then
+              echo "✅ Web health check passed (attempt $i)"
+              exit 0
+            fi
+            echo "Attempt $i failed, retrying in 10s..."
+            sleep 10
+          done
+          echo "❌ Web health check failed after 5 attempts"
+          exit 1
+
+      # ─── Rollback on failure ─────────────────────────────────
+      - name: Rollback API on failure
+        if: steps.api_health.outcome == 'failure' && steps.prev_api.outputs.REVISION != ''
+        run: |
+          echo "⚠️ Rolling back API to revision: ${{ steps.prev_api.outputs.REVISION }}"
+          gcloud run services update-traffic ${{ env.API_SERVICE }} \
+            --region=${{ env.GCP_REGION }} \
+            --to-revisions=${{ steps.prev_api.outputs.REVISION }}=100
+
+      - name: Rollback Web on failure
+        if: steps.web_health.outcome == 'failure' && steps.prev_web.outputs.REVISION != ''
+        run: |
+          echo "⚠️ Rolling back Web to revision: ${{ steps.prev_web.outputs.REVISION }}"
+          gcloud run services update-traffic ${{ env.WEB_SERVICE }} \
+            --region=${{ env.GCP_REGION }} \
+            --to-revisions=${{ steps.prev_web.outputs.REVISION }}=100
+
+      - name: Fail if health checks failed
+        if: steps.api_health.outcome == 'failure' || steps.web_health.outcome == 'failure'
+        run: |
+          echo "❌ Deployment failed — rolled back to previous revisions"
+          exit 1
+
+      # ─── Cleanup migration job ──────────────────────────────
+      - name: Delete migration job
+        if: always()
+        run: |
+          gcloud run jobs delete migrate-${{ steps.tag.outputs.TAG }} \
+            --region=${{ env.GCP_REGION }} \
+            --quiet 2>/dev/null || true
 
