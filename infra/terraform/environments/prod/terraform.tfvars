@@ -1,7 +1,7 @@
 # ─── CompportIQ Production Environment (GCP) ─────────────────
 project     = "compportiq"
 environment = "prod"
-gcp_project = "compportiq-prod"
+gcp_project = "compportiq-ai"
 gcp_region  = "asia-south1"
 gcp_zone    = "asia-south1-a"
 domain_name = "compportiq.ai"
