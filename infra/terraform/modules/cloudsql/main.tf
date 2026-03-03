@@ -18,6 +18,7 @@ resource "google_sql_database_instance" "main" {
 
   settings {
     tier              = var.tier
+    edition           = "ENTERPRISE"
     availability_type = "REGIONAL"
     disk_size         = var.disk_size
     disk_type         = "PD_SSD"
