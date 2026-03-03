@@ -248,19 +248,18 @@ resource "google_cloud_run_v2_service" "web" {
       }
 
       startup_probe {
-        http_get {
-          path = "/api/health"
+        tcp_socket {
           port = 3000
         }
-        initial_delay_seconds = 10
-        period_seconds        = 10
-        failure_threshold     = 3
-        timeout_seconds       = 5
+        initial_delay_seconds = 5
+        period_seconds        = 5
+        failure_threshold     = 5
+        timeout_seconds       = 3
       }
 
       liveness_probe {
         http_get {
-          path = "/api/health"
+          path = "/"
           port = 3000
         }
         period_seconds    = 30
