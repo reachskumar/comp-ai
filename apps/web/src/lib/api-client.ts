@@ -127,6 +127,19 @@ class ApiClient {
       }
     }
 
+    // Handle tenant suspension
+    if (res.status === 403) {
+      const errorData = (await res.json().catch(() => ({}))) as Partial<ApiError>;
+      if (errorData.message?.includes('suspended')) {
+        this.clearTokens();
+        if (typeof window !== 'undefined') {
+          window.location.href = '/suspended';
+        }
+        throw new Error('Tenant is suspended.');
+      }
+      throw new Error(errorData.message || 'Forbidden');
+    }
+
     if (!res.ok) {
       const errorData = (await res.json().catch(() => ({}))) as Partial<ApiError>;
       throw new Error(errorData.message || `Request failed with status ${res.status}`);
@@ -163,6 +176,20 @@ class ApiClient {
     // Fetch CSRF token now that we're authenticated
     await this.fetchCsrfToken();
     return result;
+  }
+
+  /**
+   * Resolve tenant branding from hostname (public, no auth required).
+   */
+  async getTenantBranding(domain: string) {
+    return this.fetch<{
+      found: boolean;
+      name?: string;
+      slug?: string;
+      logoUrl?: string | null;
+      primaryColor?: string | null;
+      azureAdEnabled?: boolean;
+    }>(`/api/v1/auth/tenant-branding?domain=${encodeURIComponent(domain)}`);
   }
 
   async getMe() {
@@ -231,6 +258,127 @@ class ApiClient {
       limit: number;
       totalPages: number;
     }>(`/api/v1/settings/audit-logs${qs ? `?${qs}` : ''}`);
+  }
+  // ─── Platform Admin endpoints ──────────────────────────
+
+  async adminListTenants(params?: { page?: number; limit?: number; search?: string }) {
+    const sp = new URLSearchParams();
+    if (params?.page) sp.set('page', String(params.page));
+    if (params?.limit) sp.set('limit', String(params.limit));
+    if (params?.search) sp.set('search', params.search);
+    const qs = sp.toString();
+    return this.fetch<{
+      data: Array<{
+        id: string;
+        name: string;
+        slug: string;
+        subdomain: string | null;
+        customDomain: string | null;
+        logoUrl: string | null;
+        primaryColor: string | null;
+        isActive: boolean;
+        plan: string;
+        compportSchema: string | null;
+        createdAt: string;
+        updatedAt: string;
+        _count: { users: number; employees: number };
+      }>;
+      total: number;
+      page: number;
+      limit: number;
+      totalPages: number;
+    }>(`/api/v1/platform-admin/tenants${qs ? `?${qs}` : ''}`);
+  }
+
+  async adminGetTenant(id: string) {
+    return this.fetch<Record<string, unknown>>(`/api/v1/platform-admin/tenants/${id}`);
+  }
+
+  async adminCreateTenant(data: {
+    name: string;
+    slug?: string;
+    subdomain?: string;
+    plan?: string;
+    compportSchema?: string;
+  }) {
+    return this.fetch<Record<string, unknown>>('/api/v1/platform-admin/tenants', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async adminUpdateTenant(id: string, data: Record<string, unknown>) {
+    return this.fetch<Record<string, unknown>>(`/api/v1/platform-admin/tenants/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async adminSuspendTenant(id: string) {
+    return this.fetch<Record<string, unknown>>(`/api/v1/platform-admin/tenants/${id}/suspend`, {
+      method: 'POST',
+    });
+  }
+
+  async adminActivateTenant(id: string) {
+    return this.fetch<Record<string, unknown>>(`/api/v1/platform-admin/tenants/${id}/activate`, {
+      method: 'POST',
+    });
+  }
+
+  async adminListTenantUsers(tenantId: string) {
+    return this.fetch<{
+      data: Array<{
+        id: string;
+        email: string;
+        name: string;
+        role: string;
+        avatarUrl: string | null;
+        createdAt: string;
+        updatedAt: string;
+      }>;
+      total: number;
+    }>(`/api/v1/platform-admin/tenants/${tenantId}/users`);
+  }
+
+  async adminCreateTenantUser(
+    tenantId: string,
+    data: { email: string; name: string; role?: string },
+  ) {
+    return this.fetch<{ user: Record<string, unknown>; inviteLink: string }>(
+      `/api/v1/platform-admin/tenants/${tenantId}/users`,
+      { method: 'POST', body: JSON.stringify(data) },
+    );
+  }
+
+  async adminRemoveTenantUser(tenantId: string, userId: string) {
+    return this.fetch<{ deleted: boolean }>(
+      `/api/v1/platform-admin/tenants/${tenantId}/users/${userId}`,
+      { method: 'DELETE' },
+    );
+  }
+
+  async adminOnboard(data: {
+    companyName: string;
+    compportSchema: string;
+    subdomain?: string;
+    adminEmail?: string;
+    adminName?: string;
+  }) {
+    return this.fetch<Record<string, unknown>>('/api/v1/platform-admin/onboard', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async adminGetStats() {
+    return this.fetch<{
+      totalTenants: number;
+      activeTenants: number;
+      suspendedTenants: number;
+      totalUsers: number;
+      totalEmployees: number;
+    }>('/api/v1/platform-admin/stats');
   }
 }
 

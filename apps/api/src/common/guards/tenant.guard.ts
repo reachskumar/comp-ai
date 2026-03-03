@@ -30,7 +30,11 @@ export class TenantGuard implements CanActivate {
       throw new ForbiddenException('Tenant not found or inactive');
     }
 
+    if (!tenant.isActive) {
+      this.logger.warn(`Tenant is suspended: ${tenantId}`);
+      throw new ForbiddenException('Tenant is suspended. Please contact your administrator.');
+    }
+
     return true;
   }
 }
-

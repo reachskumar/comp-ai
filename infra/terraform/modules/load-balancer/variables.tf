@@ -11,6 +11,12 @@ variable "web_service_name" {
   type        = string
 }
 
+variable "wildcard_domain" {
+  description = "Wildcard domain for tenant subdomains (e.g., *.compportiq.ai)"
+  type        = string
+  default     = ""
+}
+
 variable "labels" {
   type    = map(string)
   default = {}

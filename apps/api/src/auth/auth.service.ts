@@ -164,6 +164,47 @@ export class AuthService {
     }
   }
 
+  /**
+   * Resolve tenant branding from a hostname/domain.
+   * Public endpoint — returns only non-sensitive branding info.
+   */
+  async resolveTenantBranding(domain: string) {
+    // Extract subdomain: "standardbank.compportiq.ai" → "standardbank"
+    const parts = domain.split('.');
+    const subdomain = parts.length >= 3 ? parts[0] : null;
+
+    // Try to find tenant by: subdomain field → slug → customDomain
+    const tenant = await this.db.client.tenant.findFirst({
+      where: {
+        isActive: true,
+        OR: [...(subdomain ? [{ subdomain }, { slug: subdomain }] : []), { customDomain: domain }],
+      },
+      select: {
+        name: true,
+        slug: true,
+        subdomain: true,
+        logoUrl: true,
+        primaryColor: true,
+      },
+    });
+
+    if (!tenant) return null;
+
+    // Check if Azure AD SSO is configured (globally for now)
+    const azureAdEnabled = !!(
+      this.configService.get<string>('AZURE_AD_CLIENT_ID') &&
+      this.configService.get<string>('AZURE_AD_TENANT_ID')
+    );
+
+    return {
+      name: tenant.name,
+      slug: tenant.slug,
+      logoUrl: tenant.logoUrl,
+      primaryColor: tenant.primaryColor,
+      azureAdEnabled,
+    };
+  }
+
   private async generateTokens(userId: string, tenantId: string, email: string, role: string) {
     const payload: JwtPayload = { sub: userId, tenantId, email, role };
 

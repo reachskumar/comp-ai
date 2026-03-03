@@ -157,9 +157,10 @@ module "cloudrun" {
 module "load_balancer" {
   source = "./modules/load-balancer"
 
-  name_prefix     = local.name_prefix
-  gcp_project     = var.gcp_project
-  domain_name     = var.domain_name
+  name_prefix      = local.name_prefix
+  gcp_project      = var.gcp_project
+  domain_name      = var.domain_name
+  wildcard_domain  = var.wildcard_domain
   api_service_name = module.cloudrun.api_service_name
   web_service_name = module.cloudrun.web_service_name
   gcp_region       = var.gcp_region

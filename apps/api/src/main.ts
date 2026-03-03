@@ -7,11 +7,9 @@ import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 
 async function bootstrap() {
-  const app = await NestFactory.create<NestFastifyApplication>(
-    AppModule,
-    new FastifyAdapter(),
-    { bufferLogs: true },
-  );
+  const app = await NestFactory.create<NestFastifyApplication>(AppModule, new FastifyAdapter(), {
+    bufferLogs: true,
+  });
 
   // Use Pino logger for all NestJS logging
   const logger = app.get(Logger);
@@ -32,15 +30,37 @@ async function bootstrap() {
     global: true,
   });
 
-  // Enable CORS with origin whitelist
-  const corsOrigins: string[] = ['http://localhost:3000'];
-  if (process.env['CORS_ORIGINS']) {
-    corsOrigins.push(
-      ...process.env['CORS_ORIGINS'].split(',').map((o) => o.trim()).filter(Boolean),
-    );
-  }
+  // Enable CORS with dynamic origin (supports *.compportiq.ai subdomains)
+  const extraOrigins = (process.env['CORS_EXTRA_ORIGINS'] || process.env['CORS_ORIGINS'] || '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+
   await app.register(import('@fastify/cors') as never, {
-    origin: corsOrigins,
+    origin: (
+      origin: string | undefined,
+      callback: (err: Error | null, allow?: boolean) => void,
+    ) => {
+      // Allow requests with no origin (server-to-server, curl, mobile apps)
+      if (!origin) return callback(null, true);
+
+      // Allow localhost for development
+      if (origin.startsWith('http://localhost:') || origin.startsWith('https://localhost:')) {
+        return callback(null, true);
+      }
+
+      // Allow any *.compportiq.ai subdomain
+      if (/^https?:\/\/([a-z0-9-]+\.)?compportiq\.ai$/.test(origin)) {
+        return callback(null, true);
+      }
+
+      // Allow explicitly configured extra origins
+      if (extraOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      callback(new Error('Not allowed by CORS'));
+    },
     credentials: true,
   });
 
@@ -112,13 +132,16 @@ async function bootstrap() {
     forceKillTimer.unref();
 
     // NestJS app.close() triggers BeforeApplicationShutdown → OnModuleDestroy
-    app.close().then(() => {
-      logger.log('Application closed successfully');
-      process.exit(0);
-    }).catch((err) => {
-      logger.error('Error during shutdown', err);
-      process.exit(1);
-    });
+    app
+      .close()
+      .then(() => {
+        logger.log('Application closed successfully');
+        process.exit(0);
+      })
+      .catch((err) => {
+        logger.error('Error during shutdown', err);
+        process.exit(1);
+      });
   };
 
   process.on('SIGTERM', () => handleShutdown('SIGTERM'));

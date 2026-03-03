@@ -58,6 +58,21 @@ export class AuthController {
     return req.user;
   }
 
+  // ─── Tenant Branding (Public) ──────────────────────────────
+
+  @Get('tenant-branding')
+  @ApiOperation({ summary: 'Resolve tenant branding from domain/subdomain (public, no auth)' })
+  async getTenantBranding(@Query('domain') domain: string) {
+    if (!domain) {
+      return { found: false };
+    }
+    const branding = await this.authService.resolveTenantBranding(domain);
+    if (!branding) {
+      return { found: false };
+    }
+    return { found: true, ...branding };
+  }
+
   // ─── Azure AD SSO ─────────────────────────────────────────
   @Get('azure')
   @ApiOperation({ summary: 'Initiate Azure AD SSO login' })

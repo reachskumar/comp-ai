@@ -34,6 +34,12 @@ variable "domain_name" {
   default     = "compportiq.ai"
 }
 
+variable "wildcard_domain" {
+  description = "Wildcard domain for tenant subdomains (e.g., *.compportiq.ai)"
+  type        = string
+  default     = "*.compportiq.ai"
+}
+
 # ─── Cloud SQL ────────────────────────────────────────────────
 variable "cloudsql_tier" {
   description = "Cloud SQL machine tier"

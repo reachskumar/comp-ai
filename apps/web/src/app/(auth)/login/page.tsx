@@ -30,6 +30,14 @@ const loginSchema = z.object({
 
 type LoginForm = z.infer<typeof loginSchema>;
 
+interface TenantBranding {
+  name: string;
+  slug: string;
+  logoUrl: string | null;
+  primaryColor: string | null;
+  azureAdEnabled: boolean;
+}
+
 function LoginPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -39,14 +47,37 @@ function LoginPageInner() {
   const [showPassword, setShowPassword] = useState(false);
   const [failedAttempts, setFailedAttempts] = useState(0);
   const [azureAdEnabled, setAzureAdEnabled] = useState(false);
+  const [tenantBranding, setTenantBranding] = useState<TenantBranding | null>(null);
 
   useEffect(() => {
-    // Check if Azure AD SSO is configured
+    // Resolve tenant branding from subdomain
+    const hostname = window.location.hostname;
     apiClient
-      .fetch<{ enabled: boolean }>('/api/v1/auth/azure/config')
-      .then((data) => setAzureAdEnabled(data.enabled))
+      .getTenantBranding(hostname)
+      .then((data) => {
+        if (data.found && data.name) {
+          setTenantBranding({
+            name: data.name,
+            slug: data.slug || '',
+            logoUrl: data.logoUrl || null,
+            primaryColor: data.primaryColor || null,
+            azureAdEnabled: data.azureAdEnabled || false,
+          });
+          setAzureAdEnabled(data.azureAdEnabled || false);
+        } else {
+          // Fallback: check Azure AD config directly
+          apiClient
+            .fetch<{ enabled: boolean }>('/api/v1/auth/azure/config')
+            .then((d) => setAzureAdEnabled(d.enabled))
+            .catch(() => {});
+        }
+      })
       .catch(() => {
-        /* Azure AD not configured, hide button */
+        // Branding endpoint not available, fallback
+        apiClient
+          .fetch<{ enabled: boolean }>('/api/v1/auth/azure/config')
+          .then((d) => setAzureAdEnabled(d.enabled))
+          .catch(() => {});
       });
 
     // Show error from Azure AD redirect
@@ -90,10 +121,26 @@ function LoginPageInner() {
     <Card className="border-0 shadow-xl bg-card/80 backdrop-blur-sm">
       <CardHeader className="text-center pb-2">
         <div className="flex justify-center mb-4">
-          <Image src="/compport-logo.svg" alt="Compport" width={140} height={38} priority />
+          {tenantBranding?.logoUrl ? (
+            <Image
+              src={tenantBranding.logoUrl}
+              alt={tenantBranding.name}
+              width={140}
+              height={38}
+              priority
+            />
+          ) : (
+            <Image src="/compport-logo.svg" alt="CompportIQ" width={140} height={38} priority />
+          )}
         </div>
-        <CardTitle className="text-2xl font-bold">Welcome back</CardTitle>
-        <CardDescription>Sign in to your Compport account</CardDescription>
+        <CardTitle className="text-2xl font-bold">
+          {tenantBranding ? `Welcome to ${tenantBranding.name}` : 'Welcome back'}
+        </CardTitle>
+        <CardDescription>
+          {tenantBranding
+            ? `Sign in to your ${tenantBranding.name} compensation platform`
+            : 'Sign in to your CompportIQ account'}
+        </CardDescription>
       </CardHeader>
       <form onSubmit={handleSubmit(onSubmit)}>
         <CardContent className="space-y-4">

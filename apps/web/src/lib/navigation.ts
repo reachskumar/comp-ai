@@ -168,6 +168,21 @@ export const navGroups: NavGroup[] = [
   },
 ];
 
+/**
+ * Platform Admin nav group — only visible for PLATFORM_ADMIN role.
+ * Cross-tenant management of customers, onboarding, and platform stats.
+ */
+export const platformAdminGroup: NavGroup = {
+  title: 'Platform Admin',
+  icon: Shield,
+  badge: 'Admin',
+  items: [
+    { title: 'Customers', href: '/dashboard/admin/customers', icon: Building2 },
+    { title: 'Onboarding', href: '/dashboard/admin/onboarding', icon: Upload },
+    { title: 'Platform Stats', href: '/dashboard/admin/stats', icon: PieChart },
+  ],
+};
+
 export const settingsGroup: NavGroup = {
   title: 'Settings',
   icon: Settings,

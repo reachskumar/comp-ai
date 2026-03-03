@@ -12,6 +12,16 @@ resource "google_compute_managed_ssl_certificate" "main" {
   }
 }
 
+# ─── Wildcard SSL Certificate (tenant subdomains) ──────────
+resource "google_compute_managed_ssl_certificate" "wildcard" {
+  count = var.wildcard_domain != "" ? 1 : 0
+  name  = "${var.name_prefix}-wildcard-ssl"
+
+  managed {
+    domains = [var.wildcard_domain]
+  }
+}
+
 # ─── Serverless NEGs (Cloud Run backends) ────────────────────
 resource "google_compute_region_network_endpoint_group" "api" {
   name                  = "${var.name_prefix}-api-neg"
@@ -66,6 +76,15 @@ resource "google_compute_url_map" "main" {
     path_matcher = "main"
   }
 
+  # Wildcard subdomain host rule — routes *.compportiq.ai to the same backends
+  dynamic "host_rule" {
+    for_each = var.wildcard_domain != "" ? [1] : []
+    content {
+      hosts        = [var.wildcard_domain]
+      path_matcher = "main"
+    }
+  }
+
   path_matcher {
     name            = "main"
     default_service = google_compute_backend_service.web.id
@@ -81,7 +100,10 @@ resource "google_compute_url_map" "main" {
 resource "google_compute_target_https_proxy" "main" {
   name             = "${var.name_prefix}-https-proxy"
   url_map          = google_compute_url_map.main.id
-  ssl_certificates = [google_compute_managed_ssl_certificate.main.id]
+  ssl_certificates = concat(
+    [google_compute_managed_ssl_certificate.main.id],
+    var.wildcard_domain != "" ? [google_compute_managed_ssl_certificate.wildcard[0].id] : [],
+  )
 }
 
 # ─── HTTPS Forwarding Rule ──────────────────────────────────

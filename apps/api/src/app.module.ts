@@ -37,6 +37,7 @@ import { NotificationModule } from './modules/notifications';
 import { EmployeePortalModule } from './modules/employee-portal';
 import { JobArchitectureModule } from './modules/job-architecture';
 import { CsrfModule } from './csrf';
+import { PlatformAdminModule } from './modules/platform-admin';
 
 const isProduction = process.env['NODE_ENV'] === 'production';
 
@@ -122,6 +123,7 @@ const isProduction = process.env['NODE_ENV'] === 'production';
     EmployeePortalModule,
     JobArchitectureModule,
     CsrfModule,
+    PlatformAdminModule,
   ],
   providers: [
     {

@@ -15,6 +15,7 @@ datasource db {
 // ─────────────────────────────────────────────────────────────
 
 enum UserRole {
+  PLATFORM_ADMIN
   ADMIN
   HR_MANAGER
   MANAGER
@@ -207,13 +208,19 @@ enum StatementStatus {
 // ─────────────────────────────────────────────────────────────
 
 model Tenant {
-  id        String   @id @default(cuid())
-  name      String
-  slug      String   @unique
-  plan      String   @default("free")
-  settings  Json     @default("{}")
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id             String   @id @default(cuid())
+  name           String
+  slug           String   @unique
+  subdomain      String?  @unique   // Explicit subdomain override (defaults to slug)
+  customDomain   String?  @unique   // Custom domain e.g. compportiq.sb.ai
+  logoUrl        String?            // Customer logo for branded login
+  primaryColor   String?            // Brand accent color (hex)
+  isActive       Boolean  @default(true) // Tenant suspension support
+  compportSchema String?            // Compport Cloud SQL schema name
+  plan           String   @default("free")
+  settings       Json     @default("{}")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   users               User[]
   employees           Employee[]
