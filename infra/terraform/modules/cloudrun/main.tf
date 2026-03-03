@@ -161,16 +161,46 @@ resource "google_cloud_run_v2_service" "api" {
       }
 
       # ─── Static env vars ─────────────────────────────────
-      env { name = "NODE_ENV";                      value = "production" }
-      env { name = "API_PORT";                      value = "4000" }
-      env { name = "CORS_ORIGINS";                  value = "https://compportiq.ai" }
-      env { name = "JWT_EXPIRATION";                value = "1d" }
-      env { name = "LOG_LEVEL";                     value = "info" }
-      env { name = "COMPPORT_MODE";                 value = "standalone" }
-      env { name = "AI_PROVIDER";                   value = "azure" }
-      env { name = "SHUTDOWN_TIMEOUT";              value = "30000" }
-      env { name = "AZURE_OPENAI_DEPLOYMENT_NAME";  value = "gpt-4o" }
-      env { name = "AZURE_OPENAI_API_VERSION";      value = "2024-08-01-preview" }
+      env {
+        name  = "NODE_ENV"
+        value = "production"
+      }
+      env {
+        name  = "API_PORT"
+        value = "4000"
+      }
+      env {
+        name  = "CORS_ORIGINS"
+        value = "https://compportiq.ai"
+      }
+      env {
+        name  = "JWT_EXPIRATION"
+        value = "1d"
+      }
+      env {
+        name  = "LOG_LEVEL"
+        value = "info"
+      }
+      env {
+        name  = "COMPPORT_MODE"
+        value = "standalone"
+      }
+      env {
+        name  = "AI_PROVIDER"
+        value = "azure"
+      }
+      env {
+        name  = "SHUTDOWN_TIMEOUT"
+        value = "30000"
+      }
+      env {
+        name  = "AZURE_OPENAI_DEPLOYMENT_NAME"
+        value = "gpt-4o"
+      }
+      env {
+        name  = "AZURE_OPENAI_API_VERSION"
+        value = "2024-08-01-preview"
+      }
     }
   }
 
@@ -248,10 +278,22 @@ resource "google_cloud_run_v2_service" "web" {
         }
       }
 
-      env { name = "NODE_ENV";                   value = "production" }
-      env { name = "NEXT_PUBLIC_API_URL";         value = "https://compportiq.ai" }
-      env { name = "NEXTAUTH_URL";                value = "https://compportiq.ai" }
-      env { name = "NEXT_TELEMETRY_DISABLED";     value = "1" }
+      env {
+        name  = "NODE_ENV"
+        value = "production"
+      }
+      env {
+        name  = "NEXT_PUBLIC_API_URL"
+        value = "https://compportiq.ai"
+      }
+      env {
+        name  = "NEXTAUTH_URL"
+        value = "https://compportiq.ai"
+      }
+      env {
+        name  = "NEXT_TELEMETRY_DISABLED"
+        value = "1"
+      }
     }
   }
 
