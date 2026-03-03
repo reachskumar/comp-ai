@@ -15,6 +15,7 @@ import { TestQueueProcessor } from './test-queue.processor';
           connection: {
             host: url.hostname,
             port: parseInt(url.port || '6379', 10),
+            ...(url.password ? { password: decodeURIComponent(url.password) } : {}),
           },
         };
       },
@@ -31,11 +32,13 @@ export class QueueModule implements OnModuleInit {
 
   async onModuleInit(): Promise<void> {
     try {
-      await this.testQueue.add('startup-test', { message: 'API started', timestamp: new Date().toISOString() });
+      await this.testQueue.add('startup-test', {
+        message: 'API started',
+        timestamp: new Date().toISOString(),
+      });
       this.logger.log('Test job added to test-queue successfully');
     } catch (error) {
       this.logger.error('Failed to add test job to queue', error);
     }
   }
 }
-
