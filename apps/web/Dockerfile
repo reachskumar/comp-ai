@@ -39,6 +39,9 @@ COPY apps/web/ ./apps/web/
 # Copy base tsconfig
 COPY tsconfig.base.json ./
 
+# Pre-create .turbo directories to avoid QEMU/cross-platform mkdir race conditions
+RUN mkdir -p packages/database/.turbo packages/shared/.turbo packages/ui/.turbo apps/web/.turbo .turbo
+
 # Build the web app (turbo handles dependency order)
 RUN pnpm build --filter=@compensation/web
 
