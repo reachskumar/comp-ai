@@ -94,7 +94,7 @@ resource "google_secret_manager_secret_version" "encryption_key" {
   secret_data = random_password.encryption_key.result
 }
 
-# ─── Azure OpenAI (placeholder — populated manually) ────────
+# ─── Azure OpenAI (placeholder — replace with real values after deploy) ──
 resource "google_secret_manager_secret" "azure_openai_key" {
   secret_id = "${var.name_prefix}-azure-openai-key"
 
@@ -105,6 +105,11 @@ resource "google_secret_manager_secret" "azure_openai_key" {
   labels = var.labels
 }
 
+resource "google_secret_manager_secret_version" "azure_openai_key" {
+  secret      = google_secret_manager_secret.azure_openai_key.id
+  secret_data = "REPLACE_WITH_REAL_AZURE_OPENAI_KEY"
+}
+
 resource "google_secret_manager_secret" "azure_openai_endpoint" {
   secret_id = "${var.name_prefix}-azure-openai-endpoint"
 
@@ -113,6 +118,11 @@ resource "google_secret_manager_secret" "azure_openai_endpoint" {
   }
 
   labels = var.labels
+}
+
+resource "google_secret_manager_secret_version" "azure_openai_endpoint" {
+  secret      = google_secret_manager_secret.azure_openai_endpoint.id
+  secret_data = "https://REPLACE_WITH_REAL_ENDPOINT.openai.azure.com"
 }
 
 
