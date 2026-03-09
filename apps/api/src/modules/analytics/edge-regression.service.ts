@@ -546,4 +546,122 @@ export class EdgeRegressionService {
       dimensionType,
     };
   }
+
+  // ─── Persistence ──────────────────────────────────────────
+
+  /**
+   * Persist an EDGE analysis result to the PayEquityReport + PayEquityDimension tables.
+   * Returns the created report ID.
+   */
+  async persistReport(
+    tenantId: string,
+    userId: string,
+    result: EdgeAnalysisResult,
+  ): Promise<string> {
+    return this.db.forTenant(tenantId, async (tx) => {
+      const genderCoeff = result.overall.coefficients.find((c) => c.name === 'gender_female');
+
+      const report = await tx.payEquityReport.create({
+        data: {
+          tenantId,
+          name: result.config.name,
+          type: result.config.type,
+          status: result.errors.length > 0 ? 'FAILED' : 'COMPLETE',
+          compType: result.config.compType,
+          snapshotDate: result.snapshotDate,
+          populationSize: result.populationSize,
+          threshold: result.overall.threshold,
+          genderEffect: result.overall.genderEffect,
+          isCompliant: result.overall.isCompliant,
+          rSquared: result.overall.rSquared,
+          adjustedRSquared: result.overall.adjustedRSquared,
+          fStatistic: result.overall.fStatistic,
+          coefficients: result.overall.coefficients as never,
+          errorMessage: result.errors.length > 0 ? result.errors.join('\n') : null,
+          createdById: userId,
+          metadata: {
+            additionalPredictors: result.config.additionalPredictors ?? [],
+            genderPValue: genderCoeff?.pValue ?? null,
+          } as never,
+        },
+      });
+
+      // Persist dimension breakdowns (overall + sub-dimensions)
+      const allDimensions = [result.overall, ...result.dimensions];
+      if (allDimensions.length > 0) {
+        await tx.payEquityDimension.createMany({
+          data: allDimensions.map((dim) => {
+            const dimGenderCoeff = dim.coefficients.find((c) => c.name === 'gender_female');
+            return {
+              reportId: report.id,
+              dimension: dim.dimension,
+              dimensionType: dim.dimensionType,
+              populationSize: dim.populationSize,
+              maleCount: dim.maleCount,
+              femaleCount: dim.femaleCount,
+              genderEffect: dim.genderEffect,
+              isCompliant: dim.isCompliant,
+              coefficients: dim.coefficients as never,
+              rSquared: dim.rSquared,
+              pValue: dimGenderCoeff?.pValue ?? null,
+            };
+          }),
+        });
+      }
+
+      this.logger.log(
+        `Persisted EDGE report ${report.id}: ${result.config.compType} ${result.config.type} ` +
+          `pop=${result.populationSize} compliant=${result.overall.isCompliant}`,
+      );
+
+      return report.id;
+    });
+  }
+
+  /**
+   * List persisted EDGE reports for a tenant, ordered by creation date descending.
+   */
+  async listReports(tenantId: string, opts: { limit?: number; offset?: number } = {}) {
+    const { limit = 50, offset = 0 } = opts;
+    return this.db.forTenant(tenantId, async (tx) => {
+      const [reports, total] = await Promise.all([
+        tx.payEquityReport.findMany({
+          where: { tenantId },
+          orderBy: { createdAt: 'desc' },
+          take: limit,
+          skip: offset,
+          select: {
+            id: true,
+            name: true,
+            type: true,
+            status: true,
+            compType: true,
+            snapshotDate: true,
+            populationSize: true,
+            threshold: true,
+            genderEffect: true,
+            isCompliant: true,
+            adjustedRSquared: true,
+            createdById: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+        }),
+        tx.payEquityReport.count({ where: { tenantId } }),
+      ]);
+      return { reports, total };
+    });
+  }
+
+  /**
+   * Get a single EDGE report with all dimension breakdowns.
+   */
+  async getReport(tenantId: string, reportId: string) {
+    return this.db.forTenant(tenantId, async (tx) => {
+      return tx.payEquityReport.findFirst({
+        where: { id: reportId, tenantId },
+        include: { dimensions: { orderBy: { dimensionType: 'asc' } } },
+      });
+    });
+  }
 }

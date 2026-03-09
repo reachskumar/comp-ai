@@ -267,8 +267,15 @@ export class AnalyticsController {
       },
     };
 
+    // Persist both reports to DB
+    const [salaryReportId, payReportId] = await Promise.all([
+      this.edgeService.persistReport(req.user.tenantId, req.user.userId, salaryResult),
+      this.edgeService.persistReport(req.user.tenantId, req.user.userId, payResult),
+    ]);
+
     return {
-      id: `edge-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      salaryReportId,
+      payReportId,
       tenantId: req.user.tenantId,
       userId: req.user.userId,
       analysisType: dto.analysisType,
@@ -284,12 +291,30 @@ export class AnalyticsController {
 
   @Get('pay-equity/edge/reports')
   @ApiOperation({ summary: 'List EDGE pay equity reports for the current tenant' })
-  async listEdgeReports(@Request() req: AuthRequest) {
+  async listEdgeReports(
+    @Query('limit') limit: string | undefined,
+    @Query('offset') offset: string | undefined,
+    @Request() req: AuthRequest,
+  ) {
     const allowedRoles = ['ADMIN', 'HR_MANAGER', 'ANALYST', 'PLATFORM_ADMIN'];
     if (!allowedRoles.includes(req.user.role)) {
       throw new ForbiddenException('Only ADMIN, HR_MANAGER, or ANALYST can view EDGE reports');
     }
-    // For now, return an empty list — persistence will be added when DB is connected
-    return { reports: [], total: 0 };
+    return this.edgeService.listReports(req.user.tenantId, {
+      limit: limit ? parseInt(limit, 10) : undefined,
+      offset: offset ? parseInt(offset, 10) : undefined,
+    });
+  }
+
+  @Get('pay-equity/edge/reports/:id')
+  @ApiOperation({ summary: 'Get a single EDGE pay equity report with dimension breakdowns' })
+  async getEdgeReport(@Param('id') id: string, @Request() req: AuthRequest) {
+    const allowedRoles = ['ADMIN', 'HR_MANAGER', 'ANALYST', 'PLATFORM_ADMIN'];
+    if (!allowedRoles.includes(req.user.role)) {
+      throw new ForbiddenException('Only ADMIN, HR_MANAGER, or ANALYST can view EDGE reports');
+    }
+    const report = await this.edgeService.getReport(req.user.tenantId, id);
+    if (!report) throw new NotFoundException(`EDGE report ${id} not found`);
+    return report;
   }
 }
