@@ -171,7 +171,7 @@ resource "google_cloud_run_v2_service" "api" {
       }
       env {
         name  = "CORS_ORIGINS"
-        value = "https://compportiq.ai"
+        value = var.domain_name != "" ? "https://${var.domain_name}" : "*"
       }
       env {
         name  = "JWT_EXPIRATION"
@@ -283,11 +283,11 @@ resource "google_cloud_run_v2_service" "web" {
       }
       env {
         name  = "NEXT_PUBLIC_API_URL"
-        value = "https://compportiq.ai"
+        value = var.domain_name != "" ? "https://${var.domain_name}" : ""
       }
       env {
         name  = "NEXTAUTH_URL"
-        value = "https://compportiq.ai"
+        value = var.domain_name != "" ? "https://${var.domain_name}" : ""
       }
       env {
         name  = "NEXT_TELEMETRY_DISABLED"

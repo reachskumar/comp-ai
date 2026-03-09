@@ -1,7 +1,7 @@
 # ─── CompportIQ Staging Environment (GCP) ─────────────────
 project     = "compportiq"
 environment = "staging"
-gcp_project = "compportiq-ai"
+gcp_project = "compportiq"
 gcp_region  = "asia-south1"
 gcp_zone    = "asia-south1-a"
 domain_name = "staging.compportiq.ai"

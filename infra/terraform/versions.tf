@@ -18,7 +18,9 @@ terraform {
 
   backend "gcs" {
     bucket = "compportiq-terraform-state"
-    prefix = "prod/terraform.tfstate"
+    # prefix is set per-environment via -backend-config:
+    #   terraform init -backend-config=environments/prod/backend.tfvars
+    #   terraform init -backend-config=environments/staging/backend.tfvars
   }
 }
 

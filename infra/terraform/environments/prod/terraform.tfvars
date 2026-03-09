@@ -1,10 +1,11 @@
 # ─── CompportIQ Production Environment (GCP) ─────────────────
 project     = "compportiq"
 environment = "prod"
-gcp_project = "compportiq-ai"
+gcp_project = "compportiq"
 gcp_region  = "asia-south1"
 gcp_zone    = "asia-south1-a"
-domain_name = "compportiq.ai"
+# domain_name = "compportiq.ai"  # Uncomment when domain is ready
+domain_name = ""
 
 # ─── Cloud SQL ────────────────────────────────────────────────
 cloudsql_tier      = "db-custom-2-8192"

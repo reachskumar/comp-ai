@@ -139,6 +139,7 @@ module "cloudrun" {
   name_prefix              = local.name_prefix
   gcp_project              = var.gcp_project
   gcp_region               = var.gcp_region
+  domain_name              = var.domain_name
   vpc_connector_id         = module.vpc.vpc_connector_id
   cloudsql_connection      = module.cloudsql.connection_name
   api_min_instances        = var.api_min_instances
@@ -154,8 +155,11 @@ module "cloudrun" {
 }
 
 # ─── Cloud Load Balancing + managed SSL ─────────────────────
+# Only create load balancer when a domain is configured.
+# Without a domain, use Cloud Run URLs directly.
 module "load_balancer" {
   source = "./modules/load-balancer"
+  count  = var.domain_name != "" ? 1 : 0
 
   name_prefix      = local.name_prefix
   gcp_project      = var.gcp_project

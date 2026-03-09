@@ -26,6 +26,12 @@ variable "web_service_account_email" {
   type        = string
 }
 
+variable "domain_name" {
+  description = "Domain name for CORS and public URLs (e.g., compportiq.ai). Leave empty to use Cloud Run URLs."
+  type        = string
+  default     = ""
+}
+
 variable "labels" {
   type    = map(string)
   default = {}

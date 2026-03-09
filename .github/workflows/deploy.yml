@@ -2,6 +2,15 @@ name: Deploy to Production (GCP)
 
 on:
   workflow_dispatch:
+    inputs:
+      run_seed:
+        description: "Run database seed (creates demo tenant + users). Safe to re-run."
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 concurrency:
   group: deploy-prod
@@ -126,6 +135,29 @@ jobs:
 
           echo "✅ Database migrations applied successfully"
 
+      # ─── Seed Database (optional) ─────────────────────────────
+      - name: Seed database (demo tenant + users)
+        if: ${{ github.event.inputs.run_seed == 'true' }}
+        run: |
+          echo "🌱 Running production seed..."
+          gcloud run jobs create seed-${{ steps.tag.outputs.TAG }} \
+            --image=${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/api:${{ steps.tag.outputs.TAG }} \
+            --region=${{ env.GCP_REGION }} \
+            --set-secrets=DATABASE_URL=${{ env.GCP_PROJECT }}:compportiq-prod-database-url:latest \
+            --vpc-connector=$(gcloud run services describe ${{ env.API_SERVICE }} --region=${{ env.GCP_REGION }} --format='value(template.vpcAccess.connector)') \
+            --max-retries=0 \
+            --task-timeout=600s \
+            --command="npx" \
+            --args="tsx,packages/database/prisma/seed.ts" \
+            --quiet 2>/dev/null || true
+
+          gcloud run jobs execute seed-${{ steps.tag.outputs.TAG }} \
+            --region=${{ env.GCP_REGION }} \
+            --wait \
+            --quiet
+
+          echo "✅ Database seeded successfully"
+
       # ─── Health Check ────────────────────────────────────────
       - name: Verify API health
         id: api_health
@@ -189,11 +221,18 @@ jobs:
           echo "❌ Deployment failed — rolled back to previous revisions"
           exit 1
 
-      # ─── Cleanup migration job ──────────────────────────────
+      # ─── Cleanup jobs ──────────────────────────────────────
       - name: Delete migration job
         if: always()
         run: |
           gcloud run jobs delete migrate-${{ steps.tag.outputs.TAG }} \
+            --region=${{ env.GCP_REGION }} \
+            --quiet 2>/dev/null || true
+
+      - name: Delete seed job
+        if: always()
+        run: |
+          gcloud run jobs delete seed-${{ steps.tag.outputs.TAG }} \
             --region=${{ env.GCP_REGION }} \
             --quiet 2>/dev/null || true
 

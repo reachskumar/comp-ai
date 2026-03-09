@@ -34,8 +34,8 @@ output "web_service_url" {
 
 # ─── Load Balancer ───────────────────────────────────────────
 output "load_balancer_ip" {
-  description = "Global external IP — create DNS A record: compportiq.ai → this IP"
-  value       = module.load_balancer.load_balancer_ip
+  description = "Global external IP — create DNS A record pointing to this IP"
+  value       = length(module.load_balancer) > 0 ? module.load_balancer[0].load_balancer_ip : "N/A (no domain configured)"
 }
 
 # ─── Artifact Registry ──────────────────────────────────────
