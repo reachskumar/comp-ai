@@ -80,7 +80,7 @@ resource "google_cloud_run_v2_service" "api" {
 
       startup_probe {
         http_get {
-          path = "/api/health"
+          path = "/health"
           port = 4000
         }
         initial_delay_seconds = 10
@@ -91,7 +91,7 @@ resource "google_cloud_run_v2_service" "api" {
 
       liveness_probe {
         http_get {
-          path = "/api/health"
+          path = "/health"
           port = 4000
         }
         period_seconds    = 30
@@ -161,16 +161,46 @@ resource "google_cloud_run_v2_service" "api" {
       }
 
       # ─── Static env vars ─────────────────────────────────
-      env { name = "NODE_ENV";                      value = "production" }
-      env { name = "API_PORT";                      value = "4000" }
-      env { name = "CORS_ORIGINS";                  value = "https://compportiq.ai" }
-      env { name = "JWT_EXPIRATION";                value = "1d" }
-      env { name = "LOG_LEVEL";                     value = "info" }
-      env { name = "COMPPORT_MODE";                 value = "standalone" }
-      env { name = "AI_PROVIDER";                   value = "azure" }
-      env { name = "SHUTDOWN_TIMEOUT";              value = "30000" }
-      env { name = "AZURE_OPENAI_DEPLOYMENT_NAME";  value = "gpt-4o" }
-      env { name = "AZURE_OPENAI_API_VERSION";      value = "2024-08-01-preview" }
+      env {
+        name  = "NODE_ENV"
+        value = "production"
+      }
+      env {
+        name  = "API_PORT"
+        value = "4000"
+      }
+      env {
+        name  = "CORS_ORIGINS"
+        value = "https://compportiq.ai"
+      }
+      env {
+        name  = "JWT_EXPIRATION"
+        value = "1d"
+      }
+      env {
+        name  = "LOG_LEVEL"
+        value = "info"
+      }
+      env {
+        name  = "COMPPORT_MODE"
+        value = "standalone"
+      }
+      env {
+        name  = "AI_PROVIDER"
+        value = "azure"
+      }
+      env {
+        name  = "SHUTDOWN_TIMEOUT"
+        value = "30000"
+      }
+      env {
+        name  = "AZURE_OPENAI_DEPLOYMENT_NAME"
+        value = "gpt-4o"
+      }
+      env {
+        name  = "AZURE_OPENAI_API_VERSION"
+        value = "2024-08-01-preview"
+      }
     }
   }
 
@@ -218,19 +248,18 @@ resource "google_cloud_run_v2_service" "web" {
       }
 
       startup_probe {
-        http_get {
-          path = "/api/health"
+        tcp_socket {
           port = 3000
         }
-        initial_delay_seconds = 10
-        period_seconds        = 10
-        failure_threshold     = 3
-        timeout_seconds       = 5
+        initial_delay_seconds = 5
+        period_seconds        = 5
+        failure_threshold     = 5
+        timeout_seconds       = 3
       }
 
       liveness_probe {
         http_get {
-          path = "/api/health"
+          path = "/"
           port = 3000
         }
         period_seconds    = 30
@@ -248,10 +277,22 @@ resource "google_cloud_run_v2_service" "web" {
         }
       }
 
-      env { name = "NODE_ENV";                   value = "production" }
-      env { name = "NEXT_PUBLIC_API_URL";         value = "https://compportiq.ai" }
-      env { name = "NEXTAUTH_URL";                value = "https://compportiq.ai" }
-      env { name = "NEXT_TELEMETRY_DISABLED";     value = "1" }
+      env {
+        name  = "NODE_ENV"
+        value = "production"
+      }
+      env {
+        name  = "NEXT_PUBLIC_API_URL"
+        value = "https://compportiq.ai"
+      }
+      env {
+        name  = "NEXTAUTH_URL"
+        value = "https://compportiq.ai"
+      }
+      env {
+        name  = "NEXT_TELEMETRY_DISABLED"
+        value = "1"
+      }
     }
   }
 

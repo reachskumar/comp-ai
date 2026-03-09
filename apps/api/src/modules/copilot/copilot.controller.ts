@@ -1,24 +1,29 @@
 import {
   Controller,
   Post,
+  Get,
+  Delete,
   Body,
+  Param,
+  Query,
   UseGuards,
   Request,
   Res,
   Logger,
   HttpCode,
   HttpStatus,
+  NotFoundException,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { FastifyReply } from 'fastify';
 import { JwtAuthGuard } from '../../auth';
 import { TenantGuard } from '../../common';
 import { CopilotService } from './copilot.service';
-import { ChatMessageDto } from './dto';
-import { formatSSE } from '@compensation/ai';
+import { ChatMessageDto, ConversationQueryDto } from './dto';
+import { formatSSE, type CopilotUserRole } from '@compensation/ai';
 
 interface AuthRequest {
-  user: { userId: string; tenantId: string; email: string; role: string };
+  user: { userId: string; tenantId: string; email: string; role: string; name?: string };
 }
 
 @ApiTags('copilot')
@@ -33,15 +38,11 @@ export class CopilotController {
   @Post('chat')
   @ApiOperation({ summary: 'Send a message to the AI Copilot (SSE streaming response)' })
   @HttpCode(HttpStatus.OK)
-  async chat(
-    @Body() dto: ChatMessageDto,
-    @Request() req: AuthRequest,
-    @Res() reply: FastifyReply,
-  ) {
-    const { tenantId, userId } = req.user;
+  async chat(@Body() dto: ChatMessageDto, @Request() req: AuthRequest, @Res() reply: FastifyReply) {
+    const { tenantId, userId, role, name } = req.user;
 
     this.logger.log(
-      `Copilot chat: user=${userId} tenant=${tenantId} conv=${dto.conversationId ?? 'new'}`,
+      `Copilot chat: user=${userId} role=${role} tenant=${tenantId} conv=${dto.conversationId ?? 'new'}`,
     );
 
     // Set SSE headers
@@ -58,6 +59,10 @@ export class CopilotController {
         userId,
         dto.message,
         dto.conversationId,
+        {
+          role: role as CopilotUserRole,
+          name: name ?? 'User',
+        },
       );
 
       for await (const event of sseStream) {
@@ -78,5 +83,32 @@ export class CopilotController {
       reply.raw.end();
     }
   }
-}
 
+  // ─── Conversation History Endpoints (Task 5) ──────────────
+
+  @Get('conversations')
+  @ApiOperation({ summary: 'List user conversations (paginated)' })
+  async listConversations(@Query() query: ConversationQueryDto, @Request() req: AuthRequest) {
+    const { tenantId, userId } = req.user;
+    return this.copilotService.listConversations(tenantId, userId, query.page, query.limit);
+  }
+
+  @Get('conversations/:id')
+  @ApiOperation({ summary: 'Get a conversation with all messages' })
+  async getConversation(@Param('id') id: string, @Request() req: AuthRequest) {
+    const { tenantId, userId } = req.user;
+    const conversation = await this.copilotService.getConversation(tenantId, userId, id);
+    if (!conversation) throw new NotFoundException(`Conversation ${id} not found`);
+    return conversation;
+  }
+
+  @Delete('conversations/:id')
+  @ApiOperation({ summary: 'Delete a conversation' })
+  @HttpCode(HttpStatus.OK)
+  async deleteConversation(@Param('id') id: string, @Request() req: AuthRequest) {
+    const { tenantId, userId } = req.user;
+    const result = await this.copilotService.deleteConversation(tenantId, userId, id);
+    if (!result.deleted) throw new NotFoundException(`Conversation ${id} not found`);
+    return { message: 'Conversation deleted' };
+  }
+}

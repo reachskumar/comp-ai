@@ -40,6 +40,9 @@ COPY apps/api/ ./apps/api/
 # Copy base tsconfig
 COPY tsconfig.base.json ./
 
+# Pre-create .turbo directories to avoid QEMU/cross-platform mkdir race conditions
+RUN mkdir -p packages/database/.turbo packages/shared/.turbo packages/ai/.turbo apps/api/.turbo .turbo
+
 # Generate Prisma client and build the API (turbo handles dependency order)
 RUN pnpm build --filter=@compensation/api
 

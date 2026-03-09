@@ -4,6 +4,8 @@ import {
   buildCopilotGraph,
   streamGraphToSSE,
   type CopilotDbAdapter,
+  type CopilotUserContext,
+  type CopilotUserRole,
   type SSEEvent,
 } from '@compensation/ai';
 import { HumanMessage } from '@langchain/core/messages';
@@ -22,12 +24,14 @@ export class CopilotService implements CopilotDbAdapter {
     userId: string,
     message: string,
     conversationId?: string,
+    userContext?: CopilotUserContext,
   ): AsyncGenerator<SSEEvent> {
+    const role = userContext?.role ?? 'EMPLOYEE';
     this.logger.log(
-      `Copilot chat: tenant=${tenantId} user=${userId} conv=${conversationId ?? 'new'}`,
+      `Copilot chat: tenant=${tenantId} user=${userId} role=${role} conv=${conversationId ?? 'new'}`,
     );
 
-    const { graph } = await buildCopilotGraph(this, tenantId);
+    const { graph } = await buildCopilotGraph(this, tenantId, userContext, { userId });
 
     const config = conversationId
       ? { configurable: { thread_id: conversationId } }
@@ -39,6 +43,8 @@ export class CopilotService implements CopilotDbAdapter {
         userId,
         messages: [new HumanMessage(message)],
         metadata: {},
+        userRole: role,
+        userName: userContext?.name ?? '',
       },
       { ...config, version: 'v2' },
     );
@@ -46,6 +52,101 @@ export class CopilotService implements CopilotDbAdapter {
     yield* streamGraphToSSE(stream, {
       graphName: 'copilot-graph',
       runId: config.configurable.thread_id,
+    });
+  }
+
+  // ─── Conversation Persistence (Task 5) ─────────────────────
+
+  async listConversations(tenantId: string, userId: string, page = 1, limit = 20) {
+    const skip = (page - 1) * limit;
+    return this.db.forTenant(tenantId, async (tx) => {
+      const [data, total] = await Promise.all([
+        tx.copilotConversation.findMany({
+          where: { tenantId, userId },
+          skip,
+          take: limit,
+          orderBy: { updatedAt: 'desc' },
+          select: {
+            id: true,
+            title: true,
+            createdAt: true,
+            updatedAt: true,
+            _count: { select: { messages: true } },
+          },
+        }),
+        tx.copilotConversation.count({ where: { tenantId, userId } }),
+      ]);
+      return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
+    });
+  }
+
+  async getConversation(tenantId: string, userId: string, conversationId: string) {
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.copilotConversation.findFirst({
+        where: { id: conversationId, tenantId, userId },
+        include: {
+          messages: {
+            orderBy: { createdAt: 'asc' },
+            select: {
+              id: true,
+              role: true,
+              content: true,
+              metadata: true,
+              createdAt: true,
+            },
+          },
+        },
+      }),
+    );
+  }
+
+  async deleteConversation(tenantId: string, userId: string, conversationId: string) {
+    return this.db.forTenant(tenantId, async (tx) => {
+      const conv = await tx.copilotConversation.findFirst({
+        where: { id: conversationId, tenantId, userId },
+      });
+      if (!conv) return { deleted: false };
+      await tx.copilotConversation.delete({ where: { id: conversationId } });
+      return { deleted: true };
+    });
+  }
+
+  async saveMessage(
+    tenantId: string,
+    userId: string,
+    conversationId: string | undefined,
+    role: string,
+    content: string,
+    metadata: Record<string, unknown> = {},
+  ): Promise<{ conversationId: string; messageId: string }> {
+    return this.db.forTenant(tenantId, async (tx) => {
+      let convId = conversationId;
+
+      if (!convId) {
+        // Create a new conversation with title from first message
+        const title = content.length > 80 ? content.slice(0, 77) + '...' : content;
+        const conv = await tx.copilotConversation.create({
+          data: { tenantId, userId, title },
+        });
+        convId = conv.id;
+      } else {
+        // Touch updatedAt on existing conversation
+        await tx.copilotConversation.updateMany({
+          where: { id: convId, tenantId, userId },
+          data: { updatedAt: new Date() },
+        });
+      }
+
+      const msg = await tx.copilotMessage.create({
+        data: {
+          conversationId: convId,
+          role,
+          content,
+          metadata: metadata as never,
+        },
+      });
+
+      return { conversationId: convId, messageId: msg.id };
     });
   }
 
@@ -264,6 +365,380 @@ export class CopilotService implements CopilotDbAdapter {
         default:
           return { error: `Unknown metric: ${filters.metric}` };
       }
+    });
+  }
+
+  // ─── New Read Tools (Task 3) ─────────────────────────────
+
+  async queryBenefits(
+    tenantId: string,
+    filters: {
+      employeeId?: string;
+      planType?: string;
+      status?: string;
+      limit?: number;
+    },
+  ): Promise<unknown[]> {
+    const where: Prisma.BenefitEnrollmentWhereInput = { tenantId };
+    if (filters.employeeId) where.employeeId = filters.employeeId;
+    if (filters.status) where.status = filters.status as Prisma.EnumEnrollmentStatusFilter;
+    if (filters.planType)
+      where.plan = { planType: filters.planType as Prisma.EnumBenefitPlanTypeFilter };
+
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.benefitEnrollment.findMany({
+        where,
+        take: filters.limit ?? 20,
+        include: {
+          plan: { select: { name: true, planType: true, carrier: true } },
+          employee: { select: { firstName: true, lastName: true, department: true } },
+        },
+        orderBy: { effectiveDate: 'desc' },
+      }),
+    );
+  }
+
+  async queryEquity(
+    tenantId: string,
+    filters: {
+      employeeId?: string;
+      status?: string;
+      grantType?: string;
+      limit?: number;
+    },
+  ): Promise<unknown[]> {
+    const where: Prisma.EquityGrantWhereInput = { tenantId };
+    if (filters.employeeId) where.employeeId = filters.employeeId;
+    if (filters.status) where.status = filters.status as Prisma.EnumEquityGrantStatusFilter;
+    if (filters.grantType) where.grantType = filters.grantType as Prisma.EnumEquityGrantTypeFilter;
+
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.equityGrant.findMany({
+        where,
+        take: filters.limit ?? 20,
+        include: {
+          plan: { select: { name: true, planType: true, sharePrice: true, currency: true } },
+          employee: { select: { firstName: true, lastName: true, department: true } },
+        },
+        orderBy: { grantDate: 'desc' },
+      }),
+    );
+  }
+
+  async querySalaryBands(
+    tenantId: string,
+    filters: {
+      jobFamily?: string;
+      level?: string;
+      location?: string;
+      limit?: number;
+    },
+  ): Promise<unknown[]> {
+    const where: Prisma.SalaryBandWhereInput = { tenantId };
+    if (filters.jobFamily) where.jobFamily = { contains: filters.jobFamily, mode: 'insensitive' };
+    if (filters.level) where.level = filters.level;
+    if (filters.location) where.location = { contains: filters.location, mode: 'insensitive' };
+
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.salaryBand.findMany({
+        where,
+        take: filters.limit ?? 20,
+        select: {
+          id: true,
+          jobFamily: true,
+          level: true,
+          location: true,
+          currency: true,
+          p10: true,
+          p25: true,
+          p50: true,
+          p75: true,
+          p90: true,
+          source: true,
+          effectiveDate: true,
+        },
+        orderBy: [{ jobFamily: 'asc' }, { level: 'asc' }],
+      }),
+    );
+  }
+
+  async queryNotifications(
+    tenantId: string,
+    filters: {
+      userId: string;
+      unreadOnly?: boolean;
+      limit?: number;
+    },
+  ): Promise<unknown[]> {
+    const where: Prisma.NotificationWhereInput = { tenantId, userId: filters.userId };
+    if (filters.unreadOnly) where.read = false;
+
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.notification.findMany({
+        where,
+        take: filters.limit ?? 10,
+        select: {
+          id: true,
+          type: true,
+          title: true,
+          body: true,
+          read: true,
+          createdAt: true,
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+    );
+  }
+
+  async queryTeam(
+    tenantId: string,
+    filters: {
+      managerId: string;
+      includeIndirect?: boolean;
+      limit?: number;
+    },
+  ): Promise<unknown[]> {
+    const where: Prisma.EmployeeWhereInput = { tenantId, managerId: filters.managerId };
+
+    return this.db.forTenant(tenantId, async (tx) => {
+      const directReports = await tx.employee.findMany({
+        where,
+        take: filters.limit ?? 50,
+        select: {
+          id: true,
+          employeeCode: true,
+          firstName: true,
+          lastName: true,
+          department: true,
+          level: true,
+          location: true,
+          baseSalary: true,
+          totalComp: true,
+          currency: true,
+          hireDate: true,
+          performanceRating: true,
+          _count: { select: { directReports: true } },
+        },
+        orderBy: [{ department: 'asc' }, { lastName: 'asc' }],
+      });
+
+      if (!filters.includeIndirect) return directReports;
+
+      // Include indirect reports (one level deeper)
+      const directIds = directReports.map((r) => r.id);
+      const indirectReports = await tx.employee.findMany({
+        where: { tenantId, managerId: { in: directIds } },
+        take: filters.limit ?? 50,
+        select: {
+          id: true,
+          employeeCode: true,
+          firstName: true,
+          lastName: true,
+          department: true,
+          level: true,
+          location: true,
+          baseSalary: true,
+          totalComp: true,
+          currency: true,
+          hireDate: true,
+          performanceRating: true,
+          managerId: true,
+        },
+        orderBy: [{ department: 'asc' }, { lastName: 'asc' }],
+      });
+
+      // Return all reports as a flat array with a type marker
+      return [
+        ...directReports.map((r) => ({ ...r, reportType: 'direct' as const })),
+        ...indirectReports.map((r) => ({ ...r, reportType: 'indirect' as const })),
+      ];
+    });
+  }
+
+  // ─── Action Tools (Task 4) ───────────────────────────────
+
+  async approveRecommendation(
+    tenantId: string,
+    userId: string,
+    params: { recommendationId: string; comment?: string },
+  ): Promise<unknown> {
+    return this.db.forTenant(tenantId, async (tx) => {
+      const rec = await tx.compRecommendation.findFirst({
+        where: { id: params.recommendationId, cycle: { tenantId } },
+        include: {
+          employee: { select: { firstName: true, lastName: true } },
+          cycle: { select: { name: true } },
+        },
+      });
+      if (!rec) return { error: `Recommendation ${params.recommendationId} not found` };
+      if (rec.status !== 'SUBMITTED' && rec.status !== 'DRAFT') {
+        return { error: `Recommendation is in ${rec.status} status and cannot be approved` };
+      }
+
+      const updated = await tx.compRecommendation.update({
+        where: { id: params.recommendationId },
+        data: {
+          status: 'APPROVED',
+          approverUserId: userId,
+          approvedAt: new Date(),
+        },
+      });
+
+      // Audit log
+      await tx.auditLog.create({
+        data: {
+          tenantId,
+          userId,
+          action: 'COPILOT_APPROVE_RECOMMENDATION',
+          entityType: 'CompRecommendation',
+          entityId: params.recommendationId,
+          changes: {
+            previousStatus: rec.status,
+            newStatus: 'APPROVED',
+            comment: params.comment ?? null,
+            source: 'ai_copilot',
+          } as never,
+        },
+      });
+
+      return {
+        success: true,
+        message: `Approved ${rec.recType} recommendation for ${rec.employee.firstName} ${rec.employee.lastName}`,
+        recommendation: {
+          id: updated.id,
+          employee: `${rec.employee.firstName} ${rec.employee.lastName}`,
+          cycle: rec.cycle.name,
+          type: rec.recType,
+          currentValue: Number(rec.currentValue),
+          proposedValue: Number(rec.proposedValue),
+          status: 'APPROVED',
+        },
+      };
+    });
+  }
+
+  async rejectRecommendation(
+    tenantId: string,
+    userId: string,
+    params: { recommendationId: string; reason: string },
+  ): Promise<unknown> {
+    return this.db.forTenant(tenantId, async (tx) => {
+      const rec = await tx.compRecommendation.findFirst({
+        where: { id: params.recommendationId, cycle: { tenantId } },
+        include: {
+          employee: { select: { firstName: true, lastName: true } },
+          cycle: { select: { name: true } },
+        },
+      });
+      if (!rec) return { error: `Recommendation ${params.recommendationId} not found` };
+      if (rec.status !== 'SUBMITTED' && rec.status !== 'DRAFT') {
+        return { error: `Recommendation is in ${rec.status} status and cannot be rejected` };
+      }
+
+      const updated = await tx.compRecommendation.update({
+        where: { id: params.recommendationId },
+        data: {
+          status: 'REJECTED',
+          justification: params.reason,
+        },
+      });
+
+      // Audit log
+      await tx.auditLog.create({
+        data: {
+          tenantId,
+          userId,
+          action: 'COPILOT_REJECT_RECOMMENDATION',
+          entityType: 'CompRecommendation',
+          entityId: params.recommendationId,
+          changes: {
+            previousStatus: rec.status,
+            newStatus: 'REJECTED',
+            reason: params.reason,
+            source: 'ai_copilot',
+          } as never,
+        },
+      });
+
+      return {
+        success: true,
+        message: `Rejected ${rec.recType} recommendation for ${rec.employee.firstName} ${rec.employee.lastName}. Reason: ${params.reason}`,
+        recommendation: {
+          id: updated.id,
+          employee: `${rec.employee.firstName} ${rec.employee.lastName}`,
+          cycle: rec.cycle.name,
+          type: rec.recType,
+          status: 'REJECTED',
+          reason: params.reason,
+        },
+      };
+    });
+  }
+
+  async requestLetter(
+    tenantId: string,
+    userId: string,
+    params: {
+      employeeId: string;
+      letterType: string;
+      salaryIncreasePercent?: number;
+      bonusAmount?: number;
+      effectiveDate?: string;
+    },
+  ): Promise<unknown> {
+    return this.db.forTenant(tenantId, async (tx) => {
+      const employee = await tx.employee.findFirst({
+        where: { id: params.employeeId, tenantId },
+        select: { id: true, firstName: true, lastName: true, department: true, level: true },
+      });
+      if (!employee) return { error: `Employee ${params.employeeId} not found` };
+
+      // Create the letter record in GENERATING status
+      const letter = await tx.compensationLetter.create({
+        data: {
+          tenantId,
+          userId,
+          employeeId: params.employeeId,
+          letterType: params.letterType as never,
+          status: 'GENERATING' as never,
+          subject: `${params.letterType} letter - ${employee.firstName} ${employee.lastName}`,
+          content: '',
+          compData: {
+            salaryIncreasePercent: params.salaryIncreasePercent,
+            bonusAmount: params.bonusAmount,
+            effectiveDate: params.effectiveDate,
+          } as never,
+        },
+      });
+
+      // Audit log
+      await tx.auditLog.create({
+        data: {
+          tenantId,
+          userId,
+          action: 'COPILOT_REQUEST_LETTER',
+          entityType: 'CompensationLetter',
+          entityId: letter.id,
+          changes: {
+            letterType: params.letterType,
+            employeeId: params.employeeId,
+            employeeName: `${employee.firstName} ${employee.lastName}`,
+            source: 'ai_copilot',
+          } as never,
+        },
+      });
+
+      return {
+        success: true,
+        message: `${params.letterType} letter generation initiated for ${employee.firstName} ${employee.lastName}`,
+        letter: {
+          id: letter.id,
+          employee: `${employee.firstName} ${employee.lastName}`,
+          department: employee.department,
+          type: params.letterType,
+          status: 'GENERATING',
+        },
+      };
     });
   }
 }

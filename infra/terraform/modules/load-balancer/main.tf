@@ -12,15 +12,9 @@ resource "google_compute_managed_ssl_certificate" "main" {
   }
 }
 
-# ─── Wildcard SSL Certificate (tenant subdomains) ──────────
-resource "google_compute_managed_ssl_certificate" "wildcard" {
-  count = var.wildcard_domain != "" ? 1 : 0
-  name  = "${var.name_prefix}-wildcard-ssl"
-
-  managed {
-    domains = [var.wildcard_domain]
-  }
-}
+# NOTE: Wildcard SSL certificates are not supported by Google-managed SSL certs.
+# For tenant subdomains (*.compportiq.ai), use Certificate Manager with DNS authorization instead.
+# This is a follow-up task — for now, only the root domain is covered.
 
 # ─── Serverless NEGs (Cloud Run backends) ────────────────────
 resource "google_compute_region_network_endpoint_group" "api" {
@@ -100,10 +94,7 @@ resource "google_compute_url_map" "main" {
 resource "google_compute_target_https_proxy" "main" {
   name             = "${var.name_prefix}-https-proxy"
   url_map          = google_compute_url_map.main.id
-  ssl_certificates = concat(
-    [google_compute_managed_ssl_certificate.main.id],
-    var.wildcard_domain != "" ? [google_compute_managed_ssl_certificate.wildcard[0].id] : [],
-  )
+  ssl_certificates = [google_compute_managed_ssl_certificate.main.id]
 }
 
 # ─── HTTPS Forwarding Rule ──────────────────────────────────

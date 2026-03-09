@@ -1,24 +1,49 @@
-"use client";
+'use client';
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useRef, useState } from 'react';
 
-const API_BASE_URL = process.env["NEXT_PUBLIC_API_URL"] || "http://localhost:4000";
+const API_BASE_URL = process.env['NEXT_PUBLIC_API_URL'] || 'http://localhost:4000';
 
 // ─── Types ───────────────────────────────────────────────
 
 export interface ChatMessage {
   id: string;
-  role: "user" | "assistant";
+  role: 'user' | 'assistant';
   content: string;
   timestamp: number;
+  toolCalls?: ToolCallInfo[];
+  actionResult?: ActionResult;
+}
+
+export interface ToolCallInfo {
+  name: string;
+  isAction: boolean;
+  status: 'running' | 'done';
+}
+
+export interface ActionResult {
+  tool: string;
+  message: string;
+  success: boolean;
+}
+
+export interface ConversationSummary {
+  id: string;
+  title: string | null;
+  createdAt: string;
+  updatedAt: string;
+  _count: { messages: number };
 }
 
 interface SSEData {
   content?: string;
   node?: string;
+  tool?: string;
+  isAction?: boolean;
   message?: string;
   graphName?: string;
   runId?: string | null;
+  result?: Record<string, unknown>;
   timestamp?: number;
   [key: string]: unknown;
 }
@@ -29,6 +54,7 @@ export function useCopilot() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [activeNode, setActiveNode] = useState<string | null>(null);
+  const [activeTool, setActiveTool] = useState<string | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -42,7 +68,7 @@ export function useCopilot() {
       // Append user message
       const userMsg: ChatMessage = {
         id: `user-${Date.now()}`,
-        role: "user",
+        role: 'user',
         content: message.trim(),
         timestamp: Date.now(),
       };
@@ -53,8 +79,8 @@ export function useCopilot() {
       const assistantId = `assistant-${Date.now()}`;
       const assistantMsg: ChatMessage = {
         id: assistantId,
-        role: "assistant",
-        content: "",
+        role: 'assistant',
+        content: '',
         timestamp: Date.now(),
       };
       setMessages((prev) => [...prev, assistantMsg]);
@@ -63,15 +89,12 @@ export function useCopilot() {
       abortRef.current = controller;
 
       try {
-        const token =
-          typeof window !== "undefined"
-            ? localStorage.getItem("accessToken")
-            : null;
+        const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
 
         const res = await fetch(`${API_BASE_URL}/api/v1/copilot/chat`, {
-          method: "POST",
+          method: 'POST',
           headers: {
-            "Content-Type": "application/json",
+            'Content-Type': 'application/json',
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
           body: JSON.stringify({
@@ -86,10 +109,10 @@ export function useCopilot() {
         }
 
         const reader = res.body?.getReader();
-        if (!reader) throw new Error("No response body");
+        if (!reader) throw new Error('No response body');
 
         const decoder = new TextDecoder();
-        let buffer = "";
+        let buffer = '';
 
         while (true) {
           const { done, value } = await reader.read();
@@ -98,33 +121,33 @@ export function useCopilot() {
           buffer += decoder.decode(value, { stream: true });
 
           // Parse SSE lines
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
 
-          let currentEvent = "";
+          let currentEvent = '';
           for (const line of lines) {
-            if (line.startsWith("event: ")) {
+            if (line.startsWith('event: ')) {
               currentEvent = line.slice(7).trim();
-            } else if (line.startsWith("data: ") && currentEvent) {
+            } else if (line.startsWith('data: ') && currentEvent) {
               try {
                 const data = JSON.parse(line.slice(6)) as SSEData;
                 handleSSEEvent(currentEvent, data, assistantId);
               } catch {
                 // skip malformed JSON
               }
-              currentEvent = "";
+              currentEvent = '';
             }
           }
         }
       } catch (err) {
-        if ((err as Error).name !== "AbortError") {
-          const msg = err instanceof Error ? err.message : "Unknown error";
+        if ((err as Error).name !== 'AbortError') {
+          const msg = err instanceof Error ? err.message : 'Unknown error';
           setError(msg);
           // Update assistant message with error
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantId
-                ? { ...m, content: m.content || "Sorry, something went wrong." }
+                ? { ...m, content: m.content || 'Sorry, something went wrong.' }
                 : m,
             ),
           );
@@ -138,41 +161,80 @@ export function useCopilot() {
     [isStreaming, conversationId],
   );
 
-  const handleSSEEvent = useCallback(
-    (eventType: string, data: SSEData, assistantId: string) => {
-      switch (eventType) {
-        case "graph:start":
-          if (data.runId && typeof data.runId === "string") {
-            setConversationId(data.runId);
-          }
-          break;
-        case "node:start":
-          setActiveNode((data.node as string) ?? null);
-          break;
-        case "node:end":
-          setActiveNode(null);
-          break;
-        case "message:chunk":
-          if (data.content) {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantId
-                  ? { ...m, content: m.content + data.content }
-                  : m,
-              ),
+  const handleSSEEvent = useCallback((eventType: string, data: SSEData, assistantId: string) => {
+    switch (eventType) {
+      case 'graph:start':
+        if (data.runId && typeof data.runId === 'string') {
+          setConversationId(data.runId);
+        }
+        break;
+      case 'node:start':
+        setActiveNode((data.node as string) ?? null);
+        break;
+      case 'node:end':
+        setActiveNode(null);
+        break;
+      case 'message:chunk':
+        if (data.content) {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId ? { ...m, content: m.content + data.content } : m,
+            ),
+          );
+        }
+        break;
+      case 'tool:start':
+        setActiveTool((data.tool as string) ?? null);
+        setMessages((prev) =>
+          prev.map((m) => {
+            if (m.id !== assistantId) return m;
+            const toolCalls = [...(m.toolCalls ?? [])];
+            toolCalls.push({
+              name: (data.tool as string) ?? 'unknown',
+              isAction: !!data.isAction,
+              status: 'running',
+            });
+            return { ...m, toolCalls };
+          }),
+        );
+        break;
+      case 'tool:end':
+        setActiveTool(null);
+        setMessages((prev) =>
+          prev.map((m) => {
+            if (m.id !== assistantId) return m;
+            const toolCalls = (m.toolCalls ?? []).map((tc) =>
+              tc.name === data.tool && tc.status === 'running'
+                ? { ...tc, status: 'done' as const }
+                : tc,
             );
-          }
-          break;
-        case "error":
-          setError((data.message as string) ?? "Unknown error");
-          break;
-        case "graph:end":
-          // streaming done
-          break;
-      }
-    },
-    [],
-  );
+            return { ...m, toolCalls };
+          }),
+        );
+        break;
+      case 'action:confirm':
+        setMessages((prev) =>
+          prev.map((m) => {
+            if (m.id !== assistantId) return m;
+            return {
+              ...m,
+              actionResult: {
+                tool: (data.tool as string) ?? '',
+                message: (data.message as string) ?? '',
+                success: !!(data.result as Record<string, unknown>)?.success,
+              },
+            };
+          }),
+        );
+        break;
+      case 'error':
+        setError((data.message as string) ?? 'Unknown error');
+        break;
+      case 'graph:end':
+        // streaming done
+        break;
+    }
+  }, []);
 
   const stopStreaming = useCallback(() => {
     abortRef.current?.abort();
@@ -184,15 +246,73 @@ export function useCopilot() {
     setError(null);
   }, []);
 
+  const loadConversation = useCallback(async (convId: string) => {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
+    const res = await fetch(`${API_BASE_URL}/api/v1/copilot/conversations/${convId}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) return;
+    const conv = (await res.json()) as {
+      id: string;
+      messages: Array<{ id: string; role: string; content: string; createdAt: string }>;
+    };
+    setConversationId(conv.id);
+    setMessages(
+      conv.messages.map((m) => ({
+        id: m.id,
+        role: m.role as 'user' | 'assistant',
+        content: m.content,
+        timestamp: new Date(m.createdAt).getTime(),
+      })),
+    );
+  }, []);
+
   return {
     messages,
     isStreaming,
     activeNode,
+    activeTool,
     conversationId,
     error,
     sendMessage,
     stopStreaming,
     clearChat,
+    loadConversation,
   };
 }
 
+// ─── Conversation History Hook ─────────────────────────────
+
+export function useConversationHistory() {
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+
+  const fetchConversations = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
+      const res = await fetch(`${API_BASE_URL}/api/v1/copilot/conversations?limit=50`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (res.ok) {
+        const body = (await res.json()) as { data: ConversationSummary[] };
+        setConversations(body.data ?? []);
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  const deleteConversation = useCallback(async (id: string) => {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
+    const res = await fetch(`${API_BASE_URL}/api/v1/copilot/conversations/${id}`, {
+      method: 'DELETE',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (res.ok) {
+      setConversations((prev) => prev.filter((c) => c.id !== id));
+    }
+  }, []);
+
+  return { conversations, isLoading, fetchConversations, deleteConversation };
+}

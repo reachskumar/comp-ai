@@ -11,7 +11,14 @@ export type SSEEventType =
   | 'node:start'
   | 'node:end'
   | 'message:chunk'
+  | 'tool:start'
+  | 'tool:end'
+  | 'action:confirm'
   | 'graph:end'
+  | 'progress:start'
+  | 'progress:step'
+  | 'progress:result'
+  | 'progress:error'
   | 'error';
 
 /**
@@ -75,6 +82,13 @@ export async function* streamGraphToSSE(
     data: { graphName: graphName ?? 'unknown', runId: runId ?? null, timestamp: Date.now() },
   };
 
+  /** Action tool names that emit confirmation events */
+  const ACTION_TOOLS = new Set([
+    'approve_recommendation',
+    'reject_recommendation',
+    'request_letter',
+  ]);
+
   try {
     for await (const event of stream) {
       const eventType: string = event.event ?? '';
@@ -93,20 +107,53 @@ export async function* streamGraphToSSE(
             timestamp: Date.now(),
           },
         };
-      } else if (
-        eventType === 'on_chat_model_stream' ||
-        eventType === 'on_llm_stream'
-      ) {
+      } else if (eventType === 'on_chat_model_stream' || eventType === 'on_llm_stream') {
         const chunk = event.data?.chunk;
-        const content =
-          typeof chunk === 'string'
-            ? chunk
-            : chunk?.content ?? chunk?.text ?? '';
+        const content = typeof chunk === 'string' ? chunk : (chunk?.content ?? chunk?.text ?? '');
         if (content) {
           yield {
             event: 'message:chunk',
             data: { content, timestamp: Date.now() },
           };
+        }
+      } else if (eventType === 'on_tool_start') {
+        const toolName = event.name ?? 'unknown';
+        yield {
+          event: 'tool:start',
+          data: {
+            tool: toolName,
+            isAction: ACTION_TOOLS.has(toolName),
+            timestamp: Date.now(),
+          },
+        };
+      } else if (eventType === 'on_tool_end') {
+        const toolName = event.name ?? 'unknown';
+        const output = event.data?.output;
+        const isAction = ACTION_TOOLS.has(toolName);
+
+        yield {
+          event: 'tool:end',
+          data: {
+            tool: toolName,
+            isAction,
+            timestamp: Date.now(),
+          },
+        };
+
+        // Emit action confirmation for write actions
+        if (isAction && output) {
+          const result = typeof output === 'string' ? JSON.parse(output) : output;
+          if (result?.success) {
+            yield {
+              event: 'action:confirm',
+              data: {
+                tool: toolName,
+                message: result.message ?? `Action ${toolName} completed`,
+                result: result,
+                timestamp: Date.now(),
+              },
+            };
+          }
         }
       }
     }
@@ -144,4 +191,3 @@ export function sseToReadableStream(
     },
   });
 }
-

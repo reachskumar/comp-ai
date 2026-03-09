@@ -4,11 +4,23 @@ import { TotalRewardsService } from './total-rewards.service';
 import { PayEquityService } from './pay-equity.service';
 import { SimulationService } from './simulation.service';
 import { HrDashboardService } from './hr-dashboard.service';
+import { EdgeRegressionService } from './edge-regression.service';
 
 @Module({
   controllers: [AnalyticsController],
-  providers: [TotalRewardsService, PayEquityService, SimulationService, HrDashboardService],
-  exports: [TotalRewardsService, PayEquityService, SimulationService, HrDashboardService],
+  providers: [
+    TotalRewardsService,
+    PayEquityService,
+    SimulationService,
+    HrDashboardService,
+    EdgeRegressionService,
+  ],
+  exports: [
+    TotalRewardsService,
+    PayEquityService,
+    SimulationService,
+    HrDashboardService,
+    EdgeRegressionService,
+  ],
 })
 export class AnalyticsModule {}
-

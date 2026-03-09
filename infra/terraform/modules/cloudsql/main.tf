@@ -1,19 +1,6 @@
-# ─── KMS Key for CMEK Encryption ─────────────────────────────
-resource "google_kms_key_ring" "cloudsql" {
-  name     = "${var.name_prefix}-cloudsql"
-  location = var.gcp_region
-}
-
-resource "google_kms_crypto_key" "cloudsql" {
-  name     = "${var.name_prefix}-cloudsql-key"
-  key_ring = google_kms_key_ring.cloudsql.id
-
-  rotation_period = "7776000s" # 90 days
-
-  lifecycle {
-    prevent_destroy = true
-  }
-}
+# NOTE: CMEK encryption can be added later by creating a KMS key ring + key
+# and granting the Cloud SQL service agent `roles/cloudkms.cryptoKeyEncrypterDecrypter`.
+# For the initial deploy, we use Google-managed encryption (default).
 
 # ─── Random password for master user ─────────────────────────
 resource "random_password" "master" {
@@ -29,10 +16,9 @@ resource "google_sql_database_instance" "main" {
 
   deletion_protection = true
 
-  encryption_key_name = google_kms_crypto_key.cloudsql.id
-
   settings {
     tier              = var.tier
+    edition           = "ENTERPRISE"
     availability_type = "REGIONAL"
     disk_size         = var.disk_size
     disk_type         = "PD_SSD"
