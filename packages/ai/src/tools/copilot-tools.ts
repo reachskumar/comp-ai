@@ -157,17 +157,25 @@ export interface CopilotDbAdapter {
   ): Promise<unknown>;
 }
 
+/** Roles allowed to execute write actions through the copilot. */
+const ACTION_ROLES = new Set(['PLATFORM_ADMIN', 'ADMIN', 'HR_MANAGER', 'MANAGER']);
+
+/** Roles allowed to request letter generation. */
+const LETTER_ROLES = new Set(['PLATFORM_ADMIN', 'ADMIN', 'HR_MANAGER']);
+
 /**
  * Create all copilot domain tools bound to a specific tenant.
  *
  * @param tenantId - Tenant ID for multi-tenant isolation
  * @param db - Database adapter for domain queries and actions
  * @param userId - User ID for action tools (required for audit trail)
+ * @param userRole - User's role for hard guardrails on action tools
  */
 export function createCopilotTools(
   tenantId: string,
   db: CopilotDbAdapter,
   userId?: string,
+  userRole?: string,
 ): StructuredToolInterface[] {
   const queryEmployees = createDomainTool({
     name: 'query_employees',
@@ -360,6 +368,11 @@ export function createCopilotTools(
     }),
     func: async (input) => {
       if (!userId) return { error: 'User ID required for actions' };
+      if (!userRole || !ACTION_ROLES.has(userRole)) {
+        return {
+          error: `Access denied: role "${userRole ?? 'unknown'}" cannot approve recommendations. Required: ADMIN, HR_MANAGER, or MANAGER.`,
+        };
+      }
       return db.approveRecommendation(tenantId, userId, input);
     },
   });
@@ -374,6 +387,11 @@ export function createCopilotTools(
     }),
     func: async (input) => {
       if (!userId) return { error: 'User ID required for actions' };
+      if (!userRole || !ACTION_ROLES.has(userRole)) {
+        return {
+          error: `Access denied: role "${userRole ?? 'unknown'}" cannot reject recommendations. Required: ADMIN, HR_MANAGER, or MANAGER.`,
+        };
+      }
       return db.rejectRecommendation(tenantId, userId, input);
     },
   });
@@ -396,6 +414,11 @@ export function createCopilotTools(
     }),
     func: async (input) => {
       if (!userId) return { error: 'User ID required for actions' };
+      if (!userRole || !LETTER_ROLES.has(userRole)) {
+        return {
+          error: `Access denied: role "${userRole ?? 'unknown'}" cannot generate letters. Required: ADMIN or HR_MANAGER.`,
+        };
+      }
       return db.requestLetter(tenantId, userId, input);
     },
   });

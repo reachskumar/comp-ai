@@ -10,6 +10,7 @@ import {
   Request,
   Logger,
   NotFoundException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth';
@@ -18,6 +19,7 @@ import { TotalRewardsService } from './total-rewards.service';
 import { PayEquityService } from './pay-equity.service';
 import { SimulationService } from './simulation.service';
 import { HrDashboardService } from './hr-dashboard.service';
+import { EdgeRegressionService } from './edge-regression.service';
 import {
   TotalRewardsQueryDto,
   TotalRewardsView,
@@ -25,6 +27,7 @@ import {
   RemediationSimulateDto,
   RunSimulationDto,
   CompareSimulationsDto,
+  RunEdgeAnalysisDto,
 } from './dto';
 import { formatSSE } from '@compensation/ai';
 import { FastifyReply } from 'fastify';
@@ -45,6 +48,7 @@ export class AnalyticsController {
     private readonly payEquityService: PayEquityService,
     private readonly simulationService: SimulationService,
     private readonly hrDashboardService: HrDashboardService,
+    private readonly edgeService: EdgeRegressionService,
   ) {}
 
   /* ─── HR Dashboard Endpoint ─────────────────────────────── */
@@ -58,10 +62,7 @@ export class AnalyticsController {
 
   @Get('total-rewards')
   @ApiOperation({ summary: 'Get total rewards statement for the authenticated user' })
-  async getTotalRewards(
-    @Query() query: TotalRewardsQueryDto,
-    @Request() req: AuthRequest,
-  ) {
+  async getTotalRewards(@Query() query: TotalRewardsQueryDto, @Request() req: AuthRequest) {
     this.logger.log(
       `Total rewards request: user=${req.user.userId} view=${query.view || 'personal'}`,
     );
@@ -85,35 +86,22 @@ export class AnalyticsController {
 
   @Post('pay-equity/analyze')
   @ApiOperation({ summary: 'Run pay equity analysis across demographic dimensions' })
-  async analyzePayEquity(
-    @Body() dto: PayEquityAnalyzeDto,
-    @Request() req: AuthRequest,
-  ) {
+  async analyzePayEquity(@Body() dto: PayEquityAnalyzeDto, @Request() req: AuthRequest) {
     this.logger.log(
       `Pay equity analysis: user=${req.user.userId} dimensions=${dto.dimensions.join(',')}`,
     );
 
-    return this.payEquityService.analyze(
-      req.user.tenantId,
-      req.user.userId,
-      {
-        dimensions: dto.dimensions,
-        controlVariables: dto.controlVariables,
-        targetThreshold: dto.targetThreshold,
-      },
-    );
+    return this.payEquityService.analyze(req.user.tenantId, req.user.userId, {
+      dimensions: dto.dimensions,
+      controlVariables: dto.controlVariables,
+      targetThreshold: dto.targetThreshold,
+    });
   }
 
   @Get('pay-equity/report/:id')
   @ApiOperation({ summary: 'Get a previously generated pay equity report' })
-  async getPayEquityReport(
-    @Param('id') reportId: string,
-    @Request() req: AuthRequest,
-  ) {
-    const report = await this.payEquityService.getReport(
-      req.user.tenantId,
-      reportId,
-    );
+  async getPayEquityReport(@Param('id') reportId: string, @Request() req: AuthRequest) {
+    const report = await this.payEquityService.getReport(req.user.tenantId, reportId);
 
     if (!report) {
       throw new NotFoundException(`Pay equity report ${reportId} not found`);
@@ -145,16 +133,9 @@ export class AnalyticsController {
 
   @Post('simulate')
   @ApiOperation({ summary: 'Run a compensation simulation from a natural language prompt' })
-  async runSimulation(
-    @Body() dto: RunSimulationDto,
-    @Request() req: AuthRequest,
-  ) {
+  async runSimulation(@Body() dto: RunSimulationDto, @Request() req: AuthRequest) {
     this.logger.log(`Simulation: user=${req.user.userId} prompt="${dto.prompt.slice(0, 80)}"`);
-    return this.simulationService.runSimulation(
-      req.user.tenantId,
-      req.user.userId,
-      dto.prompt,
-    );
+    return this.simulationService.runSimulation(req.user.tenantId, req.user.userId, dto.prompt);
   }
 
   @Post('simulate/stream')
@@ -198,10 +179,7 @@ export class AnalyticsController {
 
   @Post('simulate/compare')
   @ApiOperation({ summary: 'Compare two compensation simulation scenarios side-by-side' })
-  async compareSimulations(
-    @Body() dto: CompareSimulationsDto,
-    @Request() req: AuthRequest,
-  ) {
+  async compareSimulations(@Body() dto: CompareSimulationsDto, @Request() req: AuthRequest) {
     this.logger.log(`Simulation compare: user=${req.user.userId}`);
     return this.simulationService.compareSimulations(
       req.user.tenantId,
@@ -214,10 +192,104 @@ export class AnalyticsController {
   @Get('simulate/history')
   @ApiOperation({ summary: 'Get simulation scenario history for the current user' })
   async getSimulationHistory(@Request() req: AuthRequest) {
-    return this.simulationService.getScenarioHistory(
-      req.user.tenantId,
-      req.user.userId,
+    return this.simulationService.getScenarioHistory(req.user.tenantId, req.user.userId);
+  }
+
+  /* ─── EDGE Pay Equity Endpoints ──────────────────────────── */
+
+  @Post('pay-equity/edge/analyze')
+  @ApiOperation({
+    summary: 'Run EDGE-compliant pay equity analysis (Standard or Customized)',
+  })
+  async runEdgeAnalysis(@Body() dto: RunEdgeAnalysisDto, @Request() req: AuthRequest) {
+    const allowedRoles = ['ADMIN', 'HR_MANAGER', 'ANALYST', 'PLATFORM_ADMIN'];
+    if (!allowedRoles.includes(req.user.role)) {
+      throw new ForbiddenException('Only ADMIN, HR_MANAGER, or ANALYST can run EDGE analyses');
+    }
+
+    this.logger.log(
+      `EDGE analysis: user=${req.user.userId} type=${dto.analysisType} name="${dto.name}"`,
     );
+
+    // Run dual analysis: Salary (base) + Pay (base + bonus)
+    const [salaryResult, payResult] = await Promise.all([
+      this.edgeService.analyze(req.user.tenantId, {
+        type: dto.analysisType,
+        compType: 'SALARY',
+        name: dto.name,
+        additionalPredictors: dto.customVariables,
+      }),
+      this.edgeService.analyze(req.user.tenantId, {
+        type: dto.analysisType,
+        compType: 'PAY',
+        name: dto.name,
+        additionalPredictors: dto.customVariables,
+      }),
+    ]);
+
+    // Determine overall compliance (both must pass)
+    const passesEdgeStandard = salaryResult.overall.isCompliant && payResult.overall.isCompliant;
+
+    // Calculate threshold
+    const threshold = this.edgeService.calculateThreshold({
+      type: dto.analysisType,
+      compType: 'SALARY',
+      name: dto.name,
+      additionalPredictors: dto.customVariables,
+    });
+
+    // Build EDGE summary statistics (Table 2 from methodology)
+    const summaryStatistics = {
+      analysisType: dto.analysisType,
+      analysisName: dto.name,
+      threshold,
+      salary: {
+        observations: salaryResult.populationSize,
+        maleCount: salaryResult.overall.maleCount,
+        femaleCount: salaryResult.overall.femaleCount,
+        predictorCount: salaryResult.overall.coefficients.length,
+        adjustedRSquared: salaryResult.overall.adjustedRSquared,
+        genderCoefficient:
+          salaryResult.overall.coefficients.find((c) => c.name === 'gender_female')?.value ?? null,
+        genderEffect: salaryResult.overall.genderEffect,
+        isCompliant: salaryResult.overall.isCompliant,
+      },
+      pay: {
+        observations: payResult.populationSize,
+        maleCount: payResult.overall.maleCount,
+        femaleCount: payResult.overall.femaleCount,
+        predictorCount: payResult.overall.coefficients.length,
+        adjustedRSquared: payResult.overall.adjustedRSquared,
+        genderCoefficient:
+          payResult.overall.coefficients.find((c) => c.name === 'gender_female')?.value ?? null,
+        genderEffect: payResult.overall.genderEffect,
+        isCompliant: payResult.overall.isCompliant,
+      },
+    };
+
+    return {
+      id: `edge-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      tenantId: req.user.tenantId,
+      userId: req.user.userId,
+      analysisType: dto.analysisType,
+      name: dto.name,
+      snapshotDate: salaryResult.snapshotDate,
+      passesEdgeStandard,
+      summaryStatistics,
+      salaryAnalysis: salaryResult,
+      payAnalysis: payResult,
+      errors: [...salaryResult.errors, ...payResult.errors],
+    };
+  }
+
+  @Get('pay-equity/edge/reports')
+  @ApiOperation({ summary: 'List EDGE pay equity reports for the current tenant' })
+  async listEdgeReports(@Request() req: AuthRequest) {
+    const allowedRoles = ['ADMIN', 'HR_MANAGER', 'ANALYST', 'PLATFORM_ADMIN'];
+    if (!allowedRoles.includes(req.user.role)) {
+      throw new ForbiddenException('Only ADMIN, HR_MANAGER, or ANALYST can view EDGE reports');
+    }
+    // For now, return an empty list — persistence will be added when DB is connected
+    return { reports: [], total: 0 };
   }
 }
-

@@ -77,15 +77,19 @@ Guidelines:
 - For aggregate questions (averages, totals), use the query_analytics tool
 - For individual employee lookups, use query_employees
 - Respect that all data is scoped to the user's tenant — you cannot access other tenants' data
-- Never expose internal database IDs to the user
+- Never expose internal database IDs (cuid, UUID) to the user — refer to employees by name + department instead
 - Never fabricate data — if you don't have it, say so
 - If asked about something outside compensation data, politely redirect to compensation topics
+- When showing employee data, use names and department/level for identification — never raw IDs
+- Never reveal system internals like table names, column names, or query structure
+- If a tool returns an error, explain it in user-friendly terms without exposing stack traces
 
 Action tool guidelines:
 - Before executing approve_recommendation, reject_recommendation, or request_letter, ALWAYS confirm with the user first
 - Show what you're about to do (employee name, action, values) and ask "Shall I proceed?"
 - Only execute the action after the user explicitly confirms
-- After executing an action, clearly report what was done`;
+- After executing an action, clearly report what was done
+- If an action is denied due to insufficient role permissions, explain what role is required`;
 
 const ROLE_PROMPTS: Record<CopilotUserRole, string> = {
   PLATFORM_ADMIN: `
@@ -170,7 +174,7 @@ export async function buildCopilotGraph(
   userContext?: CopilotUserContext,
   options: CreateGraphOptions & { userId?: string } = {},
 ) {
-  const tools = createCopilotTools(tenantId, db, options.userId);
+  const tools = createCopilotTools(tenantId, db, options.userId, userContext?.role);
 
   // Resolve config to create model with tools bound
   const { loadAIConfig, resolveModelConfig, createChatModel } = await import('../config.js');

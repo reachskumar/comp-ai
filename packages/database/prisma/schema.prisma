@@ -254,6 +254,7 @@ model Tenant {
   careerLadders       CareerLadder[]
   writeBackBatches    WriteBackBatch[]
   copilotConversations CopilotConversation[]
+  payEquityReports     PayEquityReport[]
 
   @@map("tenants")
 }
@@ -319,6 +320,15 @@ model Employee {
   jobFamily       String?
   compaRatio      Decimal?  @db.Decimal(5, 4)
   salaryBandId    String?
+
+  // ── EDGE Pay Equity fields ──
+  gender               String?   // 'MALE', 'FEMALE', 'NON_BINARY', 'UNDISCLOSED'
+  dateOfBirth          DateTime? // For Age and Age² in EDGE regression
+  functionType         String?   // 'CORE' or 'SUPPORT' — Type of Performed Function (EDGE)
+  responsibilityLevel  String?   // 'TOP', 'UPPER', 'MIDDLE', 'JUNIOR', 'OPERATIONAL' (EDGE)
+  isPeopleManager      Boolean   @default(false) // Responsibility of Role (IC vs Manager, EDGE)
+  ftePercent           Decimal   @default(100) @db.Decimal(5, 2) // FTE percentage (100 = full-time)
+  totalCashComp        Decimal   @default(0) @db.Decimal(12, 2) // Base + bonus for EDGE "Pay" analysis
 
   recommendations    CompRecommendation[]
   cycleBudgets       CycleBudget[]
@@ -1897,4 +1907,62 @@ model CopilotMessage {
   @@index([conversationId])
   @@index([conversationId, createdAt])
   @@map("copilot_messages")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Pay Equity — EDGE Compliance
+// ─────────────────────────────────────────────────────────────
+
+model PayEquityReport {
+  id              String   @id @default(cuid())
+  tenantId        String
+  name            String                          // Human-readable report name
+  type            String   @default("STANDARD")   // 'STANDARD' | 'CUSTOMIZED'
+  status          String   @default("DRAFT")      // 'DRAFT' | 'RUNNING' | 'COMPLETE' | 'FAILED'
+  compType        String   @default("SALARY")     // 'SALARY' (base) | 'PAY' (total cash)
+  snapshotDate    DateTime @default(now())         // Date of the data snapshot
+  populationSize  Int      @default(0)             // Total employees in analysis
+  threshold       Decimal  @default(5.0) @db.Decimal(4, 2) // EDGE threshold %
+  genderEffect    Decimal? @db.Decimal(6, 3)       // Overall exp(β₁)-1 * 100
+  isCompliant     Boolean?                         // genderEffect within ± threshold
+  rSquared        Decimal? @db.Decimal(5, 4)       // Model fit R²
+  adjustedRSquared Decimal? @db.Decimal(5, 4)      // Adjusted R²
+  fStatistic      Decimal? @db.Decimal(10, 4)
+  coefficients    Json     @default("{}")          // Full regression coefficients JSON
+  narrative       String?  @db.Text               // AI-generated narrative summary
+  errorMessage    String?  @db.Text               // Error details if FAILED
+  createdById     String?                          // User who triggered the report
+  metadata        Json     @default("{}")          // Extra config, filters, etc.
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant     Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  dimensions PayEquityDimension[]
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([tenantId, createdAt])
+  @@map("pay_equity_reports")
+}
+
+model PayEquityDimension {
+  id              String   @id @default(cuid())
+  reportId        String
+  dimension       String                          // 'OVERALL' | department name | function | level
+  dimensionType   String   @default("OVERALL")    // 'OVERALL' | 'DEPARTMENT' | 'FUNCTION' | 'LEVEL'
+  populationSize  Int      @default(0)
+  maleCount       Int      @default(0)
+  femaleCount     Int      @default(0)
+  genderEffect    Decimal? @db.Decimal(6, 3)
+  isCompliant     Boolean?
+  coefficients    Json     @default("{}")
+  rSquared        Decimal? @db.Decimal(5, 4)
+  pValue          Decimal? @db.Decimal(8, 6)       // p-value for gender coefficient
+  createdAt       DateTime @default(now())
+
+  report PayEquityReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@index([reportId])
+  @@index([reportId, dimensionType])
+  @@map("pay_equity_dimensions")
 }
