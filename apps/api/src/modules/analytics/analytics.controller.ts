@@ -2,6 +2,8 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
+  Delete,
   Query,
   Body,
   Param,
@@ -289,6 +291,135 @@ export class AnalyticsController {
     };
   }
 
+  @Post('pay-equity/edge/analyze/stream')
+  @ApiOperation({ summary: 'Run EDGE analysis with real-time SSE progress streaming' })
+  async runEdgeAnalysisStream(
+    @Body() dto: RunEdgeAnalysisDto,
+    @Request() req: AuthRequest,
+    @Res() reply: FastifyReply,
+  ) {
+    const allowedRoles = ['ADMIN', 'HR_MANAGER', 'ANALYST', 'PLATFORM_ADMIN'];
+    if (!allowedRoles.includes(req.user.role)) {
+      throw new ForbiddenException('Only ADMIN, HR_MANAGER, or ANALYST can run EDGE analyses');
+    }
+
+    void reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    const emit = (step: string, pct: number) => {
+      reply.raw.write(
+        formatSSE({ event: 'progress:step', data: { step, percent: pct, timestamp: Date.now() } }),
+      );
+    };
+
+    try {
+      reply.raw.write(
+        formatSSE({ event: 'progress:start', data: { name: dto.name, timestamp: Date.now() } }),
+      );
+
+      emit('Fetching employees…', 10);
+      // Pre-fetch employees (single DB call, used by both analyses)
+      const threshold = this.edgeService.calculateThreshold({
+        type: dto.analysisType,
+        compType: 'SALARY',
+        name: dto.name,
+        additionalPredictors: dto.customVariables,
+      });
+
+      emit('Running Salary regression…', 25);
+      const salaryResult = await this.edgeService.analyze(req.user.tenantId, {
+        type: dto.analysisType,
+        compType: 'SALARY',
+        name: dto.name,
+        additionalPredictors: dto.customVariables,
+      });
+
+      emit('Running Pay regression…', 50);
+      const payResult = await this.edgeService.analyze(req.user.tenantId, {
+        type: dto.analysisType,
+        compType: 'PAY',
+        name: dto.name,
+        additionalPredictors: dto.customVariables,
+      });
+
+      emit('Running dimension breakdowns…', 70);
+      const passesEdgeStandard = salaryResult.overall.isCompliant && payResult.overall.isCompliant;
+
+      const summaryStatistics = {
+        analysisType: dto.analysisType,
+        analysisName: dto.name,
+        threshold,
+        salary: {
+          observations: salaryResult.populationSize,
+          maleCount: salaryResult.overall.maleCount,
+          femaleCount: salaryResult.overall.femaleCount,
+          predictorCount: salaryResult.overall.coefficients.length,
+          adjustedRSquared: salaryResult.overall.adjustedRSquared,
+          genderCoefficient:
+            salaryResult.overall.coefficients.find((c) => c.name === 'gender_female')?.value ??
+            null,
+          genderEffect: salaryResult.overall.genderEffect,
+          isCompliant: salaryResult.overall.isCompliant,
+        },
+        pay: {
+          observations: payResult.populationSize,
+          maleCount: payResult.overall.maleCount,
+          femaleCount: payResult.overall.femaleCount,
+          predictorCount: payResult.overall.coefficients.length,
+          adjustedRSquared: payResult.overall.adjustedRSquared,
+          genderCoefficient:
+            payResult.overall.coefficients.find((c) => c.name === 'gender_female')?.value ?? null,
+          genderEffect: payResult.overall.genderEffect,
+          isCompliant: payResult.overall.isCompliant,
+        },
+      };
+
+      emit('Persisting reports…', 85);
+      const [salaryReportId, payReportId] = await Promise.all([
+        this.edgeService.persistReport(req.user.tenantId, req.user.userId, salaryResult),
+        this.edgeService.persistReport(req.user.tenantId, req.user.userId, payResult),
+      ]);
+
+      emit('Complete', 100);
+
+      const result = {
+        salaryReportId,
+        payReportId,
+        tenantId: req.user.tenantId,
+        userId: req.user.userId,
+        analysisType: dto.analysisType,
+        name: dto.name,
+        snapshotDate: salaryResult.snapshotDate,
+        passesEdgeStandard,
+        summaryStatistics,
+        salaryAnalysis: salaryResult,
+        payAnalysis: payResult,
+        errors: [...salaryResult.errors, ...payResult.errors],
+      };
+
+      reply.raw.write(
+        formatSSE({ event: 'progress:result', data: result as unknown as Record<string, unknown> }),
+      );
+    } catch (error) {
+      this.logger.error('EDGE analysis stream error', error);
+      reply.raw.write(
+        formatSSE({
+          event: 'progress:error',
+          data: {
+            message: error instanceof Error ? error.message : 'Analysis failed',
+            timestamp: Date.now(),
+          },
+        }),
+      );
+    } finally {
+      reply.raw.end();
+    }
+  }
+
   @Get('pay-equity/edge/reports')
   @ApiOperation({ summary: 'List EDGE pay equity reports for the current tenant' })
   async listEdgeReports(
@@ -316,5 +447,33 @@ export class AnalyticsController {
     const report = await this.edgeService.getReport(req.user.tenantId, id);
     if (!report) throw new NotFoundException(`EDGE report ${id} not found`);
     return report;
+  }
+
+  @Patch('pay-equity/edge/reports/:id')
+  @ApiOperation({ summary: 'Rename an EDGE pay equity report' })
+  async updateEdgeReport(
+    @Param('id') id: string,
+    @Body() body: { name: string },
+    @Request() req: AuthRequest,
+  ) {
+    const allowedRoles = ['ADMIN', 'HR_MANAGER', 'ANALYST', 'PLATFORM_ADMIN'];
+    if (!allowedRoles.includes(req.user.role)) {
+      throw new ForbiddenException('Only ADMIN, HR_MANAGER, or ANALYST can edit EDGE reports');
+    }
+    const report = await this.edgeService.updateReport(req.user.tenantId, id, { name: body.name });
+    if (!report) throw new NotFoundException(`EDGE report ${id} not found`);
+    return report;
+  }
+
+  @Delete('pay-equity/edge/reports/:id')
+  @ApiOperation({ summary: 'Delete an EDGE pay equity report and its dimension breakdowns' })
+  async deleteEdgeReport(@Param('id') id: string, @Request() req: AuthRequest) {
+    const allowedRoles = ['ADMIN', 'HR_MANAGER', 'ANALYST', 'PLATFORM_ADMIN'];
+    if (!allowedRoles.includes(req.user.role)) {
+      throw new ForbiddenException('Only ADMIN, HR_MANAGER, or ANALYST can delete EDGE reports');
+    }
+    const deleted = await this.edgeService.deleteReport(req.user.tenantId, id);
+    if (!deleted) throw new NotFoundException(`EDGE report ${id} not found`);
+    return { success: true };
   }
 }

@@ -82,6 +82,7 @@ export const navGroups: NavGroup[] = [
       { title: 'Simulator', href: '/dashboard/rules/simulator', icon: FlaskConical },
       { title: 'Test Cases', href: '/dashboard/rules/test-cases', icon: TestTubeDiagonal },
       { title: 'Pay Equity', href: '/dashboard/analytics/pay-equity', icon: Scale },
+      { title: 'EDGE Pay Equity', href: '/dashboard/analytics/pay-equity/edge', icon: ShieldCheck },
       { title: 'HR Dashboards', href: '/dashboard/analytics/hr-dashboards', icon: LayoutGrid },
       { title: 'Report Builder', href: '/dashboard/reports', icon: FileBarChart },
       { title: 'Comp Letters', href: '/dashboard/letters', icon: FileText },

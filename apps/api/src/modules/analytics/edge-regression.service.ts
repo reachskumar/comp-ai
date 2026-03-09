@@ -664,4 +664,39 @@ export class EdgeRegressionService {
       });
     });
   }
+
+  /**
+   * Update an EDGE report (currently only name).
+   * Returns the updated report or null if not found.
+   */
+  async updateReport(tenantId: string, reportId: string, data: { name: string }) {
+    return this.db.forTenant(tenantId, async (tx) => {
+      const existing = await tx.payEquityReport.findFirst({
+        where: { id: reportId, tenantId },
+      });
+      if (!existing) return null;
+      return tx.payEquityReport.update({
+        where: { id: reportId },
+        data: { name: data.name },
+      });
+    });
+  }
+
+  /**
+   * Delete an EDGE report and all its dimension breakdowns.
+   * Returns true if deleted, false if not found.
+   */
+  async deleteReport(tenantId: string, reportId: string): Promise<boolean> {
+    return this.db.forTenant(tenantId, async (tx) => {
+      const existing = await tx.payEquityReport.findFirst({
+        where: { id: reportId, tenantId },
+      });
+      if (!existing) return false;
+      // Cascade delete dimensions first
+      await tx.payEquityDimension.deleteMany({ where: { reportId } });
+      await tx.payEquityReport.delete({ where: { id: reportId } });
+      this.logger.log(`Deleted EDGE report ${reportId}`);
+      return true;
+    });
+  }
 }

@@ -15,6 +15,10 @@ export type SSEEventType =
   | 'tool:end'
   | 'action:confirm'
   | 'graph:end'
+  | 'progress:start'
+  | 'progress:step'
+  | 'progress:result'
+  | 'progress:error'
   | 'error';
 
 /**
