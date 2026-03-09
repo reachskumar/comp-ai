@@ -65,6 +65,8 @@ export {
   invokeCopilotGraph,
   type CopilotGraphInput,
   type CopilotGraphOutput,
+  type CopilotUserRole,
+  type CopilotUserContext,
 } from './graphs/copilot-graph.js';
 
 // Compliance tools

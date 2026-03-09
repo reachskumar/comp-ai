@@ -16,13 +16,55 @@ import {
   ToolMessage,
   type BaseMessage,
 } from '@langchain/core/messages';
+import { Annotation, MessagesAnnotation } from '@langchain/langgraph';
 import { ToolNode } from '@langchain/langgraph/prebuilt';
 import { BaseAgentState, type BaseAgentStateType } from '../state.js';
 import { createAgentGraph } from '../graph-factory.js';
 import type { CreateGraphOptions } from '../graph-factory.js';
 import { createCopilotTools, type CopilotDbAdapter } from '../tools/copilot-tools.js';
 
-const SYSTEM_PROMPT = `You are the AI Compensation Copilot for the Compport platform. You help HR professionals, compensation analysts, and managers understand their compensation data.
+/* ─── User Role Types ─────────────────────────────────────── */
+
+export type CopilotUserRole =
+  | 'PLATFORM_ADMIN'
+  | 'ADMIN'
+  | 'HR_MANAGER'
+  | 'MANAGER'
+  | 'ANALYST'
+  | 'EMPLOYEE';
+
+export interface CopilotUserContext {
+  role: CopilotUserRole;
+  name: string;
+  employeeId?: string; // For MANAGER/EMPLOYEE scoping
+  managedTeamIds?: string[]; // Direct report IDs for MANAGERs
+}
+
+/* ─── Copilot-Specific Graph State ────────────────────────── */
+
+export const CopilotState = Annotation.Root({
+  ...MessagesAnnotation.spec,
+  tenantId: Annotation<string>,
+  userId: Annotation<string>,
+  metadata: Annotation<Record<string, unknown>>({
+    reducer: (current, update) => ({ ...current, ...update }),
+    default: () => ({}),
+  }),
+  userRole: Annotation<CopilotUserRole>({
+    reducer: (_current, update) => update,
+    default: () => 'EMPLOYEE' as CopilotUserRole,
+  }),
+  userName: Annotation<string>({
+    reducer: (_current, update) => update,
+    default: () => '',
+  }),
+});
+
+type CopilotStateType = typeof CopilotState.State;
+
+/* ─── Role-Aware System Prompt ────────────────────────────── */
+
+const BASE_PROMPT = `You are the AI Compensation Copilot for the Compport platform. You help HR professionals, compensation analysts, and managers understand and manage their compensation data.
 
 You have access to tools that query the company's compensation database. Use them to answer questions accurately.
 
@@ -35,13 +77,76 @@ Guidelines:
 - For aggregate questions (averages, totals), use the query_analytics tool
 - For individual employee lookups, use query_employees
 - Respect that all data is scoped to the user's tenant — you cannot access other tenants' data
-- If asked about something outside compensation data, politely redirect to compensation topics`;
+- Never expose internal database IDs to the user
+- Never fabricate data — if you don't have it, say so
+- If asked about something outside compensation data, politely redirect to compensation topics
+
+Action tool guidelines:
+- Before executing approve_recommendation, reject_recommendation, or request_letter, ALWAYS confirm with the user first
+- Show what you're about to do (employee name, action, values) and ask "Shall I proceed?"
+- Only execute the action after the user explicitly confirms
+- After executing an action, clearly report what was done`;
+
+const ROLE_PROMPTS: Record<CopilotUserRole, string> = {
+  PLATFORM_ADMIN: `
+You are speaking with a Platform Administrator. They have full system access across all tenants.
+- They can view all compensation data, rules, cycles, payroll, and analytics
+- They can take administrative actions
+- Provide detailed technical information when asked
+- They may ask about system-wide metrics or cross-tenant comparisons`,
+
+  ADMIN: `
+You are speaking with a Tenant Administrator. They have full access to their organization's compensation data.
+- They can view all employees, compensation cycles, rules, and analytics
+- They can approve/reject compensation recommendations
+- They can manage cycles, budgets, and rule sets
+- Provide strategic insights and actionable recommendations
+- Help them with compensation planning and analysis`,
+
+  HR_MANAGER: `
+You are speaking with an HR Manager. They have broad access to compensation data.
+- They can view all employees and their compensation details
+- They can approve/reject compensation recommendations
+- They can run analytics and generate reports
+- Help them with compliance, pay equity, and compensation strategy
+- Provide context on market benchmarks when relevant`,
+
+  MANAGER: `
+You are speaking with a People Manager. Their view is scoped to their direct reports.
+- They can only see data for their direct reports — do NOT show data for employees outside their team
+- They can approve/reject compensation recommendations for their team members
+- Help them understand their team's compensation relative to benchmarks
+- Provide guidance on merit increases and promotions for their team
+- If they ask about employees not on their team, politely explain the data is not available to them`,
+
+  ANALYST: `
+You are speaking with a Compensation Analyst. They have read-only access to all compensation data.
+- They can view all employees, analytics, and reports
+- They cannot take actions (approve, reject, create)
+- Help them with deep-dive analysis, benchmarking, and reporting
+- Provide statistical context and data-driven insights
+- Support them with pay equity analysis and compensation modeling`,
+
+  EMPLOYEE: `
+You are speaking with an Employee. Their view is limited to their own data.
+- They can only see their own compensation information — do NOT show other employees' data
+- They cannot take any administrative actions
+- Help them understand their salary, benefits, and total compensation
+- Explain compensation structures and policies in simple terms
+- If they ask about other employees, politely explain that information is private`,
+};
+
+function buildSystemPrompt(role: CopilotUserRole, userName: string): string {
+  const greeting = userName ? `\nThe user's name is ${userName}.` : '';
+  return `${BASE_PROMPT}${greeting}\n${ROLE_PROMPTS[role]}`;
+}
 
 export interface CopilotGraphInput {
   tenantId: string;
   userId: string;
   message: string;
   conversationId?: string;
+  userContext?: CopilotUserContext;
 }
 
 export interface CopilotGraphOutput {
@@ -56,14 +161,16 @@ export interface CopilotGraphOutput {
  *
  * @param db - Database adapter for domain queries
  * @param tenantId - Tenant ID for multi-tenant isolation
+ * @param userContext - Optional user context for role-aware behavior
  * @param options - Optional overrides for config, checkpointer, etc.
  */
 export async function buildCopilotGraph(
   db: CopilotDbAdapter,
   tenantId: string,
-  options: CreateGraphOptions = {},
+  userContext?: CopilotUserContext,
+  options: CreateGraphOptions & { userId?: string } = {},
 ) {
-  const tools = createCopilotTools(tenantId, db);
+  const tools = createCopilotTools(tenantId, db, options.userId);
 
   // Resolve config to create model with tools bound
   const { loadAIConfig, resolveModelConfig, createChatModel } = await import('../config.js');
@@ -77,9 +184,14 @@ export async function buildCopilotGraph(
 
   const modelWithTools = model.bindTools(tools);
 
+  // Build role-aware system prompt
+  const role = userContext?.role ?? 'EMPLOYEE';
+  const userName = userContext?.name ?? '';
+  const systemPrompt = buildSystemPrompt(role, userName);
+
   // Agent node: calls the LLM (with tools bound)
-  async function agentNode(state: BaseAgentStateType): Promise<{ messages: BaseMessage[] }> {
-    const systemMsg = new SystemMessage(SYSTEM_PROMPT);
+  async function agentNode(state: CopilotStateType): Promise<{ messages: BaseMessage[] }> {
+    const systemMsg = new SystemMessage(systemPrompt);
     const response = await modelWithTools.invoke([systemMsg, ...state.messages]);
     return { messages: [response] };
   }
@@ -87,15 +199,14 @@ export async function buildCopilotGraph(
   // Tool executor node
   const toolNode = new ToolNode(tools);
 
-  async function toolExecutor(state: BaseAgentStateType): Promise<{ messages: BaseMessage[] }> {
+  async function toolExecutor(state: CopilotStateType): Promise<{ messages: BaseMessage[] }> {
     const result = await toolNode.invoke(state);
-    // ToolNode returns { messages: [...] }
     const msgs = (result as { messages?: BaseMessage[] }).messages ?? [];
     return { messages: msgs };
   }
 
   // Router: check if the last message has tool calls
-  function shouldContinue(state: BaseAgentStateType): string {
+  function shouldContinue(state: CopilotStateType): string {
     const messages = state.messages;
     const lastMessage = messages[messages.length - 1];
 
@@ -114,7 +225,7 @@ export async function buildCopilotGraph(
     {
       name: 'copilot-graph',
       graphType: 'copilot',
-      stateSchema: BaseAgentState,
+      stateSchema: CopilotState,
       nodes: {
         agent: agentNode,
         tools: toolExecutor,
@@ -146,11 +257,14 @@ export async function invokeCopilotGraph(
   db: CopilotDbAdapter,
   options: CreateGraphOptions = {},
 ): Promise<CopilotGraphOutput> {
-  const { graph } = await buildCopilotGraph(db, input.tenantId, options);
+  const { graph } = await buildCopilotGraph(db, input.tenantId, input.userContext, options);
 
   const config = input.conversationId
     ? { configurable: { thread_id: input.conversationId } }
     : undefined;
+
+  const role = input.userContext?.role ?? 'EMPLOYEE';
+  const userName = input.userContext?.name ?? '';
 
   const result = await graph.invoke(
     {
@@ -158,6 +272,8 @@ export async function invokeCopilotGraph(
       userId: input.userId,
       messages: [new HumanMessage(input.message)],
       metadata: {},
+      userRole: role,
+      userName,
     },
     config,
   );
