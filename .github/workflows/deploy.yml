@@ -135,7 +135,7 @@ jobs:
           gcloud run jobs create migrate-${{ steps.tag.outputs.TAG }} \
             --image=${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/api:${{ steps.tag.outputs.TAG }} \
             --region=${{ env.GCP_REGION }} \
-            --set-secrets=DATABASE_URL=${{ env.GCP_PROJECT }}:compportiq-prod-database-url:latest \
+            --set-secrets=DATABASE_URL=compportiq-prod-database-url:latest \
             --vpc-connector=${{ steps.vpc.outputs.CONNECTOR }} \
             --max-retries=0 \
             --task-timeout=300s \
@@ -158,7 +158,7 @@ jobs:
           gcloud run jobs create seed-${{ steps.tag.outputs.TAG }} \
             --image=${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/api:${{ steps.tag.outputs.TAG }} \
             --region=${{ env.GCP_REGION }} \
-            --set-secrets=DATABASE_URL=${{ env.GCP_PROJECT }}:compportiq-prod-database-url:latest \
+            --set-secrets=DATABASE_URL=compportiq-prod-database-url:latest \
             --vpc-connector=${{ steps.vpc.outputs.CONNECTOR }} \
             --max-retries=0 \
             --task-timeout=600s \
