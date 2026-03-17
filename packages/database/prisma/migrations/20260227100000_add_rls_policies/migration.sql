@@ -18,6 +18,12 @@ BEGIN
   EXECUTE format('ALTER TABLE %s ENABLE ROW LEVEL SECURITY', tbl);
   EXECUTE format('ALTER TABLE %s FORCE ROW LEVEL SECURITY', tbl);
 
+  -- Drop existing policies if they exist (idempotent re-run support)
+  EXECUTE format('DROP POLICY IF EXISTS tenant_isolation_select ON %s', tbl);
+  EXECUTE format('DROP POLICY IF EXISTS tenant_isolation_insert ON %s', tbl);
+  EXECUTE format('DROP POLICY IF EXISTS tenant_isolation_update ON %s', tbl);
+  EXECUTE format('DROP POLICY IF EXISTS tenant_isolation_delete ON %s', tbl);
+
   -- SELECT: only rows matching current tenant
   EXECUTE format(
     'CREATE POLICY tenant_isolation_select ON %s FOR SELECT USING ("tenantId" = current_setting(''app.current_tenant_id'', true))',
