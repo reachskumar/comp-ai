@@ -68,7 +68,9 @@ COPY --from=builder /app/apps/web/package.json ./apps/web/package.json
 COPY --from=builder /app/packages/database/prisma/ ./packages/database/prisma/
 COPY --from=builder /app/packages/database/prisma.config.ts ./packages/database/prisma.config.ts
 
-RUN pnpm install --frozen-lockfile --prod --ignore-scripts && \
+# Install all deps (prisma CLI + tsx needed for migrations/seed jobs)
+# then generate Prisma client
+RUN pnpm install --frozen-lockfile --ignore-scripts && \
     cd packages/database && pnpm exec prisma generate
 
 # Copy built artifacts

@@ -141,8 +141,8 @@ jobs:
             --max-retries=0 \
             --task-timeout=300s \
             --memory=1Gi \
-            --command="pnpm" \
-            --args="exec,prisma,migrate,deploy,--schema=packages/database/prisma/schema.prisma" \
+            --command="sh" \
+            --args="-c,cd /app/packages/database && node_modules/.bin/prisma migrate deploy" \
             --quiet
 
           gcloud run jobs execute migrate-${{ steps.tag.outputs.TAG }} \
@@ -166,8 +166,8 @@ jobs:
             --max-retries=0 \
             --task-timeout=600s \
             --memory=1Gi \
-            --command="pnpm" \
-            --args="exec,tsx,packages/database/prisma/seed.ts" \
+            --command="sh" \
+            --args="-c,cd /app/packages/database && node_modules/.bin/tsx prisma/seed.ts" \
             --quiet
 
           gcloud run jobs execute seed-${{ steps.tag.outputs.TAG }} \
