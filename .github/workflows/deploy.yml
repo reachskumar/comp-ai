@@ -140,8 +140,9 @@ jobs:
             --vpc-connector=${{ steps.vpc.outputs.CONNECTOR }} \
             --max-retries=0 \
             --task-timeout=300s \
-            --command="npx" \
-            --args="prisma,migrate,deploy,--schema=packages/database/prisma/schema.prisma" \
+            --memory=1Gi \
+            --command="pnpm" \
+            --args="exec,prisma,migrate,deploy,--schema=packages/database/prisma/schema.prisma" \
             --quiet
 
           gcloud run jobs execute migrate-${{ steps.tag.outputs.TAG }} \
@@ -164,8 +165,9 @@ jobs:
             --vpc-connector=${{ steps.vpc.outputs.CONNECTOR }} \
             --max-retries=0 \
             --task-timeout=600s \
-            --command="npx" \
-            --args="tsx,packages/database/prisma/seed.ts" \
+            --memory=1Gi \
+            --command="pnpm" \
+            --args="exec,tsx,packages/database/prisma/seed.ts" \
             --quiet
 
           gcloud run jobs execute seed-${{ steps.tag.outputs.TAG }} \
