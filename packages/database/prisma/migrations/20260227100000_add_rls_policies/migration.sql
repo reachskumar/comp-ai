@@ -91,37 +91,19 @@ SELECT _enable_rls_for_table('saved_reports');
 -- Policy & compliance (AI agents)
 SELECT _enable_rls_for_table('policy_conversions');
 SELECT _enable_rls_for_table('compliance_scans');
-SELECT _enable_rls_for_table('policy_documents');
-SELECT _enable_rls_for_table('policy_chunks');
+-- NOTE: policy_documents and policy_chunks tables do not exist yet (no migration creates them).
+-- RLS will be added when those tables are created.
 
 -- Compensation letters
 SELECT _enable_rls_for_table('compensation_letters');
 
--- Merit & salary
-SELECT _enable_rls_for_table('merit_matrices');
-SELECT _enable_rls_for_table('salary_bands');
-SELECT _enable_rls_for_table('market_data_sources');
-
--- Ad-hoc & currency
-SELECT _enable_rls_for_table('ad_hoc_increases');
-SELECT _enable_rls_for_table('exchange_rates');
-SELECT _enable_rls_for_table('tenant_currencies');
-
--- Total rewards
-SELECT _enable_rls_for_table('rewards_statements');
-
--- Equity
-SELECT _enable_rls_for_table('equity_plans');
-SELECT _enable_rls_for_table('equity_grants');
-
--- Attrition (AI agents)
-SELECT _enable_rls_for_table('attrition_risk_scores');
-SELECT _enable_rls_for_table('attrition_analysis_runs');
-
--- Job architecture
-SELECT _enable_rls_for_table('job_families');
-SELECT _enable_rls_for_table('job_levels');
-SELECT _enable_rls_for_table('career_ladders');
+-- NOTE: The following tables are defined in schema.prisma but no migration creates them yet.
+-- RLS will be added when those tables get their CREATE TABLE migrations:
+--   merit_matrices, salary_bands, market_data_sources,
+--   ad_hoc_increases, exchange_rates, tenant_currencies,
+--   rewards_statements, equity_plans, equity_grants,
+--   attrition_risk_scores, attrition_analysis_runs,
+--   job_families, job_levels, career_ladders
 
 -- Clean up the helper function (no longer needed at runtime)
 DROP FUNCTION _enable_rls_for_table(regclass);
