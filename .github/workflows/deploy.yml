@@ -170,6 +170,7 @@ jobs:
             --max-retries=0 \
             --task-timeout=600s \
             --memory=1Gi \
+            --set-env-vars=NODE_TLS_REJECT_UNAUTHORIZED=0 \
             --command="sh" \
             --args="-c,cd /app/packages/database && node_modules/.bin/tsx prisma/seed.ts" \
             --quiet
