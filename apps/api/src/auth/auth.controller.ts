@@ -121,7 +121,15 @@ export class AuthController {
       const redirectUri = this.configService.get<string>('AZURE_AD_REDIRECT_URI')!;
 
       // Exchange code for tokens
-      const tokenRes = await fetch(
+      // Use explicit typing to avoid @types/node version mismatches across build envs
+      type FetchResponse = {
+        ok: boolean;
+        status: number;
+        text(): Promise<string>;
+        json(): Promise<unknown>;
+      };
+
+      const tokenRes = (await fetch(
         `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`,
         {
           method: 'POST',
@@ -135,7 +143,7 @@ export class AuthController {
             scope: 'openid profile email User.Read',
           }),
         },
-      );
+      )) as unknown as FetchResponse;
 
       if (!tokenRes.ok) {
         const err = await tokenRes.text();
@@ -146,9 +154,9 @@ export class AuthController {
       const tokenData = (await tokenRes.json()) as { access_token: string };
 
       // Fetch user profile from Microsoft Graph
-      const profileRes = await fetch('https://graph.microsoft.com/v1.0/me', {
+      const profileRes = (await fetch('https://graph.microsoft.com/v1.0/me', {
         headers: { Authorization: `Bearer ${tokenData.access_token}` },
-      });
+      })) as unknown as FetchResponse;
 
       if (!profileRes.ok) {
         return reply.redirect(`${frontendUrl}/login?error=profile_fetch_failed`, 302);
