@@ -63,7 +63,12 @@ export class CurrencyService {
 
     try {
       const url = `https://api.exchangerate-api.com/v4/latest/${baseCurrency}`;
-      const response = await fetch(url);
+      // Use explicit typing to avoid @types/node version mismatches across build envs
+      const response = (await fetch(url)) as unknown as {
+        ok: boolean;
+        status: number;
+        json(): Promise<unknown>;
+      };
       if (!response.ok) {
         throw new Error(`Exchange rate API returned ${response.status}`);
       }
