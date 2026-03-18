@@ -3779,7 +3779,7 @@ Additional Leave:
       mimeType: 'text/plain',
       status: 'READY',
       chunkCount: 5,
-      uploadedBy: adminUser.id,
+      uploadedBy: admin.id,
     },
   });
 
@@ -3808,7 +3808,7 @@ Additional Leave:
       mimeType: 'text/plain',
       status: 'READY',
       chunkCount: 4,
-      uploadedBy: adminUser.id,
+      uploadedBy: admin.id,
     },
   });
 
