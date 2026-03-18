@@ -132,6 +132,10 @@ jobs:
         run: |
           # Use the API Cloud Run service to run migrations via a one-off job
           # The API image has prisma CLI and the schema baked in
+          #
+          # Strategy: Nuke public schema first (fresh DB, no real data).
+          # This avoids partial-migration state issues from previous failed runs.
+          # Remove the schema reset line once the DB has real production data.
           gcloud run jobs create migrate-${{ steps.tag.outputs.TAG }} \
             --image=${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/api:${{ steps.tag.outputs.TAG }} \
             --region=${{ env.GCP_REGION }} \
@@ -142,7 +146,7 @@ jobs:
             --task-timeout=300s \
             --memory=1Gi \
             --command="sh" \
-            --args="-c,cd /app/packages/database && node_modules/.bin/prisma migrate resolve --rolled-back 20260227100000_add_rls_policies 2>/dev/null; node_modules/.bin/prisma migrate deploy" \
+            --args="-c,cd /app/packages/database && echo 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;' | node_modules/.bin/prisma db execute --stdin && node_modules/.bin/prisma migrate deploy" \
             --quiet
 
           gcloud run jobs execute migrate-${{ steps.tag.outputs.TAG }} \
