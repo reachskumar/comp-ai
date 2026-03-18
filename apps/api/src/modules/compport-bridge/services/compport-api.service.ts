@@ -131,7 +131,8 @@ export class CompportApiService {
     const url = `${this.config.apiUrl}${path}`;
 
     try {
-      const response = await fetch(url, {
+      // Use explicit typing to avoid @types/node version mismatches across build envs
+      const response = (await fetch(url, {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
@@ -139,7 +140,12 @@ export class CompportApiService {
           'User-Agent': 'CompportBridge/1.0',
         },
         signal: AbortSignal.timeout(30_000),
-      });
+      })) as unknown as {
+        ok: boolean;
+        status: number;
+        statusText: string;
+        json(): Promise<unknown>;
+      };
 
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -168,7 +174,9 @@ export class CompportApiService {
         return this.request(path, retryCount + 1);
       }
 
-      throw new Error(`Compport API request failed after ${this.MAX_RETRIES + 1} attempts: ${errMsg}`);
+      throw new Error(
+        `Compport API request failed after ${this.MAX_RETRIES + 1} attempts: ${errMsg}`,
+      );
     }
   }
 
@@ -190,4 +198,3 @@ export class CompportApiService {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }
-
