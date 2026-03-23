@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useRef, useState } from 'react';
+import { getCsrfToken } from '@/lib/csrf';
 
 const API_BASE_URL = process.env['NEXT_PUBLIC_API_URL'] || 'http://localhost:4000';
 
@@ -91,12 +92,15 @@ export function useCopilot() {
       try {
         const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
 
+        const csrfToken = await getCsrfToken();
         const res = await fetch(`${API_BASE_URL}/api/v1/copilot/chat`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
           },
+          credentials: 'include',
           body: JSON.stringify({
             message: message.trim(),
             ...(conversationId ? { conversationId } : {}),
@@ -305,9 +309,14 @@ export function useConversationHistory() {
 
   const deleteConversation = useCallback(async (id: string) => {
     const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
+    const csrfToken = await getCsrfToken();
     const res = await fetch(`${API_BASE_URL}/api/v1/copilot/conversations/${id}`, {
       method: 'DELETE',
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
+      },
+      credentials: 'include',
     });
     if (res.ok) {
       setConversations((prev) => prev.filter((c) => c.id !== id));

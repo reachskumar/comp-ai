@@ -3,6 +3,7 @@
 import { useCallback, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiClient } from '@/lib/api-client';
+import { getCsrfToken } from '@/lib/csrf';
 
 const API_BASE_URL = process.env['NEXT_PUBLIC_API_URL'] || 'http://localhost:4000';
 
@@ -117,12 +118,15 @@ export function usePolicyChat() {
       try {
         const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
 
+        const csrfToken = await getCsrfToken();
         const res = await fetch(`${API_BASE_URL}/api/v1/policies/ask`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
           },
+          credentials: 'include',
           body: JSON.stringify({
             question: question.trim(),
             ...(conversationId ? { conversationId } : {}),
