@@ -50,17 +50,21 @@ export function createPrismaClient(url?: string, poolConfig?: PoolConfig): Prism
   const connectionTimeoutMillis =
     poolConfig?.connectionTimeoutMillis ??
     (parseInt(process.env['DB_CONNECT_TIMEOUT'] ?? '', 10) || 5000);
-  const sslEnabled = poolConfig?.ssl ?? process.env['DB_SSL'] === 'true';
+  // Auto-detect SSL from the connection string (sslmode=require/prefer/verify-*)
+  // or from the explicit DB_SSL env var / poolConfig.ssl option.
+  const connString = url ?? process.env['DATABASE_URL'] ?? '';
+  const urlHasSsl = /[?&]sslmode=(require|prefer|verify)/i.test(connString);
+  const sslEnabled = (poolConfig?.ssl ?? process.env['DB_SSL'] === 'true') || urlHasSsl;
 
   const poolOptions: pg.PoolConfig = {
-    connectionString: url ?? process.env['DATABASE_URL'],
+    connectionString: connString,
     min,
     max,
     idleTimeoutMillis,
     connectionTimeoutMillis,
   };
 
-  if (sslEnabled) {
+  if (sslEnabled || urlHasSsl) {
     poolOptions.ssl = { rejectUnauthorized: false };
   }
 
