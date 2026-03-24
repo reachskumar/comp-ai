@@ -4438,12 +4438,8 @@ Additional Leave:
     },
   ];
 
-  // Create levels with nextLevelId linking
+  // Create levels first without nextLevelId (avoids FK constraint on self-reference)
   for (const jl of jobLevelsData) {
-    // Find next level in same family
-    const sameFamilyLevels = jobLevelsData.filter((l) => l.familyId === jl.familyId);
-    const nextLevel = sameFamilyLevels.find((l) => l.grade === jl.grade + 1);
-
     await prisma.jobLevel.upsert({
       where: { id: jl.id },
       update: {},
@@ -4459,9 +4455,19 @@ Additional Leave:
         maxSalary: jl.max,
         currency: 'USD',
         competencies: jl.competencies,
-        nextLevelId: nextLevel?.id ?? null,
       },
     });
+  }
+  // Now link nextLevelId after all levels exist
+  for (const jl of jobLevelsData) {
+    const sameFamilyLevels = jobLevelsData.filter((l) => l.familyId === jl.familyId);
+    const nextLevel = sameFamilyLevels.find((l) => l.grade === jl.grade + 1);
+    if (nextLevel) {
+      await prisma.jobLevel.update({
+        where: { id: jl.id },
+        data: { nextLevelId: nextLevel.id },
+      });
+    }
   }
   console.log(`  ✅ Job Levels: ${jobLevelsData.length} created`);
 
