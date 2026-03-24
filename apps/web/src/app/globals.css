@@ -2,7 +2,7 @@
 
 @custom-variant dark (&:is(.dark *));
 
-@theme inline {
+@theme {
   /* Compport brand colors — primary indigo/violet #6366f1 */
   --color-background: hsl(0 0% 100%);
   --color-foreground: hsl(224 14% 10%);
