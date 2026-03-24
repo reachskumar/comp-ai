@@ -71,7 +71,7 @@ async function bootstrap() {
 
   // CSRF protection (double-submit cookie pattern)
   await app.register(import('@fastify/csrf-protection') as never, {
-    cookieOpts: { signed: false, httpOnly: true, sameSite: 'strict', path: '/' },
+    cookieOpts: { signed: false, httpOnly: true, sameSite: 'none', secure: true, path: '/' },
   });
 
   // Enable multipart file uploads

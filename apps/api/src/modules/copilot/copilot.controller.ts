@@ -45,12 +45,19 @@ export class CopilotController {
       `Copilot chat: user=${userId} role=${role} tenant=${tenantId} conv=${dto.conversationId ?? 'new'}`,
     );
 
-    // Set SSE headers
+    // Set SSE headers (include CORS headers since reply.raw.writeHead bypasses Fastify CORS plugin)
+    const origin = reply.request.headers.origin;
     void reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
+      ...(origin
+        ? {
+            'Access-Control-Allow-Origin': origin,
+            'Access-Control-Allow-Credentials': 'true',
+          }
+        : {}),
     });
 
     try {

@@ -42,6 +42,10 @@ COPY tsconfig.base.json ./
 # Pre-create .turbo directories to avoid QEMU/cross-platform mkdir race conditions
 RUN mkdir -p packages/database/.turbo packages/shared/.turbo packages/ui/.turbo apps/web/.turbo .turbo
 
+# Accept NEXT_PUBLIC_* env vars as build args (Next.js inlines them at build time)
+ARG NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+
 # Build the web app (turbo handles dependency order)
 RUN pnpm build --filter=@compensation/web
 
