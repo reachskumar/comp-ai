@@ -148,11 +148,18 @@ export class AnalyticsController {
     @Res() reply: FastifyReply,
   ) {
     this.logger.log(`Simulation stream: user=${req.user.userId}`);
+    const simOrigin = reply.request.headers.origin;
     void reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
+      ...(simOrigin
+        ? {
+            'Access-Control-Allow-Origin': simOrigin,
+            'Access-Control-Allow-Credentials': 'true',
+          }
+        : {}),
     });
 
     try {
@@ -303,11 +310,18 @@ export class AnalyticsController {
       throw new ForbiddenException('Only ADMIN, HR_MANAGER, or ANALYST can run EDGE analyses');
     }
 
+    const edgeOrigin = reply.request.headers.origin;
     void reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
+      ...(edgeOrigin
+        ? {
+            'Access-Control-Allow-Origin': edgeOrigin,
+            'Access-Control-Allow-Credentials': 'true',
+          }
+        : {}),
     });
 
     const emit = (step: string, pct: number) => {
