@@ -219,23 +219,23 @@ export default function AICopilotPage() {
       {/* Main Chat Area */}
       <div className="flex flex-1 flex-col min-w-0">
         {/* Header */}
-        <div className="flex items-center justify-between border-b px-4 py-3">
-          <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between border-b border-border/60 px-4 py-3 bg-background/80 backdrop-blur-sm">
+          <div className="flex items-center gap-3">
             {!sidebarOpen && (
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8"
+                className="h-8 w-8 rounded-lg"
                 onClick={() => setSidebarOpen(true)}
               >
                 <History className="h-4 w-4" />
               </Button>
             )}
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-              <MessageSquareText className="h-4 w-4 text-primary" />
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-primary/15 to-primary/10">
+              <MessageSquareText className="h-4.5 w-4.5 text-primary" />
             </div>
             <div>
-              <h1 className="text-lg font-semibold">AI Copilot</h1>
+              <h1 className="text-lg font-semibold tracking-tight">AI Copilot</h1>
               <p className="text-xs text-muted-foreground">{statusText}</p>
             </div>
           </div>
@@ -274,9 +274,9 @@ export default function AICopilotPage() {
         </ScrollArea>
 
         {/* Input Area */}
-        <div className="border-t px-4 py-3">
+        <div className="border-t border-border/60 bg-background/50 backdrop-blur-sm px-4 py-3">
           <div className="mx-auto flex max-w-3xl items-end gap-2">
-            <Card className="flex flex-1 items-end overflow-hidden p-0">
+            <Card className="flex flex-1 items-end overflow-hidden p-0 rounded-xl border-border/60 shadow-sm focus-within:ring-2 focus-within:ring-primary/20 focus-within:border-primary/30 transition-all">
               <textarea
                 ref={textareaRef}
                 value={input}
@@ -285,15 +285,25 @@ export default function AICopilotPage() {
                 placeholder="Ask a compensation question…"
                 disabled={isStreaming}
                 rows={1}
-                className="flex-1 resize-none border-0 bg-transparent px-3 py-2.5 text-sm outline-none placeholder:text-muted-foreground disabled:opacity-50"
+                className="flex-1 resize-none border-0 bg-transparent px-4 py-3 text-sm outline-none placeholder:text-muted-foreground disabled:opacity-50"
               />
             </Card>
             {isStreaming ? (
-              <Button size="icon" variant="destructive" onClick={stopStreaming}>
+              <Button
+                size="icon"
+                variant="destructive"
+                onClick={stopStreaming}
+                className="h-10 w-10 rounded-xl shrink-0"
+              >
                 <Square className="h-4 w-4" />
               </Button>
             ) : (
-              <Button size="icon" onClick={handleSend} disabled={!input.trim()}>
+              <Button
+                size="icon"
+                onClick={handleSend}
+                disabled={!input.trim()}
+                className="h-10 w-10 rounded-xl shrink-0 shadow-sm shadow-primary/20"
+              >
                 <Send className="h-4 w-4" />
               </Button>
             )}
@@ -308,25 +318,28 @@ export default function AICopilotPage() {
 
 function WelcomeScreen({ onPromptClick }: { onPromptClick: (p: string) => void }) {
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-6 py-16">
-      <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">
-        <Sparkles className="h-8 w-8 text-primary" />
+    <div className="flex h-full flex-col items-center justify-center gap-8 py-16">
+      <div className="relative">
+        <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500/15 to-violet-500/15 dark:from-indigo-500/20 dark:to-violet-500/20">
+          <Sparkles className="h-10 w-10 text-primary" />
+        </div>
+        <div className="absolute -right-1 -top-1 h-4 w-4 rounded-full bg-green-500 border-2 border-background" />
       </div>
-      <div className="text-center">
-        <h2 className="text-xl font-semibold">AI Compensation Copilot</h2>
-        <p className="mt-1 text-sm text-muted-foreground max-w-md">
+      <div className="text-center space-y-2">
+        <h2 className="text-2xl font-bold tracking-tight">AI Compensation Copilot</h2>
+        <p className="text-muted-foreground max-w-md text-base leading-relaxed">
           Ask questions about employees, salaries, compensation cycles, payroll, and rules — powered
           by your live data.
         </p>
       </div>
-      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3 max-w-2xl">
         {SUGGESTED_PROMPTS.map((prompt) => (
           <button
             key={prompt}
             onClick={() => onPromptClick(prompt)}
-            className="rounded-lg border bg-card px-4 py-2.5 text-left text-sm transition-colors hover:bg-accent"
+            className="rounded-xl border border-border/60 bg-card/80 backdrop-blur-sm px-4 py-3 text-left text-sm transition-all duration-150 hover:bg-accent hover:border-primary/20 hover:shadow-sm group"
           >
-            {prompt}
+            <span className="group-hover:text-primary transition-colors">{prompt}</span>
           </button>
         ))}
       </div>
@@ -373,16 +386,18 @@ function MessageBubble({ message, isStreaming }: { message: ChatMessage; isStrea
   return (
     <div className={`flex gap-3 ${isUser ? 'justify-end' : ''}`}>
       {!isUser && (
-        <Avatar className="h-8 w-8 shrink-0 mt-0.5">
-          <AvatarFallback className="bg-primary/10 text-primary">
+        <Avatar className="h-8 w-8 shrink-0 mt-0.5 ring-2 ring-primary/10">
+          <AvatarFallback className="bg-gradient-to-br from-primary/15 to-primary/10 text-primary">
             <Bot className="h-4 w-4" />
           </AvatarFallback>
         </Avatar>
       )}
       <div className={`max-w-[80%] ${isUser ? '' : 'min-w-0'}`}>
         <div
-          className={`rounded-lg px-3 py-2 text-sm ${
-            isUser ? 'bg-primary text-primary-foreground' : 'bg-muted'
+          className={`rounded-2xl px-4 py-2.5 text-sm ${
+            isUser
+              ? 'bg-primary text-primary-foreground rounded-br-md shadow-sm shadow-primary/20'
+              : 'bg-muted/80 border border-border/40 rounded-bl-md'
           }`}
         >
           {message.content ? (
@@ -394,7 +409,7 @@ function MessageBubble({ message, isStreaming }: { message: ChatMessage; isStrea
               </div>
             )
           ) : (
-            <span className="inline-flex items-center gap-1 text-muted-foreground">
+            <span className="inline-flex items-center gap-1.5 text-muted-foreground">
               <Loader2 className="h-3 w-3 animate-spin" />
               Thinking…
             </span>
@@ -411,7 +426,7 @@ function MessageBubble({ message, isStreaming }: { message: ChatMessage; isStrea
       </div>
       {isUser && (
         <Avatar className="h-8 w-8 shrink-0 mt-0.5">
-          <AvatarFallback>
+          <AvatarFallback className="bg-gradient-to-br from-primary/20 to-primary/10 text-primary font-semibold">
             <User className="h-4 w-4" />
           </AvatarFallback>
         </Avatar>
