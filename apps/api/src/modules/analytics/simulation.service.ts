@@ -40,7 +40,10 @@ export class SimulationService implements SimulationDbAdapter {
     );
 
     try {
-      const result = await invokeSimulationGraph({ tenantId, userId, message: prompt }, this);
+      const result = await invokeSimulationGraph(
+        { tenantId, userId, message: prompt, conversationId: `sim-${scenario.id}` },
+        this,
+      );
 
       // Update scenario with results
       await this.db.forTenant(tenantId, (tx) =>
