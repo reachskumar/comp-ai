@@ -362,6 +362,112 @@ export class CopilotService implements CopilotDbAdapter {
             _count: true,
           });
         }
+        case 'comp_ratio': {
+          // Fetch employees with salary data
+          const employees = await tx.employee.findMany({
+            where: baseWhere,
+            select: {
+              id: true,
+              baseSalary: true,
+              department: true,
+              level: true,
+              location: true,
+              jobFamily: true,
+              currency: true,
+            },
+          });
+
+          if (employees.length === 0) {
+            return { avgCompaRatio: null, count: 0, byGroup: [] };
+          }
+
+          // Fetch all relevant salary bands
+          const bands = await tx.salaryBand.findMany({
+            where: { tenantId },
+            select: {
+              jobFamily: true,
+              level: true,
+              location: true,
+              currency: true,
+              p50: true,
+            },
+          });
+
+          // Calculate compa-ratio for each employee
+          const employeesWithCompaRatio = employees
+            .map((emp) => {
+              // Find matching salary band
+              const band = bands.find(
+                (b) =>
+                  (b.jobFamily === emp.jobFamily || !b.jobFamily) &&
+                  (b.level === emp.level || !b.level) &&
+                  (b.location === emp.location || !b.location) &&
+                  b.currency === emp.currency,
+              );
+
+              if (!band || !band.p50 || Number(band.p50) === 0) {
+                return null; // Skip employees without matching bands
+              }
+
+              const compaRatio = Number(emp.baseSalary) / Number(band.p50);
+              return {
+                ...emp,
+                compaRatio,
+                bandP50: Number(band.p50),
+              };
+            })
+            .filter((e) => e !== null);
+
+          if (employeesWithCompaRatio.length === 0) {
+            return {
+              avgCompaRatio: null,
+              count: 0,
+              message: 'No employees matched to salary bands',
+            };
+          }
+
+          // Calculate overall average
+          const totalCompaRatio = employeesWithCompaRatio.reduce((sum, e) => sum + e.compaRatio, 0);
+          const avgCompaRatio = totalCompaRatio / employeesWithCompaRatio.length;
+
+          // Group by if requested
+          if (filters.groupBy) {
+            const groupField = filters.groupBy as 'department' | 'level' | 'location';
+            if (['department', 'level', 'location'].includes(groupField)) {
+              const grouped = new Map<string, { sum: number; count: number }>();
+
+              for (const emp of employeesWithCompaRatio) {
+                const key = emp[groupField] || 'Unknown';
+                const existing = grouped.get(key) || { sum: 0, count: 0 };
+                grouped.set(key, {
+                  sum: existing.sum + emp.compaRatio,
+                  count: existing.count + 1,
+                });
+              }
+
+              const byGroup = Array.from(grouped.entries()).map(([key, value]) => ({
+                [groupField]: key,
+                avgCompaRatio: Math.round((value.sum / value.count) * 10000) / 10000,
+                count: value.count,
+              }));
+
+              return {
+                overall: {
+                  avgCompaRatio: Math.round(avgCompaRatio * 10000) / 10000,
+                  count: employeesWithCompaRatio.length,
+                },
+                byGroup,
+              };
+            }
+          }
+
+          return {
+            avgCompaRatio: Math.round(avgCompaRatio * 10000) / 10000,
+            count: employeesWithCompaRatio.length,
+            totalEmployees: employees.length,
+            matchedToBands: employeesWithCompaRatio.length,
+          };
+        }
         default:
           return { error: `Unknown metric: ${filters.metric}` };
       }

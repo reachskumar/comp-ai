@@ -63,6 +63,7 @@ export default function AICopilotPage() {
   const {
     messages,
     isStreaming,
+    isRestoring,
     activeNode,
     activeTool,
     conversationId,
@@ -130,11 +131,13 @@ export default function AICopilotPage() {
     setSidebarOpen(false);
   };
 
-  const isEmpty = messages.length === 0;
+  const isEmpty = messages.length === 0 && !isRestoring;
 
   // Build status text
   let statusText = 'Ask anything about your compensation data';
-  if (isStreaming) {
+  if (isRestoring) {
+    statusText = 'Restoring conversation…';
+  } else if (isStreaming) {
     if (activeTool) {
       statusText = TOOL_LABELS[activeTool] ?? `Using ${activeTool}…`;
     } else if (activeNode === 'tools') {
