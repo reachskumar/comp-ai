@@ -12,6 +12,8 @@ import {
   ChevronRight,
   CheckCheck,
   ExternalLink,
+  MessageSquareText,
+  PanelRightClose,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth-store';
 import { useThemeStore } from '@/stores/theme-store';
@@ -37,6 +39,8 @@ import { cn } from '@/lib/utils';
 
 interface TopBarProps {
   onToggleMobileSidebar: () => void;
+  onToggleCopilotPanel?: () => void;
+  copilotPanelOpen?: boolean;
 }
 
 function Breadcrumbs() {
@@ -182,7 +186,11 @@ function NotificationBell() {
   );
 }
 
-export function TopBar({ onToggleMobileSidebar }: TopBarProps) {
+export function TopBar({
+  onToggleMobileSidebar,
+  onToggleCopilotPanel,
+  copilotPanelOpen,
+}: TopBarProps) {
   const { user, tenant, logout } = useAuthStore();
   const { theme, toggleTheme } = useThemeStore();
   const pathname = usePathname();
@@ -232,6 +240,24 @@ export function TopBar({ onToggleMobileSidebar }: TopBarProps) {
             className="w-56 pl-9 h-8 bg-muted/40 border border-border/40 rounded-lg text-sm focus-visible:ring-1 focus-visible:ring-primary/30 focus-visible:border-primary/30"
           />
         </div>
+
+        {/* Copilot toggle */}
+        {onToggleCopilotPanel && (
+          <Button
+            variant={copilotPanelOpen ? 'secondary' : 'ghost'}
+            size="icon"
+            onClick={onToggleCopilotPanel}
+            aria-label="Toggle AI Copilot (⌘J)"
+            title="AI Copilot (⌘J)"
+            className="hidden lg:inline-flex"
+          >
+            {copilotPanelOpen ? (
+              <PanelRightClose className="h-4.5 w-4.5" aria-hidden="true" />
+            ) : (
+              <MessageSquareText className="h-4.5 w-4.5" aria-hidden="true" />
+            )}
+          </Button>
+        )}
 
         {/* Notifications */}
         <NotificationBell />

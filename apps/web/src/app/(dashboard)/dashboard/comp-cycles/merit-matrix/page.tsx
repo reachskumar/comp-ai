@@ -26,6 +26,7 @@ import {
   TableCell,
 } from '@/components/ui/table';
 import { useToast } from '@/components/ui/toast';
+import { NudgeCards } from '@/components/nudge-cards';
 import {
   useMeritMatrixList,
   useMeritMatrixDetail,
@@ -90,14 +91,19 @@ export default function MeritMatrixPage() {
   const { data: matrices, isLoading } = useMeritMatrixList();
   if (selectedId) return <MatrixEditor matrixId={selectedId} onBack={() => setSelectedId(null)} />;
   return (
-    <MatrixListView
-      matrices={matrices ?? []}
-      isLoading={isLoading}
-      onSelect={setSelectedId}
-      createOpen={createOpen}
-      onCreateOpen={() => setCreateOpen(true)}
-      onCreateClose={() => setCreateOpen(false)}
-    />
+    <div className="space-y-6">
+      {/* AI Nudge cards */}
+      <NudgeCards />
+
+      <MatrixListView
+        matrices={matrices ?? []}
+        isLoading={isLoading}
+        onSelect={setSelectedId}
+        createOpen={createOpen}
+        onCreateOpen={() => setCreateOpen(true)}
+        onCreateClose={() => setCreateOpen(false)}
+      />
+    </div>
   );
 }
 
