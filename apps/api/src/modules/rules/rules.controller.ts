@@ -23,6 +23,7 @@ import { RuleSetCrudService, RuleCrudService } from './services/rules-crud.servi
 import { SimulatorService } from './services/simulator.service';
 import { TestGeneratorService } from './services/test-generator.service';
 import { TestRunnerService } from './services/test-runner.service';
+import { RuleGeneratorService } from './services/rule-generator.service';
 import {
   ConvertPolicyDto,
   UpdateConversionCountsDto,
@@ -32,6 +33,7 @@ import {
   UpdateRuleDto,
   RuleSetQueryDto,
   SimulationParamsDto,
+  GenerateRulesDto,
 } from './dto';
 
 interface AuthRequest {
@@ -54,6 +56,7 @@ export class RulesController {
     private readonly simulatorService: SimulatorService,
     private readonly testGeneratorService: TestGeneratorService,
     private readonly testRunnerService: TestRunnerService,
+    private readonly ruleGenerator: RuleGeneratorService,
   ) {}
 
   // ─── Policy Conversion ─────────────────────────────────────────
@@ -126,10 +129,7 @@ export class RulesController {
 
   @Patch('conversions/:id/counts')
   @ApiOperation({ summary: 'Update accepted/rejected counts for a conversion' })
-  async updateConversionCounts(
-    @Param('id') id: string,
-    @Body() dto: UpdateConversionCountsDto,
-  ) {
+  async updateConversionCounts(@Param('id') id: string, @Body() dto: UpdateConversionCountsDto) {
     return this.policyConverter.updateConversionCounts(id, dto.accepted, dto.rejected);
   }
 
@@ -237,10 +237,7 @@ export class RulesController {
 
   @Post('rule-sets/:ruleSetId/generate-tests')
   @ApiOperation({ summary: 'Auto-generate test cases for a rule set' })
-  async generateTests(
-    @Param('ruleSetId') ruleSetId: string,
-    @Request() req: AuthRequest,
-  ) {
+  async generateTests(@Param('ruleSetId') ruleSetId: string, @Request() req: AuthRequest) {
     const testCases = await this.testGeneratorService.generateTestCases(
       req.user.tenantId,
       ruleSetId,
@@ -262,11 +259,22 @@ export class RulesController {
 
   @Post('rule-sets/:ruleSetId/test-cases/run')
   @ApiOperation({ summary: 'Execute all test cases for a rule set' })
-  async runTestCases(
-    @Param('ruleSetId') ruleSetId: string,
-    @Request() req: AuthRequest,
-  ) {
+  async runTestCases(@Param('ruleSetId') ruleSetId: string, @Request() req: AuthRequest) {
     return this.testRunnerService.runTestCases(req.user.tenantId, ruleSetId);
   }
-}
 
+  // ─── AI Rule Generation ──────────────────────────────────────
+
+  @Post('rule-sets/:ruleSetId/generate')
+  @ApiOperation({ summary: 'Clone a rule set and apply AI-based adjustments for a new cycle' })
+  async generateRules(
+    @Param('ruleSetId') ruleSetId: string,
+    @Body() dto: GenerateRulesDto,
+    @Request() req: AuthRequest,
+  ) {
+    return this.ruleGenerator.generateFromSource(req.user.tenantId, {
+      sourceRuleSetId: ruleSetId,
+      ...dto,
+    });
+  }
+}

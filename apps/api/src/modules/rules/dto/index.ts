@@ -7,4 +7,4 @@ export {
 } from './create-rule-set.dto';
 export { RuleSetQueryDto } from './rule-set-query.dto';
 export { SimulationParamsDto } from './simulation.dto';
-
+export { GenerateRulesDto } from './generate-rules.dto';

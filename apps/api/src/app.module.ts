@@ -38,6 +38,7 @@ import { EmployeePortalModule } from './modules/employee-portal';
 import { JobArchitectureModule } from './modules/job-architecture';
 import { CsrfModule } from './csrf';
 import { PlatformAdminModule } from './modules/platform-admin';
+import { NudgeModule } from './modules/nudges';
 
 const isProduction = process.env['NODE_ENV'] === 'production';
 
@@ -124,6 +125,7 @@ const isProduction = process.env['NODE_ENV'] === 'production';
     JobArchitectureModule,
     CsrfModule,
     PlatformAdminModule,
+    NudgeModule,
   ],
   providers: [
     {
