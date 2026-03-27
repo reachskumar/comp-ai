@@ -699,6 +699,9 @@ export class WriteBackService {
       user: creds['user'] as string,
       password: creds['password'] as string,
       database: creds['database'] as string | undefined,
+      sslCa: process.env['MYSQL_CA_CERT'],
+      sslCert: process.env['MYSQL_CLIENT_CERT'],
+      sslKey: process.env['MYSQL_CLIENT_KEY'],
     });
   }
 }
