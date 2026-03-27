@@ -14,7 +14,7 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth, ApiConsumes } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiBearerAuth, ApiConsumes, ApiQuery } from '@nestjs/swagger';
 import { FastifyRequest } from 'fastify';
 import { JwtAuthGuard } from '../../auth';
 import { TenantGuard, RolesGuard, Roles } from '../../common';
@@ -83,7 +83,9 @@ export class RulesController {
 
   @Post('convert-policy/upload')
   @Roles('ADMIN', 'HR_MANAGER')
-  @ApiOperation({ summary: 'Upload a PDF or TXT file and convert to structured rules' })
+  @ApiOperation({
+    summary: 'Upload a PDF, TXT, CSV, or Excel file and convert to structured rules',
+  })
   @ApiConsumes('multipart/form-data')
   @HttpCode(HttpStatus.OK)
   async convertPolicyUpload(@Req() req: AuthenticatedFastifyRequest) {
@@ -105,12 +107,19 @@ export class RulesController {
     const fileName = data.filename;
     const mimeType = data.mimetype;
 
-    // Only allow PDF and text files
-    const allowedTypes = ['application/pdf', 'text/plain'];
-    const allowedExts = ['.pdf', '.txt'];
+    // Allow PDF, text, CSV, and Excel files
+    const allowedTypes = [
+      'application/pdf',
+      'text/plain',
+      'text/csv',
+      'text/tab-separated-values',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.ms-excel',
+    ];
+    const allowedExts = ['.pdf', '.txt', '.csv', '.tsv', '.xlsx', '.xls'];
     const ext = fileName.toLowerCase().slice(fileName.lastIndexOf('.'));
     if (!allowedTypes.includes(mimeType) && !allowedExts.includes(ext)) {
-      throw new BadRequestException('Only PDF and TXT files are supported.');
+      throw new BadRequestException('Unsupported file type. Use PDF, TXT, CSV, or Excel (.xlsx).');
     }
 
     const policyText = await this.policyConverter.extractText(fileBuffer, fileName, mimeType);
@@ -345,8 +354,14 @@ export class RulesController {
   @Roles('ADMIN', 'HR_MANAGER')
   @ApiOperation({ summary: 'Upload a CSV or Excel file containing compensation rules' })
   @ApiConsumes('multipart/form-data')
+  @ApiQuery({
+    name: 'ai',
+    required: false,
+    type: Boolean,
+    description: 'Enable AI-powered column mapping suggestions',
+  })
   @HttpCode(HttpStatus.OK)
-  async uploadRules(@Req() req: AuthenticatedFastifyRequest) {
+  async uploadRules(@Req() req: AuthenticatedFastifyRequest, @Query('ai') ai?: string) {
     const data = await req.file();
     if (!data) {
       throw new BadRequestException('No file uploaded. Send a multipart form with a "file" field.');
@@ -368,11 +383,14 @@ export class RulesController {
       throw new BadRequestException(`Unsupported file type: ${ext}. Use CSV or Excel (.xlsx).`);
     }
 
+    const aiMapping = ai === 'true' || ai === '1';
+
     return this.ruleUploadService.parseUpload(
       req.user.tenantId,
       req.user.userId,
       data.filename,
       fileBuffer,
+      aiMapping,
     );
   }
 

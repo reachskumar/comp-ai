@@ -68,6 +68,42 @@ export function useUploadPolicyMutation() {
   });
 }
 
+/**
+ * Upload a policy file via multipart form data (supports PDF, TXT, CSV, Excel).
+ */
+export function useUploadPolicyFileMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (file: File) => {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
+      const csrf = await getCsrfToken();
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const headers: Record<string, string> = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      if (csrf) headers['x-csrf-token'] = csrf;
+
+      const res = await fetch(`${API_BASE_URL}/api/v1/policies/upload-file`, {
+        method: 'POST',
+        headers,
+        body: formData,
+        credentials: 'include',
+      });
+
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({}))) as { message?: string };
+        throw new Error(err.message || `Upload failed (${res.status})`);
+      }
+
+      return res.json() as Promise<PolicyDocument>;
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['policy-documents'] });
+    },
+  });
+}
+
 export function useDeletePolicyMutation() {
   const qc = useQueryClient();
   return useMutation({
