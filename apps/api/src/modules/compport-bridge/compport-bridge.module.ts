@@ -39,6 +39,7 @@ export class CompportBridgeModule {
     this.logger.log('Registering Compport Bridge Module');
 
     return {
+      global: true,
       module: CompportBridgeModule,
       imports: [
         IntegrationModule,
