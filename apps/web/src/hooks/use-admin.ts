@@ -135,3 +135,43 @@ export function useAdminOnboard() {
     },
   });
 }
+
+// ─── Bridge Query Hooks ──────────────────────────────────
+
+export function useBridgeDiscoveryTables(schemaName: string | null) {
+  return useQuery({
+    queryKey: ['bridge-discovery-tables', schemaName],
+    queryFn: () => apiClient.bridgeDiscoveryTables(schemaName!),
+    enabled: !!schemaName,
+  });
+}
+
+export function useBridgeQueryTable(
+  schemaName: string | null,
+  tableName: string | null,
+  params?: { limit?: number; offset?: number },
+) {
+  return useQuery({
+    queryKey: ['bridge-query', schemaName, tableName, params],
+    queryFn: () => apiClient.bridgeQueryTable(schemaName!, tableName!, params),
+    enabled: !!schemaName && !!tableName,
+  });
+}
+
+export function useMyDataTables() {
+  return useQuery({
+    queryKey: ['my-data-tables'],
+    queryFn: () => apiClient.bridgeMyDataTables(),
+  });
+}
+
+export function useMyDataQuery(
+  tableName: string | null,
+  params?: { limit?: number; offset?: number },
+) {
+  return useQuery({
+    queryKey: ['my-data-query', tableName, params],
+    queryFn: () => apiClient.bridgeMyDataQuery(tableName!, params),
+    enabled: !!tableName,
+  });
+}

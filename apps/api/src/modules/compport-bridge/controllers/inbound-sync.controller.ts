@@ -1,4 +1,15 @@
-import { Controller, Get, Post, Param, Query, UseGuards, Request, Logger } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Param,
+  Query,
+  UseGuards,
+  Request,
+  Logger,
+  BadRequestException,
+  NotFoundException,
+} from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
@@ -181,6 +192,219 @@ export class InboundSyncController {
     try {
       const tenants = await this.tenantRegistry.discoverTenants();
       return { tenants, count: tenants.length };
+    } finally {
+      await this.cloudSql.disconnect();
+    }
+  }
+
+  // ─── Direct Query Endpoints ────────────────────────────────
+
+  /**
+   * Validate that a name is a safe SQL identifier (letters, digits, underscores).
+   */
+  private validateIdentifier(name: string, label: string): void {
+    if (!/^[a-zA-Z0-9_]+$/.test(name)) {
+      throw new BadRequestException(
+        `Invalid ${label}: "${name}". Only letters, digits, and underscores are allowed.`,
+      );
+    }
+  }
+
+  @Get('query/:schemaName/:tableName/count')
+  @ApiOperation({ summary: 'Get row count for a Cloud SQL table' })
+  async queryTableCount(
+    @Request() req: AuthRequest,
+    @Param('schemaName') schemaName: string,
+    @Param('tableName') tableName: string,
+  ) {
+    this.validateIdentifier(schemaName, 'schema name');
+    this.validateIdentifier(tableName, 'table name');
+
+    await this.ensureCloudSqlConnected(req.user.tenantId);
+    try {
+      const rows = await this.cloudSql.executeQuery<{ cnt: number }>(
+        schemaName,
+        `SELECT COUNT(*) AS cnt FROM \`${tableName}\``,
+      );
+      const count = Number(rows[0]?.cnt ?? 0);
+      return { schemaName, tableName, count };
+    } finally {
+      await this.cloudSql.disconnect();
+    }
+  }
+
+  @Get('query/:schemaName/:tableName')
+  @ApiOperation({ summary: 'Query rows from a Cloud SQL table (paginated)' })
+  async queryTable(
+    @Request() req: AuthRequest,
+    @Param('schemaName') schemaName: string,
+    @Param('tableName') tableName: string,
+    @Query('limit') limitStr?: string,
+    @Query('offset') offsetStr?: string,
+    @Query('columns') columnsStr?: string,
+    @Query('orderBy') orderBy?: string,
+    @Query('orderDir') orderDir?: string,
+  ) {
+    this.validateIdentifier(schemaName, 'schema name');
+    this.validateIdentifier(tableName, 'table name');
+
+    const limit = Math.min(1000, Math.max(1, parseInt(limitStr ?? '100', 10)));
+    const offset = Math.max(0, parseInt(offsetStr ?? '0', 10));
+
+    // Build column list — validate each column name
+    let columnsSql = '*';
+    if (columnsStr) {
+      const cols = columnsStr
+        .split(',')
+        .map((c) => c.trim())
+        .filter(Boolean);
+      for (const col of cols) {
+        this.validateIdentifier(col, 'column name');
+      }
+      columnsSql = cols.map((c) => `\`${c}\``).join(', ');
+    }
+
+    // Build ORDER BY clause
+    let orderSql = '';
+    if (orderBy) {
+      this.validateIdentifier(orderBy, 'orderBy column');
+      const dir = orderDir?.toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
+      orderSql = ` ORDER BY \`${orderBy}\` ${dir}`;
+    }
+
+    await this.ensureCloudSqlConnected(req.user.tenantId);
+    try {
+      // Get total count and rows in parallel
+      const [countRows, rows] = await Promise.all([
+        this.cloudSql.executeQuery<{ cnt: number }>(
+          schemaName,
+          `SELECT COUNT(*) AS cnt FROM \`${tableName}\``,
+        ),
+        this.cloudSql.executeQuery(
+          schemaName,
+          `SELECT ${columnsSql} FROM \`${tableName}\`${orderSql} LIMIT ? OFFSET ?`,
+          [limit, offset],
+        ),
+      ]);
+
+      const totalCount = Number(countRows[0]?.cnt ?? 0);
+      return { schemaName, tableName, rows, totalCount, limit, offset };
+    } finally {
+      await this.cloudSql.disconnect();
+    }
+  }
+
+  // ─── Tenant-Scoped Query Endpoints (auto-resolve schema) ──
+
+  /**
+   * Resolve the Compport MySQL schema name for the logged-in tenant.
+   */
+  private async resolveCompportSchema(tenantId: string): Promise<string> {
+    const tenant = await this.db.forTenant(tenantId, (tx) =>
+      tx.tenant.findUnique({
+        where: { id: tenantId },
+        select: { compportSchema: true, name: true },
+      }),
+    );
+
+    if (!tenant) {
+      throw new NotFoundException('Tenant not found');
+    }
+    if (!tenant.compportSchema) {
+      throw new BadRequestException(
+        `Tenant "${tenant.name}" has no Compport schema linked. Onboard via Platform Admin first.`,
+      );
+    }
+    return tenant.compportSchema;
+  }
+
+  @Get('my-data/tables')
+  @ApiOperation({ summary: "List tables in the logged-in tenant's Compport schema" })
+  async myDataTables(@Request() req: AuthRequest) {
+    const { tenantId } = req.user;
+    const schemaName = await this.resolveCompportSchema(tenantId);
+
+    await this.ensureCloudSqlConnected(tenantId);
+    try {
+      const tables = await this.schemaDiscovery.discoverTables(schemaName);
+      return { schemaName, tables, count: tables.length };
+    } finally {
+      await this.cloudSql.disconnect();
+    }
+  }
+
+  @Get('my-data/:tableName/count')
+  @ApiOperation({ summary: "Get row count for a table in the tenant's Compport schema" })
+  async myDataCount(@Request() req: AuthRequest, @Param('tableName') tableName: string) {
+    this.validateIdentifier(tableName, 'table name');
+    const { tenantId } = req.user;
+    const schemaName = await this.resolveCompportSchema(tenantId);
+
+    await this.ensureCloudSqlConnected(tenantId);
+    try {
+      const rows = await this.cloudSql.executeQuery<{ cnt: number }>(
+        schemaName,
+        `SELECT COUNT(*) AS cnt FROM \`${tableName}\``,
+      );
+      return { tableName, count: Number(rows[0]?.cnt ?? 0) };
+    } finally {
+      await this.cloudSql.disconnect();
+    }
+  }
+
+  @Get('my-data/:tableName')
+  @ApiOperation({ summary: "Query rows from a table in the tenant's Compport schema" })
+  async myDataQuery(
+    @Request() req: AuthRequest,
+    @Param('tableName') tableName: string,
+    @Query('limit') limitStr?: string,
+    @Query('offset') offsetStr?: string,
+    @Query('columns') columnsStr?: string,
+    @Query('orderBy') orderBy?: string,
+    @Query('orderDir') orderDir?: string,
+  ) {
+    this.validateIdentifier(tableName, 'table name');
+    const { tenantId } = req.user;
+    const schemaName = await this.resolveCompportSchema(tenantId);
+
+    const limit = Math.min(1000, Math.max(1, parseInt(limitStr ?? '100', 10)));
+    const offset = Math.max(0, parseInt(offsetStr ?? '0', 10));
+
+    let columnsSql = '*';
+    if (columnsStr) {
+      const cols = columnsStr
+        .split(',')
+        .map((c) => c.trim())
+        .filter(Boolean);
+      for (const col of cols) {
+        this.validateIdentifier(col, 'column name');
+      }
+      columnsSql = cols.map((c) => `\`${c}\``).join(', ');
+    }
+
+    let orderSql = '';
+    if (orderBy) {
+      this.validateIdentifier(orderBy, 'orderBy column');
+      const dir = orderDir?.toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
+      orderSql = ` ORDER BY \`${orderBy}\` ${dir}`;
+    }
+
+    await this.ensureCloudSqlConnected(tenantId);
+    try {
+      const [countRows, rows] = await Promise.all([
+        this.cloudSql.executeQuery<{ cnt: number }>(
+          schemaName,
+          `SELECT COUNT(*) AS cnt FROM \`${tableName}\``,
+        ),
+        this.cloudSql.executeQuery(
+          schemaName,
+          `SELECT ${columnsSql} FROM \`${tableName}\`${orderSql} LIMIT ? OFFSET ?`,
+          [limit, offset],
+        ),
+      ]);
+
+      const totalCount = Number(countRows[0]?.cnt ?? 0);
+      return { tableName, rows, totalCount, limit, offset };
     } finally {
       await this.cloudSql.disconnect();
     }
