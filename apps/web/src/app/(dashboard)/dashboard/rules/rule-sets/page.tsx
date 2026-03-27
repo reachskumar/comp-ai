@@ -397,14 +397,14 @@ export default function RuleSetsPage() {
                 <>
                   <Upload className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
                   <p className="text-sm text-muted-foreground mb-2">
-                    Drag &amp; drop a PDF or TXT file here
+                    Drag &amp; drop a PDF, TXT, CSV, or Excel file here
                   </p>
                   <label className="cursor-pointer">
                     <span className="text-sm text-primary underline">or browse files</span>
                     <input
                       type="file"
                       className="hidden"
-                      accept=".pdf,.txt,application/pdf,text/plain"
+                      accept=".pdf,.txt,.csv,.tsv,.xlsx,.xls,application/pdf,text/plain,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                       onChange={(e) => {
                         const file = e.target.files?.[0];
                         if (file) setImportFile(file);

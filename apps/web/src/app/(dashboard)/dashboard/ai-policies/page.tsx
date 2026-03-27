@@ -23,7 +23,7 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import {
   usePolicyDocuments,
   usePolicyChat,
-  useUploadPolicyMutation,
+  useUploadPolicyFileMutation,
   useDeletePolicyMutation,
   type PolicyChatMessage,
   type PolicyDocument,
@@ -39,7 +39,7 @@ const SUGGESTED_PROMPTS = [
 
 export default function AIPoliciesPage() {
   const { data: docsData } = usePolicyDocuments();
-  const uploadMutation = useUploadPolicyMutation();
+  const uploadMutation = useUploadPolicyFileMutation();
   const deleteMutation = useDeletePolicyMutation();
   const { messages, isStreaming, activeNode, error, askQuestion, stopStreaming, clearChat } =
     usePolicyChat();
@@ -76,16 +76,10 @@ export default function AIPoliciesPage() {
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const content = await file.text();
-    uploadMutation.mutate({
-      title: file.name.replace(/\.[^.]+$/, ''),
-      fileName: file.name,
-      content,
-      mimeType: file.type || 'text/plain',
-    });
+    uploadMutation.mutate(file);
     setShowUpload(false);
   };
 
@@ -108,12 +102,12 @@ export default function AIPoliciesPage() {
           <div className="border-b p-3">
             <label className="flex cursor-pointer flex-col items-center gap-2 rounded-lg border-2 border-dashed p-4 text-sm text-muted-foreground hover:border-primary hover:text-primary transition-colors">
               <FileUp className="h-6 w-6" />
-              <span>Drop a .txt or .pdf file</span>
+              <span>Upload PDF, TXT, CSV, or Excel</span>
               <input
                 type="file"
-                accept=".txt,.pdf,.md"
+                accept=".txt,.pdf,.md,.csv,.tsv,.xlsx,.xls"
                 className="hidden"
-                onChange={(e) => void handleFileUpload(e)}
+                onChange={(e) => handleFileUpload(e)}
               />
             </label>
             {uploadMutation.isPending && (

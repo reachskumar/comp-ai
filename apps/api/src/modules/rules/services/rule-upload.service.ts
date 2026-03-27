@@ -1,6 +1,11 @@
 import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { DatabaseService } from '../../../database';
 import { parseCSV } from '@compensation/shared';
+import {
+  invokeFieldMappingGraph,
+  type FieldSchema,
+  type FieldMappingGraphOutput,
+} from '@compensation/ai';
 import * as ExcelJS from 'exceljs';
 
 /**
@@ -80,6 +85,14 @@ export interface ParsedRuleRow {
   warnings: string[];
 }
 
+export interface AiColumnMapping {
+  sourceColumn: string;
+  targetField: string;
+  confidence: number;
+  transformType: string;
+  reasoning: string;
+}
+
 export interface RuleUploadPreview {
   id: string;
   fileName: string;
@@ -88,6 +101,10 @@ export interface RuleUploadPreview {
   unmappedColumns: string[];
   errors: string[];
   ruleTypeSummary: Record<string, number>;
+  /** Present when ai=true — AI-suggested column mappings */
+  aiMappingSuggestions?: AiColumnMapping[];
+  /** Overall confidence of AI mapping (0-1) */
+  aiMappingConfidence?: number;
 }
 
 @Injectable()
@@ -100,12 +117,14 @@ export class RuleUploadService {
 
   /**
    * Parse an uploaded file (CSV or Excel) and return a preview.
+   * When aiMapping=true, uses the AI field-mapping graph to suggest column mappings.
    */
   async parseUpload(
     tenantId: string,
     userId: string,
     fileName: string,
     fileBuffer: Buffer,
+    aiMapping = false,
   ): Promise<RuleUploadPreview> {
     const ext = fileName.toLowerCase().split('.').pop() ?? '';
     let headers: string[];
@@ -128,7 +147,165 @@ export class RuleUploadService {
       throw new BadRequestException('File is empty or has no data rows.');
     }
 
-    return this.buildPreview(tenantId, fileName, headers, rows);
+    const preview = this.buildPreview(tenantId, fileName, headers, rows);
+
+    if (aiMapping) {
+      const aiResult = await this.aiMapColumns(tenantId, userId, headers, rows);
+      preview.aiMappingSuggestions = aiResult.suggestions.map((s) => ({
+        sourceColumn: s.sourceField,
+        targetField: s.targetField,
+        confidence: s.confidence,
+        transformType: s.transformType,
+        reasoning: s.reasoning,
+      }));
+      preview.aiMappingConfidence = aiResult.overallConfidence;
+      this.logger.log(
+        `AI mapping for ${fileName}: ${aiResult.suggestions.length} suggestions, confidence=${aiResult.overallConfidence}`,
+      );
+    }
+
+    return preview;
+  }
+
+  /**
+   * Use the AI field-mapping graph to suggest how CSV columns map to
+   * compensation rule fields (rule types + condition fields).
+   */
+  private async aiMapColumns(
+    tenantId: string,
+    userId: string,
+    headers: string[],
+    rows: string[][],
+  ): Promise<FieldMappingGraphOutput> {
+    // Build source fields from CSV headers + sample values
+    const sampleRows = rows.slice(0, 5);
+    const sourceFields: FieldSchema[] = headers.map((header, idx) => {
+      const samples = sampleRows.map((row) => row[idx] ?? '').filter((v) => v.trim() !== '');
+      return {
+        name: header,
+        type: 'string',
+        required: false,
+        description: `CSV column "${header}"`,
+        sampleValues: samples.slice(0, 3),
+      };
+    });
+
+    // Build target fields from rule types + condition keywords
+    const ruleTypeFields: FieldSchema[] = [
+      {
+        name: 'Rule Name',
+        type: 'string',
+        required: true,
+        description: 'Name or label for the compensation rule',
+      },
+      {
+        name: 'Rule Type',
+        type: 'enum',
+        required: false,
+        description: 'Type of compensation rule',
+        enumValues: ['MERIT', 'BONUS', 'LTI', 'PRORATION', 'CAP', 'FLOOR', 'ELIGIBILITY', 'CUSTOM'],
+      },
+      {
+        name: 'Merit %',
+        type: 'number',
+        required: false,
+        description: 'Merit increase percentage',
+      },
+      { name: 'Bonus %', type: 'number', required: false, description: 'Bonus target percentage' },
+      {
+        name: 'LTI Value',
+        type: 'number',
+        required: false,
+        description: 'Long-term incentive value (stock/equity)',
+      },
+      {
+        name: 'Cap / Maximum',
+        type: 'number',
+        required: false,
+        description: 'Upper limit or cap for compensation',
+      },
+      {
+        name: 'Floor / Minimum',
+        type: 'number',
+        required: false,
+        description: 'Lower limit or floor for compensation',
+      },
+      {
+        name: 'Proration Factor',
+        type: 'number',
+        required: false,
+        description: 'Pro-rata factor based on tenure',
+      },
+      {
+        name: 'Eligibility',
+        type: 'string',
+        required: false,
+        description: 'Eligibility criteria or qualification flag',
+      },
+      {
+        name: 'Value / Amount',
+        type: 'number',
+        required: false,
+        description: 'Generic value or amount column',
+      },
+    ];
+
+    const conditionFields: FieldSchema[] = [
+      { name: 'Grade', type: 'string', required: false, description: 'Employee grade or level' },
+      { name: 'Band', type: 'string', required: false, description: 'Compensation band' },
+      {
+        name: 'Department',
+        type: 'string',
+        required: false,
+        description: 'Department or business unit',
+      },
+      {
+        name: 'Performance Rating',
+        type: 'string',
+        required: false,
+        description: 'Performance review rating',
+      },
+      {
+        name: 'Tenure',
+        type: 'number',
+        required: false,
+        description: 'Years of service or tenure',
+      },
+      {
+        name: 'Location',
+        type: 'string',
+        required: false,
+        description: 'Employee location or region',
+      },
+      {
+        name: 'Job Family',
+        type: 'string',
+        required: false,
+        description: 'Job family or function',
+      },
+      {
+        name: 'Compa-Ratio',
+        type: 'number',
+        required: false,
+        description: 'Compa-ratio (salary vs market midpoint)',
+      },
+      {
+        name: 'Designation',
+        type: 'string',
+        required: false,
+        description: 'Job title or designation',
+      },
+    ];
+
+    const targetFields = [...ruleTypeFields, ...conditionFields];
+
+    return invokeFieldMappingGraph({
+      tenantId,
+      userId,
+      connectorType: 'CSV Rule Upload',
+      sourceFields,
+      targetFields,
+    });
   }
 
   private async parseExcel(buffer: Buffer): Promise<{ headers: string[]; rows: string[][] }> {
