@@ -1,9 +1,8 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { DatabaseService } from '../../../database';
-import {
-  invokePolicyParser,
-  type ConversionResult,
-} from '../graphs/policy-parser-graph';
+import { invokePolicyParser, type ConversionResult } from '../graphs/policy-parser-graph';
+import { parseCSV } from '@compensation/shared';
+import * as ExcelJS from 'exceljs';
 
 /**
  * Extract text from a PDF buffer using pdf-parse.
@@ -26,9 +25,35 @@ async function extractTextFromPdf(buffer: Buffer): Promise<string> {
 }
 
 /**
+ * Convert parsed CSV/Excel headers + rows into a markdown table string
+ * that the LangGraph policy parser can interpret as structured policy data.
+ */
+function tabularToText(headers: string[], rows: string[][]): string {
+  if (headers.length === 0 || rows.length === 0) {
+    throw new BadRequestException('File is empty or has no data rows.');
+  }
+
+  // Build a markdown table — the LLM can interpret this as structured policy
+  const headerLine = `| ${headers.join(' | ')} |`;
+  const separatorLine = `| ${headers.map(() => '---').join(' | ')} |`;
+  const dataLines = rows.map((row) => {
+    const cells = headers.map((_, i) => row[i]?.trim() ?? '');
+    return `| ${cells.join(' | ')} |`;
+  });
+
+  return [
+    'The following is a compensation policy table with structured data:',
+    '',
+    headerLine,
+    separatorLine,
+    ...dataLines,
+  ].join('\n');
+}
+
+/**
  * Service that converts natural language compensation policy documents
  * into structured rule definitions using the LangGraph policy parser.
- * Supports PDF/TXT file upload, conversion history, and batch processing.
+ * Supports PDF/TXT/CSV/Excel file upload, conversion history, and batch processing.
  */
 @Injectable()
 export class PolicyConverterService {
@@ -37,19 +62,72 @@ export class PolicyConverterService {
   constructor(private readonly db: DatabaseService) {}
 
   /**
-   * Extract text from an uploaded file (PDF or TXT).
+   * Extract text from an uploaded file (PDF, TXT, CSV, or Excel).
    */
-  async extractText(
-    fileBuffer: Buffer,
-    fileName: string,
-    mimeType: string,
-  ): Promise<string> {
+  async extractText(fileBuffer: Buffer, fileName: string, mimeType: string): Promise<string> {
     if (mimeType === 'application/pdf' || fileName.endsWith('.pdf')) {
       return extractTextFromPdf(fileBuffer);
     }
 
+    const ext = fileName.toLowerCase().slice(fileName.lastIndexOf('.'));
+
+    // CSV / TSV
+    if (
+      ext === '.csv' ||
+      ext === '.tsv' ||
+      mimeType === 'text/csv' ||
+      mimeType === 'text/tab-separated-values'
+    ) {
+      const text = fileBuffer.toString('utf-8');
+      const parsed = parseCSV(text);
+      return tabularToText(parsed.headers, parsed.rows);
+    }
+
+    // Excel
+    if (
+      ext === '.xlsx' ||
+      ext === '.xls' ||
+      mimeType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+      mimeType === 'application/vnd.ms-excel'
+    ) {
+      const { headers, rows } = await this.parseExcel(fileBuffer);
+      return tabularToText(headers, rows);
+    }
+
     // For text files, just decode the buffer
     return fileBuffer.toString('utf-8');
+  }
+
+  /**
+   * Parse an Excel file buffer into headers + rows (reuses same logic as RuleUploadService).
+   */
+  private async parseExcel(buffer: Buffer): Promise<{ headers: string[]; rows: string[][] }> {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(buffer as unknown as ExcelJS.Buffer);
+    const sheet = workbook.worksheets[0];
+    if (!sheet || sheet.rowCount < 2) {
+      throw new BadRequestException('Excel file has no data. Ensure data is on the first sheet.');
+    }
+
+    const headers: string[] = [];
+    const headerRow = sheet.getRow(1);
+    headerRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+      headers[colNumber - 1] = String(cell.value ?? '').trim();
+    });
+
+    const rows: string[][] = [];
+    for (let r = 2; r <= sheet.rowCount; r++) {
+      const excelRow = sheet.getRow(r);
+      const row: string[] = [];
+      for (let c = 0; c < headers.length; c++) {
+        row.push(String(excelRow.getCell(c + 1).value ?? '').trim());
+      }
+      if (row.some((v) => v !== '')) {
+        rows.push(row);
+      }
+    }
+
+    return { headers, rows };
   }
 
   /**
@@ -164,13 +242,9 @@ export class PolicyConverterService {
   /**
    * Get conversion history for a tenant.
    */
-  async getConversionHistory(
-    tenantId: string,
-    page = 1,
-    limit = 20,
-  ) {
+  async getConversionHistory(tenantId: string, page = 1, limit = 20) {
     const skip = (page - 1) * limit;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const [data, total] = await Promise.all([
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (this.db.client as any).policyConversion.findMany({
@@ -202,11 +276,7 @@ export class PolicyConverterService {
   /**
    * Update accepted/rejected counts for a conversion.
    */
-  async updateConversionCounts(
-    conversionId: string,
-    accepted: number,
-    rejected: number,
-  ) {
+  async updateConversionCounts(conversionId: string, accepted: number, rejected: number) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return (this.db.client as any).policyConversion.update({
       where: { id: conversionId },
@@ -217,4 +287,3 @@ export class PolicyConverterService {
     });
   }
 }
-
