@@ -17,7 +17,7 @@ import {
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiConsumes } from '@nestjs/swagger';
 import { FastifyRequest } from 'fastify';
 import { JwtAuthGuard } from '../../auth';
-import { TenantGuard } from '../../common';
+import { TenantGuard, RolesGuard, Roles } from '../../common';
 import { PolicyConverterService } from './services/policy-converter.service';
 import { RuleSetCrudService, RuleCrudService } from './services/rules-crud.service';
 import { SimulatorService } from './services/simulator.service';
@@ -25,6 +25,7 @@ import { TestGeneratorService } from './services/test-generator.service';
 import { TestRunnerService } from './services/test-runner.service';
 import { RuleGeneratorService } from './services/rule-generator.service';
 import { LlmRuleGeneratorService } from './services/llm-rule-generator.service';
+import { RuleUploadService } from './services/rule-upload.service';
 import {
   ConvertPolicyDto,
   UpdateConversionCountsDto,
@@ -37,6 +38,7 @@ import {
   GenerateRulesDto,
   LlmAnalyzeDto,
   LlmGenerateDto,
+  ApproveRuleUploadDto,
 } from './dto';
 
 interface AuthRequest {
@@ -49,7 +51,7 @@ interface AuthenticatedFastifyRequest extends FastifyRequest {
 
 @ApiTags('rules')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)
 @Controller('rules')
 export class RulesController {
   constructor(
@@ -61,11 +63,13 @@ export class RulesController {
     private readonly testRunnerService: TestRunnerService,
     private readonly ruleGenerator: RuleGeneratorService,
     private readonly llmRuleGenerator: LlmRuleGeneratorService,
+    private readonly ruleUploadService: RuleUploadService,
   ) {}
 
   // ─── Policy Conversion ─────────────────────────────────────────
 
   @Post('convert-policy')
+  @Roles('ADMIN', 'HR_MANAGER')
   @ApiOperation({ summary: 'Convert a natural language policy document into structured rules' })
   async convertPolicy(@Body() dto: ConvertPolicyDto, @Request() req: AuthRequest) {
     return this.policyConverter.convertPolicy(
@@ -78,6 +82,7 @@ export class RulesController {
   }
 
   @Post('convert-policy/upload')
+  @Roles('ADMIN', 'HR_MANAGER')
   @ApiOperation({ summary: 'Upload a PDF or TXT file and convert to structured rules' })
   @ApiConsumes('multipart/form-data')
   @HttpCode(HttpStatus.OK)
@@ -140,6 +145,7 @@ export class RulesController {
   // ─── Rule Set CRUD ────────────────────────────────────────────
 
   @Post('rule-sets')
+  @Roles('ADMIN', 'HR_MANAGER')
   @ApiOperation({ summary: 'Create a new rule set' })
   async createRuleSet(@Body() dto: CreateRuleSetDto, @Request() req: AuthRequest) {
     return this.ruleSetCrud.createRuleSet(req.user.tenantId, dto);
@@ -162,6 +168,7 @@ export class RulesController {
   }
 
   @Patch('rule-sets/:id')
+  @Roles('ADMIN', 'HR_MANAGER')
   @ApiOperation({ summary: 'Update a rule set' })
   async updateRuleSet(
     @Param('id') id: string,
@@ -172,6 +179,7 @@ export class RulesController {
   }
 
   @Delete('rule-sets/:id')
+  @Roles('ADMIN', 'HR_MANAGER')
   @ApiOperation({ summary: 'Delete a rule set' })
   async deleteRuleSet(@Param('id') id: string, @Request() req: AuthRequest) {
     return this.ruleSetCrud.delete(req.user.tenantId, id);
@@ -180,6 +188,7 @@ export class RulesController {
   // ─── Rule CRUD ────────────────────────────────────────────────
 
   @Post('rule-sets/:ruleSetId/rules')
+  @Roles('ADMIN', 'HR_MANAGER')
   @ApiOperation({ summary: 'Add a rule to a rule set' })
   async addRule(
     @Param('ruleSetId') ruleSetId: string,
@@ -190,6 +199,7 @@ export class RulesController {
   }
 
   @Patch('rule-sets/:ruleSetId/rules/:ruleId')
+  @Roles('ADMIN', 'HR_MANAGER')
   @ApiOperation({ summary: 'Update a rule' })
   async updateRule(
     @Param('ruleSetId') ruleSetId: string,
@@ -201,6 +211,7 @@ export class RulesController {
   }
 
   @Delete('rule-sets/:ruleSetId/rules/:ruleId')
+  @Roles('ADMIN', 'HR_MANAGER')
   @ApiOperation({ summary: 'Delete a rule from a rule set' })
   async deleteRule(
     @Param('ruleSetId') ruleSetId: string,
@@ -270,6 +281,7 @@ export class RulesController {
   // ─── AI Rule Generation ──────────────────────────────────────
 
   @Post('rule-sets/:ruleSetId/generate')
+  @Roles('ADMIN', 'HR_MANAGER')
   @ApiOperation({ summary: 'Clone a rule set and apply AI-based adjustments for a new cycle' })
   async generateRules(
     @Param('ruleSetId') ruleSetId: string,
@@ -313,6 +325,7 @@ export class RulesController {
   }
 
   @Post('generate-from-instruction')
+  @Roles('ADMIN', 'HR_MANAGER')
   @ApiOperation({
     summary: 'Generate compensation rules from a natural language instruction using AI',
   })
@@ -324,5 +337,54 @@ export class RulesController {
       req.user.role,
     );
     return { result };
+  }
+
+  // ─── Rule Upload (CSV / Excel) ───────────────────────────
+
+  @Post('upload')
+  @Roles('ADMIN', 'HR_MANAGER')
+  @ApiOperation({ summary: 'Upload a CSV or Excel file containing compensation rules' })
+  @ApiConsumes('multipart/form-data')
+  @HttpCode(HttpStatus.OK)
+  async uploadRules(@Req() req: AuthenticatedFastifyRequest) {
+    const data = await req.file();
+    if (!data) {
+      throw new BadRequestException('No file uploaded. Send a multipart form with a "file" field.');
+    }
+
+    const chunks: Buffer[] = [];
+    for await (const chunk of data.file) {
+      chunks.push(chunk as Buffer);
+    }
+    const fileBuffer = Buffer.concat(chunks);
+
+    if (fileBuffer.length === 0) {
+      throw new BadRequestException('Uploaded file is empty.');
+    }
+
+    const allowedExts = ['.csv', '.tsv', '.txt', '.xlsx', '.xls'];
+    const ext = data.filename.toLowerCase().slice(data.filename.lastIndexOf('.'));
+    if (!allowedExts.includes(ext)) {
+      throw new BadRequestException(`Unsupported file type: ${ext}. Use CSV or Excel (.xlsx).`);
+    }
+
+    return this.ruleUploadService.parseUpload(
+      req.user.tenantId,
+      req.user.userId,
+      data.filename,
+      fileBuffer,
+    );
+  }
+
+  @Post('upload/:uploadId/approve')
+  @Roles('ADMIN', 'HR_MANAGER')
+  @ApiOperation({ summary: 'Approve a previewed rule upload and persist as a new RuleSet' })
+  @HttpCode(HttpStatus.CREATED)
+  async approveUpload(
+    @Param('uploadId') uploadId: string,
+    @Body() dto: ApproveRuleUploadDto,
+    @Request() req: AuthRequest,
+  ) {
+    return this.ruleUploadService.approveUpload(req.user.tenantId, uploadId, dto.ruleSetName);
   }
 }
