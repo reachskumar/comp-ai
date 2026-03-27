@@ -1,5 +1,13 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsNotEmpty, IsOptional, IsBoolean, Matches } from 'class-validator';
+import {
+  IsString,
+  IsNotEmpty,
+  IsOptional,
+  IsBoolean,
+  IsEnum,
+  MinLength,
+  Matches,
+} from 'class-validator';
 
 export class CreateTenantDto {
   @ApiProperty({ description: 'Company name' })
@@ -95,6 +103,14 @@ export class CreateTenantUserDto {
   @IsOptional()
   @IsString()
   role?: string;
+
+  @ApiPropertyOptional({
+    description: 'User password (min 8 chars). If omitted, user is invite-based.',
+  })
+  @IsOptional()
+  @IsString()
+  @MinLength(8)
+  password?: string;
 }
 
 export class OnboardTenantDto {
@@ -122,4 +138,21 @@ export class OnboardTenantDto {
   @IsOptional()
   @IsString()
   adminName?: string;
+
+  @ApiPropertyOptional({
+    description: 'Admin user password (min 8 chars). If omitted, user is invite-based.',
+  })
+  @IsOptional()
+  @IsString()
+  @MinLength(8)
+  adminPassword?: string;
+
+  @ApiPropertyOptional({
+    description: 'Admin user role',
+    default: 'ADMIN',
+    enum: ['ADMIN', 'HR_MANAGER', 'MANAGER', 'ANALYST', 'EMPLOYEE'],
+  })
+  @IsOptional()
+  @IsString()
+  adminRole?: string;
 }

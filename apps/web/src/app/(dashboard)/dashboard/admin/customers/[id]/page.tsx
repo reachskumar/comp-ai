@@ -44,7 +44,7 @@ export default function AdminCustomerDetailPage() {
   const removeUser = useAdminRemoveTenantUser();
 
   const [branding, setBranding] = useState({ subdomain: '', logoUrl: '', primaryColor: '' });
-  const [newUser, setNewUser] = useState({ email: '', name: '', role: 'ADMIN' });
+  const [newUser, setNewUser] = useState({ email: '', name: '', role: 'ADMIN', password: '' });
   const [brandingLoaded, setBrandingLoaded] = useState(false);
 
   if (tenant && !brandingLoaded) {
@@ -93,8 +93,8 @@ export default function AdminCustomerDetailPage() {
     if (!newUser.email || !newUser.name) return;
     try {
       await createUser.mutateAsync({ tenantId: id, data: newUser });
-      toast({ title: 'User created. Invite link logged on server.' });
-      setNewUser({ email: '', name: '', role: 'ADMIN' });
+      toast({ title: 'User created successfully.' });
+      setNewUser({ email: '', name: '', role: 'ADMIN', password: '' });
     } catch (e) {
       toast({ title: e instanceof Error ? e.message : 'Failed', variant: 'destructive' });
     }
@@ -235,7 +235,7 @@ function CustomerUsersCard({
 }: {
   users?: any[];
   onRemove: (id: string) => void;
-  newUser: { email: string; name: string; role: string };
+  newUser: { email: string; name: string; role: string; password: string };
   setNewUser: (fn: (n: any) => any) => void;
   onAddUser: () => void;
   isAdding: boolean;
@@ -260,7 +260,7 @@ function CustomerUsersCard({
           </div>
         ))}
         <Separator />
-        <div className="grid grid-cols-4 gap-2 items-end">
+        <div className="grid grid-cols-5 gap-2 items-end">
           <div className="space-y-1">
             <Label>Name</Label>
             <Input
@@ -275,6 +275,16 @@ function CustomerUsersCard({
               value={newUser.email}
               onChange={(e) => setNewUser((n: any) => ({ ...n, email: e.target.value }))}
               placeholder="john@company.com"
+            />
+          </div>
+          <div className="space-y-1">
+            <Label>Password</Label>
+            <Input
+              type="password"
+              value={newUser.password}
+              onChange={(e) => setNewUser((n: any) => ({ ...n, password: e.target.value }))}
+              placeholder="Min 8 chars"
+              minLength={8}
             />
           </div>
           <div className="space-y-1">

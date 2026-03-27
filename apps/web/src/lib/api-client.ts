@@ -343,7 +343,7 @@ class ApiClient {
 
   async adminCreateTenantUser(
     tenantId: string,
-    data: { email: string; name: string; role?: string },
+    data: { email: string; name: string; role?: string; password?: string },
   ) {
     return this.fetch<{ user: Record<string, unknown>; inviteLink: string }>(
       `/api/v1/platform-admin/tenants/${tenantId}/users`,
@@ -364,6 +364,8 @@ class ApiClient {
     subdomain?: string;
     adminEmail?: string;
     adminName?: string;
+    adminPassword?: string;
+    adminRole?: string;
   }) {
     return this.fetch<Record<string, unknown>>('/api/v1/platform-admin/onboard', {
       method: 'POST',

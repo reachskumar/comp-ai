@@ -128,6 +128,8 @@ export function useAdminOnboard() {
       subdomain?: string;
       adminEmail?: string;
       adminName?: string;
+      adminPassword?: string;
+      adminRole?: string;
     }) => apiClient.adminOnboard(data),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['admin-tenants'] });

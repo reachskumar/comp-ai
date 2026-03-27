@@ -18,6 +18,8 @@ export default function AdminOnboardingPage() {
     subdomain: '',
     adminEmail: '',
     adminName: '',
+    adminPassword: '',
+    adminRole: 'ADMIN',
   });
   const [onboarded, setOnboarded] = useState<string[]>([]);
 
@@ -36,6 +38,8 @@ export default function AdminOnboardingPage() {
         subdomain: '',
         adminEmail: '',
         adminName: '',
+        adminPassword: '',
+        adminRole: 'ADMIN',
       });
     } catch (e) {
       toast({
@@ -105,6 +109,30 @@ export default function AdminOnboardingPage() {
                 onChange={(e) => setForm((f) => ({ ...f, adminName: e.target.value }))}
                 placeholder="John Doe"
               />
+            </div>
+            <div className="space-y-1">
+              <Label>Password</Label>
+              <Input
+                type="password"
+                value={form.adminPassword}
+                onChange={(e) => setForm((f) => ({ ...f, adminPassword: e.target.value }))}
+                placeholder="Min 8 characters"
+                minLength={8}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>Role</Label>
+              <select
+                className="w-full h-9 rounded-md border px-3 text-sm"
+                value={form.adminRole}
+                onChange={(e) => setForm((f) => ({ ...f, adminRole: e.target.value }))}
+              >
+                {['ADMIN', 'HR_MANAGER', 'MANAGER', 'ANALYST', 'EMPLOYEE'].map((r) => (
+                  <option key={r} value={r}>
+                    {r.replace('_', ' ')}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
           <Button onClick={handleOnboard} disabled={onboard.isPending}>
