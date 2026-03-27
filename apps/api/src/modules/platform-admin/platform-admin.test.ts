@@ -101,10 +101,22 @@ describe('TenantGuard — suspension enforcement', () => {
 describe('PlatformAdminService', () => {
   let service: PlatformAdminService;
   let db: ReturnType<typeof createMockDatabaseService>;
+  const mockCredentialVault = {
+    encrypt: vi.fn(() => ({ encrypted: 'enc', iv: 'iv', tag: 'tag' })),
+    decrypt: vi.fn(() => ({})),
+    maskCredentials: vi.fn(() => ({})),
+  };
 
   beforeEach(() => {
     db = createMockDatabaseService();
-    service = new (PlatformAdminService as any)(db);
+    const configService = createMockConfigService({
+      COMPPORT_CLOUDSQL_HOST: '10.0.0.1',
+      COMPPORT_CLOUDSQL_PORT: '3306',
+      COMPPORT_CLOUDSQL_USER: 'reader',
+      COMPPORT_CLOUDSQL_PASSWORD: 'secret',
+      INTEGRATION_ENCRYPTION_KEY: 'a'.repeat(32),
+    });
+    service = new (PlatformAdminService as any)(db, mockCredentialVault, configService);
   });
 
   describe('listTenants', () => {
@@ -205,9 +217,17 @@ describe('PlatformAdminService', () => {
       expect(result.tenant.id).toBe('t-new');
       expect(result.adminUser.email).toBe('admin@sb.com');
       expect(result.connector.id).toBe('c-new');
+      expect(result.queryReady).toBe(true);
       expect(db.client.tenant.create).toHaveBeenCalledOnce();
       expect(db.client.user.create).toHaveBeenCalledOnce();
       expect(db.client.integrationConnector.create).toHaveBeenCalledOnce();
+
+      // Verify connector type is COMPPORT_CLOUDSQL (not HRIS)
+      const connectorData = db.client.integrationConnector.create.mock.calls[0][0].data;
+      expect(connectorData.connectorType).toBe('COMPPORT_CLOUDSQL');
+      // Verify credentials were encrypted
+      expect(mockCredentialVault.encrypt).toHaveBeenCalledOnce();
+      expect(connectorData.encryptedCredentials).toBe('enc');
     });
 
     it('should reject duplicate Compport schema', async () => {

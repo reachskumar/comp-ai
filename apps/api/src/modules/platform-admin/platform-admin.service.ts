@@ -1,12 +1,19 @@
 import { Injectable, Logger, NotFoundException, ConflictException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import * as bcrypt from 'bcryptjs';
 import { DatabaseService } from '../../database';
+import { CredentialVaultService } from '../integrations/services/credential-vault.service';
 import { CreateTenantDto, UpdateTenantDto, CreateTenantUserDto, OnboardTenantDto } from './dto';
 
 @Injectable()
 export class PlatformAdminService {
   private readonly logger = new Logger(PlatformAdminService.name);
 
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly credentialVault: CredentialVaultService,
+    private readonly configService: ConfigService,
+  ) {}
 
   // ─── Tenant CRUD ──────────────────────────────────────────
 
@@ -150,13 +157,15 @@ export class PlatformAdminService {
       throw new ConflictException(`User ${dto.email} already exists in this tenant`);
     }
 
+    const passwordHash = dto.password ? await bcrypt.hash(dto.password, 12) : '';
+
     const user = await this.db.client.user.create({
       data: {
         tenantId,
         email: dto.email,
         name: dto.name,
         role: (dto.role as any) || 'ADMIN',
-        passwordHash: '', // No password — invite-based
+        passwordHash,
       },
       select: { id: true, email: true, name: true, role: true, createdAt: true },
     });
@@ -210,29 +219,64 @@ export class PlatformAdminService {
     // Create admin user if provided
     let adminUser = null;
     if (dto.adminEmail) {
+      const passwordHash = dto.adminPassword ? await bcrypt.hash(dto.adminPassword, 12) : '';
+
       adminUser = await this.db.client.user.create({
         data: {
           tenantId: tenant.id,
           email: dto.adminEmail,
           name: dto.adminName || dto.adminEmail.split('@')[0] || 'Admin',
-          role: 'ADMIN',
-          passwordHash: '',
+          role: (dto.adminRole as any) || 'ADMIN',
+          passwordHash,
         },
         select: { id: true, email: true, name: true, role: true },
       });
     }
 
-    // Create integration connector for Cloud SQL
+    // Create integration connector for Cloud SQL with encrypted credentials
+    // so the tenant can immediately query their Compport data.
+    const cloudSqlCreds: Record<string, unknown> = {
+      host: this.configService.get('COMPPORT_CLOUDSQL_HOST', ''),
+      port: parseInt(this.configService.get('COMPPORT_CLOUDSQL_PORT', '3306'), 10),
+      user: this.configService.get('COMPPORT_CLOUDSQL_USER', ''),
+      password: this.configService.get('COMPPORT_CLOUDSQL_PASSWORD', ''),
+      database: dto.compportSchema,
+    };
+
+    let encryptedCredentials: string | undefined;
+    let credentialIv: string | undefined;
+    let credentialTag: string | undefined;
+
+    // Only encrypt if Cloud SQL env vars are available
+    if (cloudSqlCreds['host'] && cloudSqlCreds['user'] && cloudSqlCreds['password']) {
+      const encrypted = this.credentialVault.encrypt(tenant.id, cloudSqlCreds);
+      encryptedCredentials = encrypted.encrypted;
+      credentialIv = encrypted.iv;
+      credentialTag = encrypted.tag;
+      this.logger.log(`Cloud SQL credentials provisioned for tenant ${tenant.id}`);
+    } else {
+      this.logger.warn(
+        'COMPPORT_CLOUDSQL_* env vars not set — connector created without credentials. ' +
+          'Set COMPPORT_CLOUDSQL_HOST, COMPPORT_CLOUDSQL_USER, COMPPORT_CLOUDSQL_PASSWORD ' +
+          'to enable immediate MySQL access after onboarding.',
+      );
+    }
+
     const connector = await this.db.client.integrationConnector.create({
       data: {
         tenantId: tenant.id,
         name: `Compport - ${dto.companyName}`,
-        connectorType: 'HRIS',
+        connectorType: 'COMPPORT_CLOUDSQL',
         status: 'ACTIVE',
         syncDirection: 'INBOUND',
         syncSchedule: 'DAILY',
         conflictStrategy: 'SOURCE_PRIORITY',
-        config: { cloudSqlSchema: dto.compportSchema } as any,
+        config: { cloudSqlSchema: dto.compportSchema, schemaName: dto.compportSchema } as any,
+        ...(encryptedCredentials && {
+          encryptedCredentials,
+          credentialIv,
+          credentialTag,
+        }),
       },
     });
 
@@ -240,7 +284,12 @@ export class PlatformAdminService {
       `Onboarded: ${dto.companyName} (schema=${dto.compportSchema}, tenant=${tenant.id})`,
     );
 
-    return { tenant, adminUser, connector: { id: connector.id, name: connector.name } };
+    return {
+      tenant,
+      adminUser,
+      connector: { id: connector.id, name: connector.name },
+      queryReady: !!encryptedCredentials,
+    };
   }
 
   // ─── Platform Stats ──────────────────────────────────────

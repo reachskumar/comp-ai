@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import * as mysql from 'mysql2/promise';
+import * as fs from 'fs';
 
 export interface CloudSqlConnectionConfig {
   host: string;
@@ -7,6 +8,12 @@ export interface CloudSqlConnectionConfig {
   user: string;
   password: string;
   database?: string;
+  /** Path to CA certificate file */
+  sslCa?: string;
+  /** Path to client certificate file */
+  sslCert?: string;
+  /** Path to client key file */
+  sslKey?: string;
 }
 
 export interface WriteStatement {
@@ -45,12 +52,40 @@ export class CompportCloudSqlService implements OnModuleDestroy {
       await this.disconnect();
     }
 
+    // Build SSL options from file paths (if provided)
+    // Cloud Run secret volumes may be directories containing version files,
+    // so we resolve paths: if it's a directory, read the first file inside it.
+    const readSecretFile = (p: string): Buffer | undefined => {
+      if (!fs.existsSync(p)) return undefined;
+      const stat = fs.statSync(p);
+      if (stat.isDirectory()) {
+        const files = fs.readdirSync(p).filter((f) => !f.startsWith('.'));
+        if (files.length > 0) {
+          this.logger.log(`SSL: resolved directory ${p} -> ${files[0]}`);
+          return fs.readFileSync(`${p}/${files[0]}`);
+        }
+        this.logger.warn(`SSL: directory ${p} is empty`);
+        return undefined;
+      }
+      return fs.readFileSync(p);
+    };
+
+    let ssl: mysql.SslOptions | undefined;
+    if (config.sslCa || config.sslCert || config.sslKey) {
+      ssl = {};
+      if (config.sslCa) ssl.ca = readSecretFile(config.sslCa);
+      if (config.sslCert) ssl.cert = readSecretFile(config.sslCert);
+      if (config.sslKey) ssl.key = readSecretFile(config.sslKey);
+      this.logger.log('SSL enabled for Cloud SQL connection');
+    }
+
     this.pool = mysql.createPool({
       host: config.host,
       port: config.port,
       user: config.user,
       password: config.password,
       database: config.database,
+      ssl,
       waitForConnections: true,
       connectionLimit: 5,
       queueLimit: 10,

@@ -1,5 +1,13 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsNotEmpty, IsOptional, IsBoolean, Matches } from 'class-validator';
+import {
+  IsString,
+  IsNotEmpty,
+  IsOptional,
+  IsBoolean,
+  IsEnum,
+  MinLength,
+  Matches,
+} from 'class-validator';
 
 export class CreateTenantDto {
   @ApiProperty({ description: 'Company name' })
@@ -95,6 +103,19 @@ export class CreateTenantUserDto {
   @IsOptional()
   @IsString()
   role?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Password (min 8 chars, 1 uppercase, 1 lowercase, 1 number, 1 special). If omitted, user is invite-based.',
+  })
+  @IsOptional()
+  @IsString()
+  @MinLength(8, { message: 'Password must be at least 8 characters long' })
+  @Matches(/[A-Z]/, { message: 'Password must contain at least one uppercase letter' })
+  @Matches(/[a-z]/, { message: 'Password must contain at least one lowercase letter' })
+  @Matches(/[0-9]/, { message: 'Password must contain at least one number' })
+  @Matches(/[^A-Za-z0-9]/, { message: 'Password must contain at least one special character' })
+  password?: string;
 }
 
 export class OnboardTenantDto {
@@ -122,4 +143,26 @@ export class OnboardTenantDto {
   @IsOptional()
   @IsString()
   adminName?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Password (min 8 chars, 1 uppercase, 1 lowercase, 1 number, 1 special). If omitted, user is invite-based.',
+  })
+  @IsOptional()
+  @IsString()
+  @MinLength(8, { message: 'Password must be at least 8 characters long' })
+  @Matches(/[A-Z]/, { message: 'Password must contain at least one uppercase letter' })
+  @Matches(/[a-z]/, { message: 'Password must contain at least one lowercase letter' })
+  @Matches(/[0-9]/, { message: 'Password must contain at least one number' })
+  @Matches(/[^A-Za-z0-9]/, { message: 'Password must contain at least one special character' })
+  adminPassword?: string;
+
+  @ApiPropertyOptional({
+    description: 'Admin user role',
+    default: 'ADMIN',
+    enum: ['ADMIN', 'HR_MANAGER', 'MANAGER', 'ANALYST', 'EMPLOYEE'],
+  })
+  @IsOptional()
+  @IsString()
+  adminRole?: string;
 }

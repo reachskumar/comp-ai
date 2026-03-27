@@ -44,7 +44,7 @@ export default function AdminCustomerDetailPage() {
   const removeUser = useAdminRemoveTenantUser();
 
   const [branding, setBranding] = useState({ subdomain: '', logoUrl: '', primaryColor: '' });
-  const [newUser, setNewUser] = useState({ email: '', name: '', role: 'ADMIN' });
+  const [newUser, setNewUser] = useState({ email: '', name: '', role: 'ADMIN', password: '' });
   const [brandingLoaded, setBrandingLoaded] = useState(false);
 
   if (tenant && !brandingLoaded) {
@@ -93,8 +93,8 @@ export default function AdminCustomerDetailPage() {
     if (!newUser.email || !newUser.name) return;
     try {
       await createUser.mutateAsync({ tenantId: id, data: newUser });
-      toast({ title: 'User created. Invite link logged on server.' });
-      setNewUser({ email: '', name: '', role: 'ADMIN' });
+      toast({ title: 'User created successfully.' });
+      setNewUser({ email: '', name: '', role: 'ADMIN', password: '' });
     } catch (e) {
       toast({ title: e instanceof Error ? e.message : 'Failed', variant: 'destructive' });
     }
@@ -235,11 +235,23 @@ function CustomerUsersCard({
 }: {
   users?: any[];
   onRemove: (id: string) => void;
-  newUser: { email: string; name: string; role: string };
+  newUser: { email: string; name: string; role: string; password: string };
   setNewUser: (fn: (n: any) => any) => void;
   onAddUser: () => void;
   isAdding: boolean;
 }) {
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const passwordMismatch =
+    newUser.password.length > 0 &&
+    confirmPassword.length > 0 &&
+    newUser.password !== confirmPassword;
+
+  const handleAdd = () => {
+    if (passwordMismatch) return;
+    onAddUser();
+    setConfirmPassword('');
+  };
+
   return (
     <Card>
       <CardHeader>
@@ -260,7 +272,7 @@ function CustomerUsersCard({
           </div>
         ))}
         <Separator />
-        <div className="grid grid-cols-4 gap-2 items-end">
+        <div className="grid grid-cols-3 gap-2 items-end">
           <div className="space-y-1">
             <Label>Name</Label>
             <Input
@@ -291,7 +303,30 @@ function CustomerUsersCard({
               ))}
             </select>
           </div>
-          <Button onClick={onAddUser} disabled={isAdding}>
+        </div>
+        <div className="grid grid-cols-3 gap-2 items-end">
+          <div className="space-y-1">
+            <Label>Password</Label>
+            <Input
+              type="password"
+              value={newUser.password}
+              onChange={(e) => setNewUser((n: any) => ({ ...n, password: e.target.value }))}
+              placeholder="Min 8 chars"
+              minLength={8}
+            />
+            <p className="text-xs text-muted-foreground">Upper, lower, number &amp; special</p>
+          </div>
+          <div className="space-y-1">
+            <Label>Confirm Password</Label>
+            <Input
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              placeholder="Re-enter password"
+            />
+            {passwordMismatch && <p className="text-xs text-destructive">Passwords do not match</p>}
+          </div>
+          <Button onClick={handleAdd} disabled={isAdding || passwordMismatch}>
             <UserPlus className="mr-2 h-4 w-4" />
             Add User
           </Button>

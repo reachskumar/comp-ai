@@ -343,7 +343,7 @@ class ApiClient {
 
   async adminCreateTenantUser(
     tenantId: string,
-    data: { email: string; name: string; role?: string },
+    data: { email: string; name: string; role?: string; password?: string },
   ) {
     return this.fetch<{ user: Record<string, unknown>; inviteLink: string }>(
       `/api/v1/platform-admin/tenants/${tenantId}/users`,
@@ -364,6 +364,8 @@ class ApiClient {
     subdomain?: string;
     adminEmail?: string;
     adminName?: string;
+    adminPassword?: string;
+    adminRole?: string;
   }) {
     return this.fetch<Record<string, unknown>>('/api/v1/platform-admin/onboard', {
       method: 'POST',
@@ -379,6 +381,80 @@ class ApiClient {
       totalUsers: number;
       totalEmployees: number;
     }>('/api/v1/platform-admin/stats');
+  }
+
+  // ─── Compport Bridge Query Endpoints ─────────────────────
+
+  async bridgeQueryTable(
+    schemaName: string,
+    tableName: string,
+    params?: {
+      limit?: number;
+      offset?: number;
+      columns?: string;
+      orderBy?: string;
+      orderDir?: string;
+    },
+  ) {
+    const qs = new URLSearchParams();
+    if (params?.limit) qs.set('limit', String(params.limit));
+    if (params?.offset) qs.set('offset', String(params.offset));
+    if (params?.columns) qs.set('columns', params.columns);
+    if (params?.orderBy) qs.set('orderBy', params.orderBy);
+    if (params?.orderDir) qs.set('orderDir', params.orderDir);
+    const q = qs.toString();
+    return this.fetch<{
+      schemaName: string;
+      tableName: string;
+      rows: Record<string, unknown>[];
+      totalCount: number;
+      limit: number;
+      offset: number;
+    }>(`/api/v1/compport-bridge/query/${schemaName}/${tableName}${q ? `?${q}` : ''}`);
+  }
+
+  async bridgeQueryTableCount(schemaName: string, tableName: string) {
+    return this.fetch<{ schemaName: string; tableName: string; count: number }>(
+      `/api/v1/compport-bridge/query/${schemaName}/${tableName}/count`,
+    );
+  }
+
+  async bridgeMyDataTables() {
+    return this.fetch<{ schemaName: string; tables: string[]; count: number }>(
+      '/api/v1/compport-bridge/my-data/tables',
+    );
+  }
+
+  async bridgeMyDataQuery(
+    tableName: string,
+    params?: {
+      limit?: number;
+      offset?: number;
+      columns?: string;
+      orderBy?: string;
+      orderDir?: string;
+    },
+  ) {
+    const qs = new URLSearchParams();
+    if (params?.limit) qs.set('limit', String(params.limit));
+    if (params?.offset) qs.set('offset', String(params.offset));
+    if (params?.columns) qs.set('columns', params.columns);
+    if (params?.orderBy) qs.set('orderBy', params.orderBy);
+    if (params?.orderDir) qs.set('orderDir', params.orderDir);
+    const q = qs.toString();
+    return this.fetch<{
+      tableName: string;
+      rows: Record<string, unknown>[];
+      totalCount: number;
+      limit: number;
+      offset: number;
+    }>(`/api/v1/compport-bridge/my-data/${tableName}${q ? `?${q}` : ''}`);
+  }
+
+  async bridgeDiscoveryTables(schemaName: string) {
+    return this.fetch<{ schemaName: string; tables: string[] }>(
+      `/api/v1/compport-bridge/discovery/schemas/${schemaName}/tables`,
+    );
   }
 }
 
