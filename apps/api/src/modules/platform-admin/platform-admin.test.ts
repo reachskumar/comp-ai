@@ -244,19 +244,27 @@ describe('PlatformAdminService', () => {
   describe('getStats', () => {
     it('should return platform statistics', async () => {
       db.client.tenant.count
-        .mockResolvedValueOnce(10) // total
-        .mockResolvedValueOnce(8); // active
-      db.client.user.count.mockResolvedValue(50);
-      db.client.employee.count.mockResolvedValue(5000);
+        .mockResolvedValueOnce(2) // total
+        .mockResolvedValueOnce(1); // active
+      // getStats now iterates through tenants for RLS-scoped counts
+      db.client.tenant.findMany.mockResolvedValue([{ id: 't1' }, { id: 't2' }]);
+      db.client.user.count
+        .mockResolvedValueOnce(10) // t1 users
+        .mockResolvedValueOnce(40); // t2 users
+      db.client.employee.count
+        .mockResolvedValueOnce(1000) // t1 employees
+        .mockResolvedValueOnce(4000); // t2 employees
 
       const result = await service.getStats();
       expect(result).toEqual({
-        totalTenants: 10,
-        activeTenants: 8,
-        suspendedTenants: 2,
+        totalTenants: 2,
+        activeTenants: 1,
+        suspendedTenants: 1,
         totalUsers: 50,
         totalEmployees: 5000,
       });
+      // Verify forTenant was called for each tenant
+      expect(db.forTenant).toHaveBeenCalledTimes(2);
     });
   });
 });

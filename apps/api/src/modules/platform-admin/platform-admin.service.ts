@@ -150,59 +150,70 @@ export class PlatformAdminService {
 
   async listTenantUsers(tenantId: string) {
     await this.getTenant(tenantId);
-    const users = await this.db.client.user.findMany({
-      where: { tenantId },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        role: true,
-        avatarUrl: true,
-        createdAt: true,
-        updatedAt: true,
-      },
-      orderBy: { createdAt: 'asc' },
-    });
+    const users = await this.db.forTenant(tenantId, (tx) =>
+      tx.user.findMany({
+        where: { tenantId },
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          role: true,
+          avatarUrl: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+        orderBy: { createdAt: 'asc' },
+      }),
+    );
     return { data: users, total: users.length };
   }
 
   async createTenantUser(tenantId: string, dto: CreateTenantUserDto) {
     await this.getTenant(tenantId);
 
-    const existing = await this.db.client.user.findFirst({
-      where: { tenantId, email: dto.email },
+    const passwordHash = dto.password ? await bcrypt.hash(dto.password, 12) : '';
+
+    const { user, existing } = await this.db.forTenant(tenantId, async (tx) => {
+      const found = await tx.user.findFirst({
+        where: { tenantId, email: dto.email },
+      });
+      if (found) {
+        return { user: null, existing: true };
+      }
+
+      const created = await tx.user.create({
+        data: {
+          tenantId,
+          email: dto.email,
+          name: dto.name,
+          role: (dto.role as any) || 'ADMIN',
+          passwordHash,
+        },
+        select: { id: true, email: true, name: true, role: true, createdAt: true },
+      });
+      return { user: created, existing: false };
     });
+
     if (existing) {
       throw new ConflictException(`User ${dto.email} already exists in this tenant`);
     }
 
-    const passwordHash = dto.password ? await bcrypt.hash(dto.password, 12) : '';
-
-    const user = await this.db.client.user.create({
-      data: {
-        tenantId,
-        email: dto.email,
-        name: dto.name,
-        role: (dto.role as any) || 'ADMIN',
-        passwordHash,
-      },
-      select: { id: true, email: true, name: true, role: true, createdAt: true },
-    });
-
     // TODO: Send invite email (placeholder — log invite link)
-    const inviteLink = `https://app.compportiq.ai/login?invite=${user.id}`;
-    this.logger.log(`Invite link for ${user.email}: ${inviteLink}`);
+    const inviteLink = `https://app.compportiq.ai/login?invite=${user!.id}`;
+    this.logger.log(`Invite link for ${user!.email}: ${inviteLink}`);
 
     return { user, inviteLink };
   }
 
   async removeTenantUser(tenantId: string, userId: string) {
-    const user = await this.db.client.user.findFirst({
-      where: { id: userId, tenantId },
-    });
+    const user = await this.db.forTenant(tenantId, (tx) =>
+      tx.user.findFirst({
+        where: { id: userId, tenantId },
+      }),
+    );
     if (!user) throw new NotFoundException(`User ${userId} not found in tenant ${tenantId}`);
 
-    await this.db.client.user.delete({ where: { id: userId } });
+    await this.db.forTenant(tenantId, (tx) => tx.user.delete({ where: { id: userId } }));
     this.logger.log(`User removed: ${user.email} from tenant ${tenantId}`);
     return { deleted: true };
   }
@@ -265,68 +276,79 @@ export class PlatformAdminService {
       },
     });
 
-    // Create admin user if provided
-    let adminUser = null;
-    if (dto.adminEmail) {
-      const passwordHash = dto.adminPassword ? await bcrypt.hash(dto.adminPassword, 12) : '';
+    // Create admin user + integration connector inside tenant-scoped RLS context
+    // Both `users` and `integration_connectors` tables have RLS policies
+    const { adminUser, connector, queryReady } = await this.db.forTenant(tenant.id, async (tx) => {
+      // Create admin user if provided
+      let createdAdmin = null;
+      if (dto.adminEmail) {
+        const passwordHash = dto.adminPassword ? await bcrypt.hash(dto.adminPassword, 12) : '';
 
-      adminUser = await this.db.client.user.create({
+        createdAdmin = await tx.user.create({
+          data: {
+            tenantId: tenant.id,
+            email: dto.adminEmail,
+            name: dto.adminName || dto.adminEmail.split('@')[0] || 'Admin',
+            role: (dto.adminRole as any) || 'ADMIN',
+            passwordHash,
+          },
+          select: { id: true, email: true, name: true, role: true },
+        });
+      }
+
+      // Create integration connector for Cloud SQL with encrypted credentials
+      const cloudSqlCreds: Record<string, unknown> = {
+        host: this.configService.get('COMPPORT_CLOUDSQL_HOST', ''),
+        port: parseInt(this.configService.get('COMPPORT_CLOUDSQL_PORT', '3306'), 10),
+        user: this.configService.get('COMPPORT_CLOUDSQL_USER', ''),
+        password: this.configService.get('COMPPORT_CLOUDSQL_PASSWORD', ''),
+        database: dto.compportSchema,
+      };
+
+      let encryptedCredentials: string | undefined;
+      let credentialIv: string | undefined;
+      let credentialTag: string | undefined;
+
+      if (cloudSqlCreds['host'] && cloudSqlCreds['user'] && cloudSqlCreds['password']) {
+        const encrypted = this.credentialVault.encrypt(tenant.id, cloudSqlCreds);
+        encryptedCredentials = encrypted.encrypted;
+        credentialIv = encrypted.iv;
+        credentialTag = encrypted.tag;
+        this.logger.log(`Cloud SQL credentials provisioned for tenant ${tenant.id}`);
+      } else {
+        this.logger.warn(
+          'COMPPORT_CLOUDSQL_* env vars not set — connector created without credentials. ' +
+            'Set COMPPORT_CLOUDSQL_HOST, COMPPORT_CLOUDSQL_USER, COMPPORT_CLOUDSQL_PASSWORD ' +
+            'to enable immediate MySQL access after onboarding.',
+        );
+      }
+
+      const createdConnector = await tx.integrationConnector.create({
         data: {
           tenantId: tenant.id,
-          email: dto.adminEmail,
-          name: dto.adminName || dto.adminEmail.split('@')[0] || 'Admin',
-          role: (dto.adminRole as any) || 'ADMIN',
-          passwordHash,
+          name: `Compport - ${dto.companyName}`,
+          connectorType: 'COMPPORT_CLOUDSQL',
+          status: 'ACTIVE',
+          syncDirection: 'INBOUND',
+          syncSchedule: 'DAILY',
+          conflictStrategy: 'SOURCE_PRIORITY',
+          config: {
+            cloudSqlSchema: dto.compportSchema,
+            schemaName: dto.compportSchema,
+          } as any,
+          ...(encryptedCredentials && {
+            encryptedCredentials,
+            credentialIv,
+            credentialTag,
+          }),
         },
-        select: { id: true, email: true, name: true, role: true },
       });
-    }
 
-    // Create integration connector for Cloud SQL with encrypted credentials
-    // so the tenant can immediately query their Compport data.
-    const cloudSqlCreds: Record<string, unknown> = {
-      host: this.configService.get('COMPPORT_CLOUDSQL_HOST', ''),
-      port: parseInt(this.configService.get('COMPPORT_CLOUDSQL_PORT', '3306'), 10),
-      user: this.configService.get('COMPPORT_CLOUDSQL_USER', ''),
-      password: this.configService.get('COMPPORT_CLOUDSQL_PASSWORD', ''),
-      database: dto.compportSchema,
-    };
-
-    let encryptedCredentials: string | undefined;
-    let credentialIv: string | undefined;
-    let credentialTag: string | undefined;
-
-    // Only encrypt if Cloud SQL env vars are available
-    if (cloudSqlCreds['host'] && cloudSqlCreds['user'] && cloudSqlCreds['password']) {
-      const encrypted = this.credentialVault.encrypt(tenant.id, cloudSqlCreds);
-      encryptedCredentials = encrypted.encrypted;
-      credentialIv = encrypted.iv;
-      credentialTag = encrypted.tag;
-      this.logger.log(`Cloud SQL credentials provisioned for tenant ${tenant.id}`);
-    } else {
-      this.logger.warn(
-        'COMPPORT_CLOUDSQL_* env vars not set — connector created without credentials. ' +
-          'Set COMPPORT_CLOUDSQL_HOST, COMPPORT_CLOUDSQL_USER, COMPPORT_CLOUDSQL_PASSWORD ' +
-          'to enable immediate MySQL access after onboarding.',
-      );
-    }
-
-    const connector = await this.db.client.integrationConnector.create({
-      data: {
-        tenantId: tenant.id,
-        name: `Compport - ${dto.companyName}`,
-        connectorType: 'COMPPORT_CLOUDSQL',
-        status: 'ACTIVE',
-        syncDirection: 'INBOUND',
-        syncSchedule: 'DAILY',
-        conflictStrategy: 'SOURCE_PRIORITY',
-        config: { cloudSqlSchema: dto.compportSchema, schemaName: dto.compportSchema } as any,
-        ...(encryptedCredentials && {
-          encryptedCredentials,
-          credentialIv,
-          credentialTag,
-        }),
-      },
+      return {
+        adminUser: createdAdmin,
+        connector: createdConnector,
+        queryReady: !!encryptedCredentials,
+      };
     });
 
     this.logger.log(
@@ -337,19 +359,36 @@ export class PlatformAdminService {
       tenant,
       adminUser,
       connector: { id: connector.id, name: connector.name },
-      queryReady: !!encryptedCredentials,
+      queryReady,
     };
   }
 
   // ─── Platform Stats ──────────────────────────────────────
 
   async getStats() {
-    const [totalTenants, activeTenants, totalUsers, totalEmployees] = await Promise.all([
+    // Tenant table has no RLS — count directly
+    const [totalTenants, activeTenants] = await Promise.all([
       this.db.client.tenant.count(),
       this.db.client.tenant.count({ where: { isActive: true } }),
-      this.db.client.user.count(),
-      this.db.client.employee.count(),
     ]);
+
+    // Users and employees tables have FORCE RLS — must query per-tenant
+    const tenantIds = await this.db.client.tenant.findMany({
+      select: { id: true },
+    });
+
+    let totalUsers = 0;
+    let totalEmployees = 0;
+    for (const { id } of tenantIds) {
+      const [users, employees] = await this.db.forTenant(id, (tx) =>
+        Promise.all([
+          tx.user.count({ where: { tenantId: id } }),
+          tx.employee.count({ where: { tenantId: id } }),
+        ]),
+      );
+      totalUsers += users;
+      totalEmployees += employees;
+    }
 
     return {
       totalTenants,
