@@ -21,11 +21,21 @@ export default function AdminOnboardingPage() {
     adminPassword: '',
     adminRole: 'ADMIN',
   });
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [onboarded, setOnboarded] = useState<string[]>([]);
+
+  const passwordMismatch =
+    form.adminPassword.length > 0 &&
+    confirmPassword.length > 0 &&
+    form.adminPassword !== confirmPassword;
 
   const handleOnboard = async () => {
     if (!form.companyName || !form.compportSchema) {
       toast({ title: 'Company name and Compport schema are required', variant: 'destructive' });
+      return;
+    }
+    if (passwordMismatch) {
+      toast({ title: 'Passwords do not match', variant: 'destructive' });
       return;
     }
     try {
@@ -41,6 +51,7 @@ export default function AdminOnboardingPage() {
         adminPassword: '',
         adminRole: 'ADMIN',
       });
+      setConfirmPassword('');
     } catch (e) {
       toast({
         title: e instanceof Error ? e.message : 'Onboarding failed',
@@ -124,6 +135,18 @@ export default function AdminOnboardingPage() {
               </p>
             </div>
             <div className="space-y-1">
+              <Label>Confirm Password</Label>
+              <Input
+                type="password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                placeholder="Re-enter password"
+              />
+              {passwordMismatch && (
+                <p className="text-xs text-destructive">Passwords do not match</p>
+              )}
+            </div>
+            <div className="space-y-1">
               <Label>Role</Label>
               <select
                 className="w-full h-9 rounded-md border px-3 text-sm"
@@ -138,7 +161,7 @@ export default function AdminOnboardingPage() {
               </select>
             </div>
           </div>
-          <Button onClick={handleOnboard} disabled={onboard.isPending}>
+          <Button onClick={handleOnboard} disabled={onboard.isPending || passwordMismatch}>
             {onboard.isPending ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
             ) : (
