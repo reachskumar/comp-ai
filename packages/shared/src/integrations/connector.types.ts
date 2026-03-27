@@ -3,7 +3,13 @@
  * Shared between API and frontend.
  */
 
-export type ConnectorType = 'HRIS' | 'PAYROLL' | 'BENEFITS' | 'SSO' | 'CUSTOM';
+export type ConnectorType =
+  | 'HRIS'
+  | 'PAYROLL'
+  | 'BENEFITS'
+  | 'SSO'
+  | 'CUSTOM'
+  | 'COMPPORT_CLOUDSQL';
 export type ConnectorStatus = 'ACTIVE' | 'INACTIVE' | 'ERROR' | 'PENDING';
 export type SyncDirection = 'INBOUND' | 'OUTBOUND' | 'BIDIRECTIONAL';
 export type SyncSchedule = 'REALTIME' | 'HOURLY' | 'DAILY' | 'MANUAL';
@@ -47,7 +53,10 @@ export interface IConnector {
   sync(options: SyncOptions): Promise<SyncResult>;
 
   /** Map fields from source to target format */
-  mapFields(source: Record<string, unknown>, mappings: FieldMappingConfig[]): Record<string, unknown>;
+  mapFields(
+    source: Record<string, unknown>,
+    mappings: FieldMappingConfig[],
+  ): Record<string, unknown>;
 
   /** Get the schema of available entities and fields */
   getSchema(): Promise<ConnectorSchema>;
@@ -108,15 +117,14 @@ export interface FieldMappingConfig {
 }
 
 export type TransformType =
-  | 'direct'        // Direct copy
-  | 'date_format'   // Date format conversion
-  | 'currency'      // Currency conversion
-  | 'enum_map'      // Enum value mapping
-  | 'concatenate'   // Concatenate multiple fields
-  | 'split'         // Split a field
-  | 'uppercase'     // Convert to uppercase
-  | 'lowercase'     // Convert to lowercase
-  | 'trim'          // Trim whitespace
-  | 'default'       // Use default value if empty
-  | 'lookup';       // Lookup from a mapping table
-
+  | 'direct' // Direct copy
+  | 'date_format' // Date format conversion
+  | 'currency' // Currency conversion
+  | 'enum_map' // Enum value mapping
+  | 'concatenate' // Concatenate multiple fields
+  | 'split' // Split a field
+  | 'uppercase' // Convert to uppercase
+  | 'lowercase' // Convert to lowercase
+  | 'trim' // Trim whitespace
+  | 'default' // Use default value if empty
+  | 'lookup'; // Lookup from a mapping table

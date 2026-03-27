@@ -1,11 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import {
-  IsString,
-  IsNotEmpty,
-  IsEnum,
-  IsOptional,
-  IsObject,
-} from 'class-validator';
+import { IsString, IsNotEmpty, IsEnum, IsOptional, IsObject } from 'class-validator';
 
 export class CreateConnectorDto {
   @ApiProperty({ description: 'Connector name' })
@@ -15,9 +9,9 @@ export class CreateConnectorDto {
 
   @ApiProperty({
     description: 'Connector type',
-    enum: ['HRIS', 'PAYROLL', 'BENEFITS', 'SSO', 'CUSTOM'],
+    enum: ['HRIS', 'PAYROLL', 'BENEFITS', 'SSO', 'CUSTOM', 'COMPPORT_CLOUDSQL'],
   })
-  @IsEnum(['HRIS', 'PAYROLL', 'BENEFITS', 'SSO', 'CUSTOM'])
+  @IsEnum(['HRIS', 'PAYROLL', 'BENEFITS', 'SSO', 'CUSTOM', 'COMPPORT_CLOUDSQL'])
   connectorType!: string;
 
   @ApiPropertyOptional({ description: 'Connector configuration (JSON)' })
@@ -62,4 +56,3 @@ export class CreateConnectorDto {
   @IsObject()
   metadata?: Record<string, unknown>;
 }
-

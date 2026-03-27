@@ -1,7 +1,7 @@
-"use client";
+'use client';
 
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiClient } from "@/lib/api-client";
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { apiClient } from '@/lib/api-client';
 
 // ─── Types ───────────────────────────────────────────────
 
@@ -9,14 +9,14 @@ export interface ConnectorTemplate {
   id: string;
   name: string;
   description: string;
-  connectorType: "HRIS" | "PAYROLL" | "BENEFITS" | "SSO" | "CUSTOM";
+  connectorType: 'HRIS' | 'PAYROLL' | 'BENEFITS' | 'SSO' | 'CUSTOM' | 'COMPPORT_CLOUDSQL';
   vendor: string;
   logoUrl?: string;
   category: string;
-  authType: "oauth2" | "api_key" | "basic";
+  authType: 'oauth2' | 'api_key' | 'basic';
   sourceSchema: FieldSchema[];
-  defaultSyncDirection: "INBOUND" | "OUTBOUND" | "BIDIRECTIONAL";
-  defaultSyncSchedule: "REALTIME" | "HOURLY" | "DAILY" | "MANUAL";
+  defaultSyncDirection: 'INBOUND' | 'OUTBOUND' | 'BIDIRECTIONAL';
+  defaultSyncSchedule: 'REALTIME' | 'HOURLY' | 'DAILY' | 'MANUAL';
   supportedEntities: string[];
   sandboxMode: boolean;
 }
@@ -54,7 +54,7 @@ export interface Connector {
   tenantId: string;
   name: string;
   connectorType: string;
-  status: "ACTIVE" | "INACTIVE" | "ERROR" | "CONFIGURING";
+  status: 'ACTIVE' | 'INACTIVE' | 'ERROR' | 'CONFIGURING';
   config: Record<string, unknown>;
   lastSyncAt: string | null;
   createdAt: string;
@@ -65,7 +65,7 @@ export interface SyncJob {
   id: string;
   connectorId: string;
   tenantId: string;
-  status: "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
+  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
   syncType: string;
   recordsProcessed: number | null;
   recordsFailed: number | null;
@@ -100,11 +100,11 @@ interface PaginatedResponse<T> {
 // ─── Query Keys ─────────────────────────────────────────
 
 const KEYS = {
-  templates: ["integration-templates"] as const,
-  connectors: ["integration-connectors"] as const,
-  connector: (id: string) => ["integration-connector", id] as const,
-  mappings: (connectorId: string) => ["field-mappings", connectorId] as const,
-  syncJobs: (connectorId: string) => ["sync-jobs", connectorId] as const,
+  templates: ['integration-templates'] as const,
+  connectors: ['integration-connectors'] as const,
+  connector: (id: string) => ['integration-connector', id] as const,
+  mappings: (connectorId: string) => ['field-mappings', connectorId] as const,
+  syncJobs: (connectorId: string) => ['sync-jobs', connectorId] as const,
 };
 
 // ─── Template Hooks ─────────────────────────────────────
@@ -113,9 +113,7 @@ export function useConnectorTemplates() {
   return useQuery<ConnectorTemplate[]>({
     queryKey: KEYS.templates,
     queryFn: () =>
-      apiClient.fetch<ConnectorTemplate[]>(
-        "/api/v1/integrations/field-mappings/templates",
-      ),
+      apiClient.fetch<ConnectorTemplate[]>('/api/v1/integrations/field-mappings/templates'),
   });
 }
 
@@ -126,7 +124,7 @@ export function useConnectors() {
     queryKey: KEYS.connectors,
     queryFn: async () => {
       const response = await apiClient.fetch<PaginatedResponse<Connector>>(
-        "/api/v1/integrations/connectors",
+        '/api/v1/integrations/connectors',
       );
       return response.data;
     },
@@ -135,9 +133,8 @@ export function useConnectors() {
 
 export function useConnector(id: string | null) {
   return useQuery<Connector>({
-    queryKey: KEYS.connector(id ?? ""),
-    queryFn: () =>
-      apiClient.fetch<Connector>(`/api/v1/integrations/connectors/${id}`),
+    queryKey: KEYS.connector(id ?? ''),
+    queryFn: () => apiClient.fetch<Connector>(`/api/v1/integrations/connectors/${id}`),
     enabled: !!id,
   });
 }
@@ -150,8 +147,8 @@ export function useCreateConnector() {
     { name: string; connectorType: string; config: Record<string, unknown> }
   >({
     mutationFn: (data) =>
-      apiClient.fetch<Connector>("/api/v1/integrations/connectors", {
-        method: "POST",
+      apiClient.fetch<Connector>('/api/v1/integrations/connectors', {
+        method: 'POST',
         body: JSON.stringify(data),
       }),
     onSuccess: () => {
@@ -171,15 +168,15 @@ export function useFieldMappingSuggestions() {
   >({
     mutationFn: (data) =>
       apiClient.fetch<FieldMappingSuggestionResponse>(
-        "/api/v1/integrations/field-mappings/suggest",
-        { method: "POST", body: JSON.stringify(data) },
+        '/api/v1/integrations/field-mappings/suggest',
+        { method: 'POST', body: JSON.stringify(data) },
       ),
   });
 }
 
 export function useFieldMappings(connectorId: string | null) {
   return useQuery<FieldMapping[]>({
-    queryKey: KEYS.mappings(connectorId ?? ""),
+    queryKey: KEYS.mappings(connectorId ?? ''),
     queryFn: () =>
       apiClient.fetch<FieldMapping[]>(
         `/api/v1/integrations/field-mappings/connector/${connectorId}`,
@@ -204,8 +201,8 @@ export function useCreateFieldMapping() {
     }
   >({
     mutationFn: (data) =>
-      apiClient.fetch<FieldMapping>("/api/v1/integrations/field-mappings", {
-        method: "POST",
+      apiClient.fetch<FieldMapping>('/api/v1/integrations/field-mappings', {
+        method: 'POST',
         body: JSON.stringify(data),
       }),
     onSuccess: (_data, variables) => {
@@ -220,7 +217,7 @@ export function useCreateFieldMapping() {
 
 export function useSyncJobs(connectorId: string | null) {
   return useQuery<SyncJob[]>({
-    queryKey: KEYS.syncJobs(connectorId ?? ""),
+    queryKey: KEYS.syncJobs(connectorId ?? ''),
     queryFn: async () => {
       const response = await apiClient.fetch<PaginatedResponse<SyncJob>>(
         `/api/v1/integrations/connectors/${connectorId}/sync-jobs`,
@@ -233,19 +230,12 @@ export function useSyncJobs(connectorId: string | null) {
 
 export function useTriggerSync() {
   const qc = useQueryClient();
-  return useMutation<
-    SyncJob,
-    Error,
-    { connectorId: string; syncType?: string }
-  >({
+  return useMutation<SyncJob, Error, { connectorId: string; syncType?: string }>({
     mutationFn: ({ connectorId, syncType }) =>
-      apiClient.fetch<SyncJob>(
-        `/api/v1/integrations/connectors/${connectorId}/sync`,
-        {
-          method: "POST",
-          body: JSON.stringify({ syncType: syncType ?? "FULL" }),
-        },
-      ),
+      apiClient.fetch<SyncJob>(`/api/v1/integrations/connectors/${connectorId}/sync`, {
+        method: 'POST',
+        body: JSON.stringify({ syncType: syncType ?? 'FULL' }),
+      }),
     onSuccess: (_data, variables) => {
       void qc.invalidateQueries({
         queryKey: KEYS.syncJobs(variables.connectorId),
@@ -259,10 +249,9 @@ export function useDeleteFieldMapping() {
   const qc = useQueryClient();
   return useMutation<{ deleted: boolean }, Error, { id: string; connectorId: string }>({
     mutationFn: ({ id }) =>
-      apiClient.fetch<{ deleted: boolean }>(
-        `/api/v1/integrations/field-mappings/${id}`,
-        { method: "DELETE" },
-      ),
+      apiClient.fetch<{ deleted: boolean }>(`/api/v1/integrations/field-mappings/${id}`, {
+        method: 'DELETE',
+      }),
     onSuccess: (_data, variables) => {
       void qc.invalidateQueries({
         queryKey: KEYS.mappings(variables.connectorId),
