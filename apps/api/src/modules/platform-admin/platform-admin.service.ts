@@ -1,5 +1,6 @@
 import { Injectable, Logger, NotFoundException, ConflictException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import * as bcrypt from 'bcryptjs';
 import { DatabaseService } from '../../database';
 import { CredentialVaultService } from '../integrations/services/credential-vault.service';
 import { CreateTenantDto, UpdateTenantDto, CreateTenantUserDto, OnboardTenantDto } from './dto';
@@ -156,13 +157,15 @@ export class PlatformAdminService {
       throw new ConflictException(`User ${dto.email} already exists in this tenant`);
     }
 
+    const passwordHash = dto.password ? await bcrypt.hash(dto.password, 12) : '';
+
     const user = await this.db.client.user.create({
       data: {
         tenantId,
         email: dto.email,
         name: dto.name,
         role: (dto.role as any) || 'ADMIN',
-        passwordHash: '', // No password — invite-based
+        passwordHash,
       },
       select: { id: true, email: true, name: true, role: true, createdAt: true },
     });
@@ -216,13 +219,15 @@ export class PlatformAdminService {
     // Create admin user if provided
     let adminUser = null;
     if (dto.adminEmail) {
+      const passwordHash = dto.adminPassword ? await bcrypt.hash(dto.adminPassword, 12) : '';
+
       adminUser = await this.db.client.user.create({
         data: {
           tenantId: tenant.id,
           email: dto.adminEmail,
           name: dto.adminName || dto.adminEmail.split('@')[0] || 'Admin',
-          role: 'ADMIN',
-          passwordHash: '',
+          role: (dto.adminRole as any) || 'ADMIN',
+          passwordHash,
         },
         select: { id: true, email: true, name: true, role: true },
       });
