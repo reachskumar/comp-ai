@@ -3,7 +3,24 @@ import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcryptjs';
 import { DatabaseService } from '../../database';
 import { CredentialVaultService } from '../integrations/services/credential-vault.service';
+import { TenantRegistryService } from '../compport-bridge/services/tenant-registry.service';
+import { CompportCloudSqlService } from '../compport-bridge/services/compport-cloudsql.service';
 import { CreateTenantDto, UpdateTenantDto, CreateTenantUserDto, OnboardTenantDto } from './dto';
+
+/** Canonical feature keys that can be toggled per-tenant */
+export const FEATURE_KEYS = [
+  'ai_features',
+  'data_hygiene',
+  'comp_cycles',
+  'payroll_guard',
+  'benefits',
+  'organization',
+  'equity_plans',
+  'analytics',
+  'integrations',
+] as const;
+
+export type FeatureKey = (typeof FEATURE_KEYS)[number];
 
 @Injectable()
 export class PlatformAdminService {
@@ -13,6 +30,8 @@ export class PlatformAdminService {
     private readonly db: DatabaseService,
     private readonly credentialVault: CredentialVaultService,
     private readonly configService: ConfigService,
+    private readonly tenantRegistry: TenantRegistryService,
+    private readonly cloudSql: CompportCloudSqlService,
   ) {}
 
   // ─── Tenant CRUD ──────────────────────────────────────────
@@ -188,6 +207,28 @@ export class PlatformAdminService {
     return { deleted: true };
   }
 
+  // ─── Compport Tenant Discovery ──────────────────────────
+
+  async listCompportTenants() {
+    const host = this.configService.get('COMPPORT_CLOUDSQL_HOST', '');
+    const port = parseInt(this.configService.get('COMPPORT_CLOUDSQL_PORT', '3306'), 10);
+    const user = this.configService.get('COMPPORT_CLOUDSQL_USER', '');
+    const password = this.configService.get('COMPPORT_CLOUDSQL_PASSWORD', '');
+
+    if (!host || !user || !password) {
+      this.logger.warn('COMPPORT_CLOUDSQL_* env vars not set — returning empty tenant list');
+      return { tenants: [], count: 0 };
+    }
+
+    await this.cloudSql.connect({ host, port, user, password });
+    try {
+      const tenants = await this.tenantRegistry.discoverTenants();
+      return { tenants, count: tenants.length };
+    } finally {
+      await this.cloudSql.disconnect();
+    }
+  }
+
   // ─── Onboarding ──────────────────────────────────────────
 
   async onboardFromCompport(dto: OnboardTenantDto) {
@@ -206,6 +247,13 @@ export class PlatformAdminService {
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-|-$/g, '');
+
+    // Build settings with enabledFeatures (if provided)
+    const settings: Record<string, unknown> = {};
+    if (dto.enabledFeatures && dto.enabledFeatures.length > 0) {
+      settings['enabledFeatures'] = dto.enabledFeatures;
+    }
+
     const tenant = await this.db.client.tenant.create({
       data: {
         name: dto.companyName,
@@ -213,6 +261,7 @@ export class PlatformAdminService {
         subdomain: dto.subdomain || slug,
         compportSchema: dto.compportSchema,
         plan: 'enterprise',
+        ...(Object.keys(settings).length > 0 && { settings: settings as any }),
       },
     });
 

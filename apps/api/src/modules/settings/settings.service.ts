@@ -17,6 +17,7 @@ export class SettingsService {
           name: true,
           slug: true,
           plan: true,
+          settings: true,
           createdAt: true,
           updatedAt: true,
           _count: {

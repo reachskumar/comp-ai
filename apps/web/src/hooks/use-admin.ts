@@ -119,6 +119,13 @@ export function useAdminRemoveTenantUser() {
   });
 }
 
+export function useCompportTenants() {
+  return useQuery({
+    queryKey: ['compport-tenants'],
+    queryFn: () => apiClient.adminListCompportTenants(),
+  });
+}
+
 export function useAdminOnboard() {
   const qc = useQueryClient();
   return useMutation({
@@ -130,6 +137,7 @@ export function useAdminOnboard() {
       adminName?: string;
       adminPassword?: string;
       adminRole?: string;
+      enabledFeatures?: string[];
     }) => apiClient.adminOnboard(data),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['admin-tenants'] });
