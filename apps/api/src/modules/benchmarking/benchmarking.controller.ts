@@ -14,7 +14,7 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth';
-import { TenantGuard } from '../../common';
+import { TenantGuard, RolesGuard, Roles } from '../../common';
 import { BenchmarkingService } from './benchmarking.service';
 import {
   CreateSalaryBandDto,
@@ -31,7 +31,7 @@ interface AuthRequest {
 
 @ApiTags('benchmarking')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)
 @Controller('benchmarking')
 export class BenchmarkingController {
   constructor(private readonly benchmarkingService: BenchmarkingService) {}
@@ -45,6 +45,7 @@ export class BenchmarkingController {
   }
 
   @Post('bands')
+  @Roles('ADMIN', 'HR_MANAGER')
   @ApiOperation({ summary: 'Create a salary band' })
   @HttpCode(HttpStatus.CREATED)
   async createBand(@Body() dto: CreateSalaryBandDto, @Request() req: AuthRequest) {
@@ -52,6 +53,7 @@ export class BenchmarkingController {
   }
 
   @Put('bands/:id')
+  @Roles('ADMIN', 'HR_MANAGER')
   @ApiOperation({ summary: 'Update a salary band' })
   async updateBand(
     @Param('id') id: string,
@@ -62,12 +64,14 @@ export class BenchmarkingController {
   }
 
   @Delete('bands/:id')
+  @Roles('ADMIN', 'HR_MANAGER')
   @ApiOperation({ summary: 'Delete a salary band' })
   async deleteBand(@Param('id') id: string, @Request() req: AuthRequest) {
     return this.benchmarkingService.deleteBand(req.user.tenantId, id);
   }
 
   @Post('bands/import')
+  @Roles('ADMIN', 'HR_MANAGER')
   @ApiOperation({ summary: 'Bulk import salary bands from CSV/JSON' })
   @HttpCode(HttpStatus.CREATED)
   async bulkImportBands(@Body() dto: BulkImportSalaryBandsDto, @Request() req: AuthRequest) {
@@ -91,6 +95,7 @@ export class BenchmarkingController {
   }
 
   @Post('sources')
+  @Roles('ADMIN', 'HR_MANAGER')
   @ApiOperation({ summary: 'Add a market data source' })
   @HttpCode(HttpStatus.CREATED)
   async createSource(@Body() dto: CreateMarketDataSourceDto, @Request() req: AuthRequest) {
@@ -98,6 +103,7 @@ export class BenchmarkingController {
   }
 
   @Put('sources/:id')
+  @Roles('ADMIN', 'HR_MANAGER')
   @ApiOperation({ summary: 'Update a market data source' })
   async updateSource(
     @Param('id') id: string,

@@ -7,6 +7,7 @@ import { TestGeneratorService } from './services/test-generator.service';
 import { TestRunnerService } from './services/test-runner.service';
 import { RuleGeneratorService } from './services/rule-generator.service';
 import { LlmRuleGeneratorService } from './services/llm-rule-generator.service';
+import { RuleUploadService } from './services/rule-upload.service';
 
 @Module({
   controllers: [RulesController],
@@ -19,6 +20,7 @@ import { LlmRuleGeneratorService } from './services/llm-rule-generator.service';
     TestRunnerService,
     RuleGeneratorService,
     LlmRuleGeneratorService,
+    RuleUploadService,
   ],
   exports: [
     PolicyConverterService,
@@ -29,6 +31,7 @@ import { LlmRuleGeneratorService } from './services/llm-rule-generator.service';
     TestRunnerService,
     RuleGeneratorService,
     LlmRuleGeneratorService,
+    RuleUploadService,
   ],
 })
 export class RulesModule {}
