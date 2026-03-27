@@ -99,6 +99,7 @@ export const navGroups: NavGroup[] = [
     items: [
       { title: 'Import Files', href: '/dashboard/data-hygiene/import', icon: Upload },
       { title: 'Import History', href: '/dashboard/data-hygiene/history', icon: History },
+      { title: 'Data Explorer', href: '/dashboard/data/explorer', icon: DatabaseBackup },
     ],
   },
   {
@@ -180,6 +181,7 @@ export const platformAdminGroup: NavGroup = {
   items: [
     { title: 'Customers', href: '/dashboard/admin/customers', icon: Building2 },
     { title: 'Onboarding', href: '/dashboard/admin/onboarding', icon: Upload },
+    { title: 'Data Explorer', href: '/dashboard/admin/data-explorer', icon: DatabaseBackup },
     { title: 'Platform Stats', href: '/dashboard/admin/stats', icon: PieChart },
   ],
 };
