@@ -240,6 +240,18 @@ function CustomerUsersCard({
   onAddUser: () => void;
   isAdding: boolean;
 }) {
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const passwordMismatch =
+    newUser.password.length > 0 &&
+    confirmPassword.length > 0 &&
+    newUser.password !== confirmPassword;
+
+  const handleAdd = () => {
+    if (passwordMismatch) return;
+    onAddUser();
+    setConfirmPassword('');
+  };
+
   return (
     <Card>
       <CardHeader>
@@ -260,7 +272,7 @@ function CustomerUsersCard({
           </div>
         ))}
         <Separator />
-        <div className="grid grid-cols-5 gap-2 items-end">
+        <div className="grid grid-cols-3 gap-2 items-end">
           <div className="space-y-1">
             <Label>Name</Label>
             <Input
@@ -278,17 +290,6 @@ function CustomerUsersCard({
             />
           </div>
           <div className="space-y-1">
-            <Label>Password</Label>
-            <Input
-              type="password"
-              value={newUser.password}
-              onChange={(e) => setNewUser((n: any) => ({ ...n, password: e.target.value }))}
-              placeholder="Min 8 chars"
-              minLength={8}
-            />
-            <p className="text-xs text-muted-foreground">Upper, lower, number &amp; special</p>
-          </div>
-          <div className="space-y-1">
             <Label>Role</Label>
             <select
               className="w-full h-9 rounded-md border px-3 text-sm"
@@ -302,7 +303,30 @@ function CustomerUsersCard({
               ))}
             </select>
           </div>
-          <Button onClick={onAddUser} disabled={isAdding}>
+        </div>
+        <div className="grid grid-cols-3 gap-2 items-end">
+          <div className="space-y-1">
+            <Label>Password</Label>
+            <Input
+              type="password"
+              value={newUser.password}
+              onChange={(e) => setNewUser((n: any) => ({ ...n, password: e.target.value }))}
+              placeholder="Min 8 chars"
+              minLength={8}
+            />
+            <p className="text-xs text-muted-foreground">Upper, lower, number &amp; special</p>
+          </div>
+          <div className="space-y-1">
+            <Label>Confirm Password</Label>
+            <Input
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              placeholder="Re-enter password"
+            />
+            {passwordMismatch && <p className="text-xs text-destructive">Passwords do not match</p>}
+          </div>
+          <Button onClick={handleAdd} disabled={isAdding || passwordMismatch}>
             <UserPlus className="mr-2 h-4 w-4" />
             Add User
           </Button>
