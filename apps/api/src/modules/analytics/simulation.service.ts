@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { DatabaseService } from '../../database';
+import { MarketDataAgeingService } from '../benchmarking/services/market-data-ageing.service';
 import {
   buildSimulationGraph,
   streamGraphToSSE,
@@ -15,7 +16,10 @@ import type { EmployeeData, RuleSet, Rule } from '@compensation/shared';
 export class SimulationService implements SimulationDbAdapter {
   private readonly logger = new Logger(SimulationService.name);
 
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly marketDataAgeing: MarketDataAgeingService,
+  ) {}
 
   // ─── Graph Invocation ──────────────────────────────────────
 
@@ -374,18 +378,84 @@ export class SimulationService implements SimulationDbAdapter {
   }
 
   async getMarketData(
-    _tenantId: string,
+    tenantId: string,
     params: {
       department?: string;
       level?: string;
       location?: string;
     },
   ): Promise<unknown> {
-    // Market benchmarks — placeholder data; in production this would query
-    // an external market-data provider or an internal benchmarks table.
     const label =
       [params.department, params.level, params.location].filter(Boolean).join(' / ') || 'All Roles';
 
+    // Try to get real blended market data from salary bands
+    if (params.department && params.level) {
+      try {
+        const blended = await this.marketDataAgeing.getBlendedMarketData(
+          tenantId,
+          params.department,
+          params.level,
+          params.location,
+        );
+
+        if (blended) {
+          return {
+            label,
+            benchmarks: {
+              p10: blended.p10,
+              p25: blended.p25,
+              p50: blended.p50,
+              p75: blended.p75,
+              p90: blended.p90,
+            },
+            source: blended.sources.map((s) => s.sourceName).join(', '),
+            sourceCount: blended.sources.length,
+            asOfDate: new Date().toISOString().split('T')[0],
+            note:
+              blended.sources.length > 1
+                ? `Blended from ${blended.sources.length} sources with ageing adjustment`
+                : 'Single source with ageing adjustment',
+          };
+        }
+      } catch (error) {
+        this.logger.warn(`Failed to get blended market data: ${(error as Error).message}`);
+      }
+    }
+
+    // Fallback: try to find any matching salary band directly
+    try {
+      const where: Record<string, unknown> = { tenantId };
+      if (params.department) where['jobFamily'] = params.department;
+      if (params.level) where['level'] = params.level;
+      if (params.location) where['location'] = params.location;
+
+      const band = await this.db.forTenant(tenantId, (tx) =>
+        tx.salaryBand.findFirst({
+          where: where as never,
+          orderBy: { effectiveDate: 'desc' },
+        }),
+      );
+
+      if (band) {
+        return {
+          label,
+          benchmarks: {
+            p10: Number(band.p10),
+            p25: Number(band.p25),
+            p50: Number(band.p50),
+            p75: Number(band.p75),
+            p90: Number(band.p90),
+          },
+          source: band.source || 'Salary Band',
+          asOfDate: band.effectiveDate.toISOString().split('T')[0],
+          note: 'From salary band data',
+        };
+      }
+    } catch (error) {
+      this.logger.warn(`Failed to query salary bands: ${(error as Error).message}`);
+    }
+
+    // Final fallback: placeholder
     return {
       label,
       benchmarks: {
@@ -396,7 +466,7 @@ export class SimulationService implements SimulationDbAdapter {
       },
       source: 'Internal Benchmark (placeholder)',
       asOfDate: new Date().toISOString().split('T')[0],
-      note: 'Market data is illustrative. Connect a market-data provider for live benchmarks.',
+      note: 'No market data available. Upload survey data from Mercer, WTW, or other providers.',
     };
   }
 }

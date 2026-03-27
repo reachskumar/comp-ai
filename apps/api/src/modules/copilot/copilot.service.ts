@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { DatabaseService } from '../../database';
 import {
   buildCopilotGraph,
@@ -7,6 +7,7 @@ import {
   type CopilotUserContext,
   type CopilotUserRole,
   type SSEEvent,
+  type RuleManagementDbAdapter,
 } from '@compensation/ai';
 import { HumanMessage } from '@langchain/core/messages';
 import { Prisma } from '@compensation/database';
@@ -16,6 +17,111 @@ export class CopilotService implements CopilotDbAdapter {
   private readonly logger = new Logger(CopilotService.name);
 
   constructor(private readonly db: DatabaseService) {}
+
+  // ─── Rule Management Adapter (for Copilot rule tools) ───────
+
+  get ruleManagement(): RuleManagementDbAdapter {
+    const db = this.db;
+    return {
+      async getRuleSet(tenantId: string, ruleSetId: string) {
+        return db.forTenant(tenantId, (tx) =>
+          tx.ruleSet.findFirst({
+            where: { id: ruleSetId, tenantId },
+            include: { rules: { orderBy: { priority: 'asc' } } },
+          }),
+        );
+      },
+      async listRuleSets(tenantId: string, filters) {
+        const where: Record<string, unknown> = { tenantId };
+        if (filters.status) where['status'] = filters.status;
+        if (filters.search) where['name'] = { contains: filters.search, mode: 'insensitive' };
+        return db.forTenant(tenantId, (tx) =>
+          tx.ruleSet.findMany({
+            where: where as never,
+            take: filters.limit ?? 20,
+            orderBy: { updatedAt: 'desc' },
+            include: { _count: { select: { rules: true } } },
+          }),
+        );
+      },
+      async createRuleSet(tenantId: string, data) {
+        return db.forTenant(tenantId, (tx) =>
+          tx.ruleSet.create({
+            data: {
+              tenantId,
+              name: data.name,
+              description: data.description,
+              effectiveDate: data.effectiveDate ? new Date(data.effectiveDate) : undefined,
+              rules: data.rules?.length
+                ? {
+                    create: data.rules.map((r) => ({
+                      name: r.name,
+                      ruleType: r.ruleType as never,
+                      priority: r.priority ?? 0,
+                      conditions: (r.conditions ?? {}) as never,
+                      actions: (r.actions ?? {}) as never,
+                      metadata: (r.metadata ?? {}) as never,
+                      enabled: r.enabled ?? true,
+                    })),
+                  }
+                : undefined,
+            },
+            include: { rules: true },
+          }),
+        );
+      },
+      async addRule(tenantId: string, ruleSetId: string, data) {
+        const rs = await db.forTenant(tenantId, (tx) =>
+          tx.ruleSet.findFirst({ where: { id: ruleSetId, tenantId } }),
+        );
+        if (!rs) throw new NotFoundException(`RuleSet ${ruleSetId} not found`);
+        return db.forTenant(tenantId, (tx) =>
+          (tx as any).rule.create({
+            data: {
+              ruleSetId,
+              name: data.name,
+              ruleType: data.ruleType as never,
+              priority: data.priority ?? 0,
+              conditions: (data.conditions ?? {}) as never,
+              actions: (data.actions ?? {}) as never,
+              metadata: (data.metadata ?? {}) as never,
+              enabled: data.enabled ?? true,
+            },
+          }),
+        );
+      },
+      async updateRule(tenantId: string, ruleSetId: string, ruleId: string, data) {
+        const rs = await db.forTenant(tenantId, (tx) =>
+          tx.ruleSet.findFirst({ where: { id: ruleSetId, tenantId } }),
+        );
+        if (!rs) throw new NotFoundException(`RuleSet ${ruleSetId} not found`);
+        return db.forTenant(tenantId, (tx) =>
+          (tx as any).rule.update({ where: { id: ruleId }, data }),
+        );
+      },
+      async deleteRule(tenantId: string, ruleSetId: string, ruleId: string) {
+        const rs = await db.forTenant(tenantId, (tx) =>
+          tx.ruleSet.findFirst({ where: { id: ruleSetId, tenantId } }),
+        );
+        if (!rs) throw new NotFoundException(`RuleSet ${ruleSetId} not found`);
+        return db.forTenant(tenantId, (tx) => (tx as any).rule.delete({ where: { id: ruleId } }));
+      },
+      async generateFromSource(tenantId: string, params) {
+        const source = await db.forTenant(tenantId, (tx) =>
+          tx.ruleSet.findFirst({
+            where: { id: params.sourceRuleSetId, tenantId },
+            include: { rules: { orderBy: { priority: 'asc' } } },
+          }),
+        );
+        if (!source)
+          throw new NotFoundException(`Source rule set ${params.sourceRuleSetId} not found`);
+        return {
+          source,
+          message: 'Use the deterministic generate endpoint for factor-based generation',
+        };
+      },
+    };
+  }
 
   // ─── Graph Invocation ──────────────────────────────────────
 

@@ -6,6 +6,7 @@ import { SimulatorService } from './services/simulator.service';
 import { TestGeneratorService } from './services/test-generator.service';
 import { TestRunnerService } from './services/test-runner.service';
 import { RuleGeneratorService } from './services/rule-generator.service';
+import { LlmRuleGeneratorService } from './services/llm-rule-generator.service';
 
 @Module({
   controllers: [RulesController],
@@ -17,6 +18,7 @@ import { RuleGeneratorService } from './services/rule-generator.service';
     TestGeneratorService,
     TestRunnerService,
     RuleGeneratorService,
+    LlmRuleGeneratorService,
   ],
   exports: [
     PolicyConverterService,
@@ -26,6 +28,7 @@ import { RuleGeneratorService } from './services/rule-generator.service';
     TestGeneratorService,
     TestRunnerService,
     RuleGeneratorService,
+    LlmRuleGeneratorService,
   ],
 })
 export class RulesModule {}

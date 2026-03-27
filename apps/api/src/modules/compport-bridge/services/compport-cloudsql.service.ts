@@ -134,16 +134,20 @@ export class CompportCloudSqlService implements OnModuleDestroy {
   }
 
   /**
-   * Execute multiple UPDATE statements within a single Cloud SQL transaction.
-   * All-or-nothing: if any statement fails, the entire batch rolls back.
+   * Execute multiple write statements (INSERT/UPDATE/DELETE) within a single
+   * Cloud SQL transaction. All-or-nothing: if any statement fails, the entire
+   * batch rolls back.
    *
    * SECURITY: Only parameterized queries accepted. Never interpolates user data.
    *
+   * @param options.allowZeroAffected - If true, don't throw on 0 affected rows
+   *   (needed for INSERT INTO ... SELECT which returns ResultSetHeader differently)
    * @returns Number of affected rows per statement
    */
   async executeWrite(
     schemaName: string,
     statements: WriteStatement[],
+    options?: { allowZeroAffected?: boolean },
   ): Promise<{ affectedRows: number[] }> {
     const pool = this.ensurePool();
     const conn = await pool.getConnection();
@@ -158,7 +162,7 @@ export class CompportCloudSqlService implements OnModuleDestroy {
         const r = result as mysql.ResultSetHeader;
         affectedRows.push(r.affectedRows);
 
-        if (r.affectedRows === 0) {
+        if (r.affectedRows === 0 && !options?.allowZeroAffected) {
           throw new Error(`Write-back failed: 0 rows affected for query. Expected at least 1.`);
         }
       }
@@ -172,6 +176,63 @@ export class CompportCloudSqlService implements OnModuleDestroy {
       await conn.rollback();
       this.logger.error(
         `Cloud SQL write-back rolled back in schema ${schemaName}: ${(error as Error).message}`,
+      );
+      throw error;
+    } finally {
+      conn.release();
+    }
+  }
+
+  /**
+   * Execute a transactional write that includes history insertion + updates.
+   * This is the core pattern for Compport write-back:
+   *   1. INSERT INTO login_user_history SELECT * FROM login_user WHERE ...
+   *   2. UPDATE login_user SET ... (with salary cascade)
+   *   3. Optional additional table updates
+   *
+   * All operations happen in a single transaction.
+   */
+  async executeWriteWithHistory(
+    schemaName: string,
+    historyStatements: WriteStatement[],
+    updateStatements: WriteStatement[],
+  ): Promise<{ historyRows: number[]; updateRows: number[] }> {
+    const pool = this.ensurePool();
+    const conn = await pool.getConnection();
+    const historyRows: number[] = [];
+    const updateRows: number[] = [];
+
+    try {
+      await conn.query({ sql: 'USE ??', values: [schemaName] });
+      await conn.beginTransaction();
+
+      // Step 1: Insert history FIRST (mandatory)
+      for (const stmt of historyStatements) {
+        const [result] = await conn.execute({ sql: stmt.sql, values: stmt.params });
+        const r = result as mysql.ResultSetHeader;
+        historyRows.push(r.affectedRows);
+      }
+
+      this.logger.log(
+        `History insertion: ${historyRows.reduce((a, b) => a + b, 0)} rows in ${schemaName}`,
+      );
+
+      // Step 2: Execute updates
+      for (const stmt of updateStatements) {
+        const [result] = await conn.execute({ sql: stmt.sql, values: stmt.params });
+        const r = result as mysql.ResultSetHeader;
+        updateRows.push(r.affectedRows);
+      }
+
+      await conn.commit();
+      this.logger.log(
+        `Cloud SQL write-with-history: ${historyStatements.length} history + ${updateStatements.length} updates committed in ${schemaName}`,
+      );
+      return { historyRows, updateRows };
+    } catch (error) {
+      await conn.rollback();
+      this.logger.error(
+        `Cloud SQL write-with-history rolled back in schema ${schemaName}: ${(error as Error).message}`,
       );
       throw error;
     } finally {
