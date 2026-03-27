@@ -195,7 +195,7 @@ jobs:
           echo "API URL: $API_URL"
           # Retry up to 5 times with 10s interval (Cloud Run cold start)
           for i in 1 2 3 4 5; do
-            if curl -sf "${API_URL}/api/health"; then
+            if curl -sf "${API_URL}/health"; then
               echo "✅ API health check passed (attempt $i)"
               exit 0
             fi
