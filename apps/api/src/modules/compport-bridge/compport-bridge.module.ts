@@ -7,6 +7,7 @@ import { CompportApiService } from './services/compport-api.service';
 import { CompportSessionService } from './services/compport-session.service';
 import { CompportCloudSqlService } from './services/compport-cloudsql.service';
 import { WriteBackService } from './services/write-back.service';
+import { CompportHistoryService } from './services/history.service';
 import { InboundSyncService } from './services/inbound-sync.service';
 import { SchemaDiscoveryService } from './services/schema-discovery.service';
 import { TenantRegistryService } from './services/tenant-registry.service';
@@ -58,6 +59,7 @@ export class CompportBridgeModule {
         CompportApiService,
         CompportSessionService,
         CompportCloudSqlService,
+        CompportHistoryService,
         WriteBackService,
         WriteBackProcessor,
         InboundSyncService,
@@ -72,6 +74,7 @@ export class CompportBridgeModule {
         CompportApiService,
         CompportSessionService,
         CompportCloudSqlService,
+        CompportHistoryService,
         WriteBackService,
         InboundSyncService,
         SchemaDiscoveryService,

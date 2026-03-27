@@ -1,11 +1,15 @@
 import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { DatabaseService } from '../../../database';
 import { CompportCloudSqlService } from './compport-cloudsql.service';
+import { CompportHistoryService } from './history.service';
 import { CredentialVaultService } from '../../integrations/services/credential-vault.service';
+import {
+  isWriteableField,
+  resolveColumnName,
+  WRITE_BACK_TABLES,
+  type WriteBackTable,
+} from './write-back-field-map';
 import * as crypto from 'crypto';
-
-/** Columns that may be written back to Cloud SQL */
-const WRITEABLE_FIELDS = ['base_salary', 'total_comp', 'job_title', 'job_level'] as const;
 
 interface WriteBackRecordInput {
   recommendationId: string;
@@ -13,6 +17,22 @@ interface WriteBackRecordInput {
   fieldName: string;
   previousValue: string;
   newValue: string;
+  /** Target table (defaults to login_user) */
+  targetTable?: WriteBackTable;
+}
+
+/** Options for creating a batch with advanced write-back features */
+interface CreateBatchOptions {
+  /** Whether to insert login_user_history before updates (default: true) */
+  enableHistory?: boolean;
+  /** Whether to apply salary & date cascade (default: false) */
+  enableSalaryCascade?: boolean;
+  /** Effective date for date cascade (required if enableSalaryCascade is true) */
+  effectiveDate?: string;
+  /** User ID performing the write-back (for updatedby field) */
+  updatedBy?: string;
+  /** Proxy user ID (for updatedby_proxy field) */
+  updatedByProxy?: string;
 }
 
 /**
@@ -20,6 +40,12 @@ interface WriteBackRecordInput {
  *
  * Core business logic for pushing approved compensation changes
  * from CompportIQ (PostgreSQL) to Compport Cloud SQL.
+ *
+ * Supports the full Compport write-back flow:
+ * 1. login_user_history insertion (mandatory audit trail)
+ * 2. 150+ field updates to login_user (salary, allowances, demographics)
+ * 3. 5-level salary & date history cascade
+ * 4. Multi-table writes (employee_salary_details, salary_rule_users_dtls, etc.)
  *
  * Human-in-the-loop: No change touches Cloud SQL without explicit admin confirmation.
  *
@@ -36,18 +62,22 @@ export class WriteBackService {
   constructor(
     private readonly db: DatabaseService,
     private readonly cloudSql: CompportCloudSqlService,
+    private readonly historyService: CompportHistoryService,
     private readonly credentialVault: CredentialVaultService,
   ) {}
 
   /**
    * Create a write-back batch from approved recommendations.
    * Status: PENDING_REVIEW — admin must review before proceeding.
+   *
+   * Supports both legacy 4-field mode and full 150+ field Compport mode.
    */
   async createBatch(
     tenantId: string,
     cycleId: string,
     connectorId: string,
     records: WriteBackRecordInput[],
+    options?: CreateBatchOptions,
   ) {
     // Validate connector exists and is COMPPORT_CLOUDSQL type
     const connector = await this.db.forTenant(tenantId, (tx) =>
@@ -69,12 +99,10 @@ export class WriteBackService {
       throw new NotFoundException(`Cycle ${cycleId} not found`);
     }
 
-    // Validate all field names
+    // Validate all field names against expanded field map (150+ fields)
     for (const r of records) {
-      if (!WRITEABLE_FIELDS.includes(r.fieldName as (typeof WRITEABLE_FIELDS)[number])) {
-        throw new BadRequestException(
-          `Field "${r.fieldName}" is not allowed. Allowed: ${WRITEABLE_FIELDS.join(', ')}`,
-        );
+      if (!isWriteableField(r.fieldName)) {
+        throw new BadRequestException(`Field "${r.fieldName}" is not an allowed write-back field.`);
       }
     }
 
@@ -135,12 +163,22 @@ export class WriteBackService {
 
   /**
    * Generate SQL preview for a batch — no Cloud SQL connection needed.
-   * Shows the exact UPDATE statements that will be executed.
+   * Shows the exact statements (history INSERT + UPDATE) that will be executed.
+   *
+   * Now includes:
+   * - login_user_history INSERT statement
+   * - Salary/date cascade SET clauses
+   * - Resolved column names (legacy alias → actual column)
    */
   async previewBatch(tenantId: string, batchId: string) {
     const batch = await this.getBatchOrThrow(tenantId, batchId);
     const connector = await this.getConnectorConfig(tenantId, batch.connectorId);
     const schemaName = (connector.config as Record<string, string>)?.schemaName;
+    const tableName =
+      (connector.config as Record<string, string>)?.tableName ?? WRITE_BACK_TABLES.LOGIN_USER;
+    const batchOptions = (batch as Record<string, unknown>).writeBackOptions as
+      | CreateBatchOptions
+      | undefined;
 
     if (!schemaName) {
       throw new BadRequestException('Connector config missing schemaName');
@@ -153,20 +191,61 @@ export class WriteBackService {
       }),
     );
 
-    // Generate parameterized SQL preview (with placeholders, not actual values)
-    const sqlStatements = records.map((r) => ({
-      recordId: r.id,
-      employeeId: r.employeeId,
-      fieldName: r.fieldName,
-      previousValue: r.previousValue,
-      newValue: r.newValue,
-      sql: `UPDATE \`${schemaName}\`.\`employees\` SET \`${r.fieldName}\` = ? WHERE \`employee_id\` = ?`,
-      params: [r.newValue, r.employeeId],
-    }));
+    // Collect unique employee IDs for history statement
+    const uniqueEmployeeIds = [...new Set(records.map((r) => r.employeeId))];
+    const enableHistory = batchOptions?.enableHistory !== false;
 
-    const previewSql = sqlStatements
-      .map((s) => `-- Record: ${s.recordId} (${s.employeeId})\n${s.sql};`)
-      .join('\n\n');
+    // Build preview SQL statements
+    const previewParts: string[] = [];
+
+    // 1. History INSERT (if enabled)
+    if (enableHistory && tableName === WRITE_BACK_TABLES.LOGIN_USER) {
+      const historyPlaceholders = uniqueEmployeeIds.map(() => '?').join(', ');
+      previewParts.push(
+        `-- Step 1: History snapshot (MANDATORY before any login_user update)\nINSERT INTO \`${schemaName}\`.\`${WRITE_BACK_TABLES.LOGIN_USER_HISTORY}\` SELECT * FROM \`${schemaName}\`.\`${WRITE_BACK_TABLES.LOGIN_USER}\` WHERE id IN (${historyPlaceholders});`,
+      );
+    }
+
+    // 2. Salary & date cascade (if enabled)
+    if (batchOptions?.enableSalaryCascade) {
+      const cascadeClauses = [
+        ...this.historyService.buildSalaryCascadeSetClauses(),
+        ...this.historyService.buildDateCascadeSetClauses(
+          batchOptions.effectiveDate ?? new Date().toISOString().split('T')[0]!,
+        ),
+      ];
+      const cascadePlaceholders = uniqueEmployeeIds.map(() => '?').join(', ');
+      previewParts.push(
+        `-- Step 2: Salary & date history cascade\nUPDATE \`${schemaName}\`.\`${tableName}\` SET ${cascadeClauses.join(', ')} WHERE id IN (${cascadePlaceholders});`,
+      );
+    }
+
+    // 3. Individual field updates
+    const sqlStatements = records.map((r) => {
+      const resolvedColumn = resolveColumnName(r.fieldName);
+      const targetTable = tableName;
+      return {
+        recordId: r.id,
+        employeeId: r.employeeId,
+        fieldName: r.fieldName,
+        resolvedColumn,
+        previousValue: r.previousValue,
+        newValue: r.newValue,
+        sql: `UPDATE \`${schemaName}\`.\`${targetTable}\` SET \`${resolvedColumn}\` = ? WHERE \`id\` = ?`,
+        params: [r.newValue, r.employeeId],
+      };
+    });
+
+    previewParts.push(
+      `-- Step ${batchOptions?.enableSalaryCascade ? '3' : '2'}: Field updates (${records.length} records)`,
+    );
+    for (const s of sqlStatements) {
+      previewParts.push(
+        `-- Record: ${s.recordId} (employee: ${s.employeeId}, field: ${s.resolvedColumn})\n${s.sql};`,
+      );
+    }
+
+    const previewSql = previewParts.join('\n\n');
 
     // Update batch with preview
     await this.db.forTenant(tenantId, (tx) =>
@@ -182,12 +261,15 @@ export class WriteBackService {
   /**
    * Dry-run: connect to Cloud SQL and validate that employees exist
    * and current values match expectations. Does NOT write anything.
+   *
+   * Uses resolved column names (legacy aliases → actual login_user columns).
    */
   async dryRun(tenantId: string, batchId: string) {
     const batch = await this.getBatchOrThrow(tenantId, batchId);
     const connector = await this.getConnectorConfig(tenantId, batch.connectorId);
     const schemaName = (connector.config as Record<string, string>)?.schemaName;
-    const tableName = (connector.config as Record<string, string>)?.tableName ?? 'employees';
+    const tableName =
+      (connector.config as Record<string, string>)?.tableName ?? WRITE_BACK_TABLES.LOGIN_USER;
 
     if (!schemaName) {
       throw new BadRequestException('Connector config missing schemaName');
@@ -206,25 +288,30 @@ export class WriteBackService {
       const results: {
         recordId: string;
         employeeId: string;
+        fieldName: string;
+        resolvedColumn: string;
         found: boolean;
         currentValue: string | null;
         matches: boolean;
       }[] = [];
 
       for (const record of records) {
+        const resolvedColumn = resolveColumnName(record.fieldName);
         const rows = await this.cloudSql.executeQuery<Record<string, unknown>>(
           schemaName,
-          `SELECT \`${record.fieldName}\` FROM \`${tableName}\` WHERE \`employee_id\` = ?`,
+          `SELECT \`${resolvedColumn}\` FROM \`${tableName}\` WHERE \`id\` = ?`,
           [record.employeeId],
         );
 
         const found = rows.length > 0;
-        const currentValue = found ? String(rows[0]?.[record.fieldName] ?? '') : null;
+        const currentValue = found ? String(rows[0]?.[resolvedColumn] ?? '') : null;
         const matches = currentValue === record.previousValue;
 
         results.push({
           recordId: record.id,
           employeeId: record.employeeId,
+          fieldName: record.fieldName,
+          resolvedColumn,
           found,
           currentValue,
           matches,
@@ -269,6 +356,12 @@ export class WriteBackService {
   /**
    * Apply the batch to Cloud SQL. Requires human confirmation.
    * HUMAN-IN-THE-LOOP GATE: Admin must pass confirmPhrase="APPLY".
+   *
+   * Full Compport write-back flow:
+   * 1. INSERT INTO login_user_history (mandatory audit trail)
+   * 2. Salary & date cascade (if salary fields changed)
+   * 3. UPDATE login_user with resolved column names
+   * 4. Mark records as applied in CompportIQ
    */
   async applyBatch(
     tenantId: string,
@@ -298,7 +391,11 @@ export class WriteBackService {
 
     const connector = await this.getConnectorConfig(tenantId, batch.connectorId);
     const schemaName = (connector.config as Record<string, string>)?.schemaName;
-    const tableName = (connector.config as Record<string, string>)?.tableName ?? 'employees';
+    const tableName =
+      (connector.config as Record<string, string>)?.tableName ?? WRITE_BACK_TABLES.LOGIN_USER;
+    const batchOptions = (batch as Record<string, unknown>).writeBackOptions as
+      | CreateBatchOptions
+      | undefined;
 
     if (!schemaName) {
       throw new BadRequestException('Connector config missing schemaName');
@@ -326,36 +423,94 @@ export class WriteBackService {
       tx.writeBackRecord.findMany({ where: whereClause as never }),
     );
 
-    // Build write statements
-    const statements = records.map((r) => ({
-      sql: `UPDATE \`${tableName}\` SET \`${r.fieldName}\` = ? WHERE \`employee_id\` = ?`,
-      params: [r.newValue, r.employeeId] as unknown[],
-    }));
+    // Collect unique employee IDs for history insertion
+    const uniqueEmployeeIds = [...new Set(records.map((r) => r.employeeId))];
+    const enableHistory = batchOptions?.enableHistory !== false;
+    const enableSalaryCascade = batchOptions?.enableSalaryCascade === true;
 
-    // Generate rollback SQL
-    const rollbackSql = records
-      .map(
-        (r) =>
-          `UPDATE \`${schemaName}\`.\`${tableName}\` SET \`${r.fieldName}\` = '${r.previousValue}' WHERE \`employee_id\` = '${r.employeeId}';`,
-      )
-      .join('\n');
+    // ─── Build history statements (Step 1) ───
+    const historyStatements: { sql: string; params: unknown[] }[] = [];
+    if (enableHistory && tableName === WRITE_BACK_TABLES.LOGIN_USER) {
+      const placeholders = uniqueEmployeeIds.map(() => '?').join(', ');
+      historyStatements.push({
+        sql: `INSERT INTO \`${WRITE_BACK_TABLES.LOGIN_USER_HISTORY}\` SELECT * FROM \`${WRITE_BACK_TABLES.LOGIN_USER}\` WHERE id IN (${placeholders})`,
+        params: uniqueEmployeeIds,
+      });
+    }
 
-    // Connect and execute
+    // ─── Build update statements (Steps 2 & 3) ───
+    const updateStatements: { sql: string; params: unknown[] }[] = [];
+
+    // Step 2: Salary & date cascade (if enabled)
+    if (enableSalaryCascade) {
+      const cascadeClauses = [
+        ...this.historyService.buildSalaryCascadeSetClauses(),
+        ...this.historyService.buildDateCascadeSetClauses(
+          batchOptions?.effectiveDate ?? new Date().toISOString().split('T')[0]!,
+        ),
+        ...this.historyService.buildMetaSetClauses(userId, batchOptions?.updatedByProxy),
+      ];
+      const metaParams = this.historyService.getMetaParams(userId, batchOptions?.updatedByProxy);
+      const cascadePlaceholders = uniqueEmployeeIds.map(() => '?').join(', ');
+
+      updateStatements.push({
+        sql: `UPDATE \`${tableName}\` SET ${cascadeClauses.join(', ')} WHERE id IN (${cascadePlaceholders})`,
+        params: [...metaParams, ...uniqueEmployeeIds],
+      });
+    }
+
+    // Step 3: Individual field updates with resolved column names
+    for (const r of records) {
+      const resolvedColumn = resolveColumnName(r.fieldName);
+      updateStatements.push({
+        sql: `UPDATE \`${tableName}\` SET \`${resolvedColumn}\` = ?, \`updatedon\` = NOW(), \`updatedby\` = ? WHERE \`id\` = ?`,
+        params: [r.newValue, userId, r.employeeId],
+      });
+    }
+
+    // Generate rollback SQL (uses original login_user_history for full rollback)
+    const rollbackSql = enableHistory
+      ? `-- Rollback: Restore from login_user_history\n-- The history snapshot taken before this batch can be used to restore original values.\n-- Manual review required before executing rollback.\n` +
+        records
+          .map((r) => {
+            const resolvedColumn = resolveColumnName(r.fieldName);
+            return `UPDATE \`${schemaName}\`.\`${tableName}\` SET \`${resolvedColumn}\` = '${r.previousValue}' WHERE \`id\` = '${r.employeeId}';`;
+          })
+          .join('\n')
+      : records
+          .map((r) => {
+            const resolvedColumn = resolveColumnName(r.fieldName);
+            return `UPDATE \`${schemaName}\`.\`${tableName}\` SET \`${resolvedColumn}\` = '${r.previousValue}' WHERE \`id\` = '${r.employeeId}';`;
+          })
+          .join('\n');
+
+    // Connect and execute transactionally
     await this.connectToCloudSql(tenantId, connector);
 
     try {
-      await this.cloudSql.executeWrite(schemaName, statements);
+      if (historyStatements.length > 0) {
+        // Use the transactional history+update method
+        await this.cloudSql.executeWriteWithHistory(
+          schemaName,
+          historyStatements,
+          updateStatements,
+        );
+      } else {
+        // No history needed — just execute updates
+        await this.cloudSql.executeWrite(schemaName, updateStatements);
+      }
 
       // Mark all records as applied
       const now = new Date();
       await this.db.forTenant(tenantId, async (tx) => {
         for (const r of records) {
+          const resolvedColumn = resolveColumnName(r.fieldName);
           await tx.writeBackRecord.update({
             where: { id: r.id },
             data: {
               status: 'APPLIED',
               appliedAt: now,
-              cloudSqlQuery: `UPDATE \`${tableName}\` SET \`${r.fieldName}\` = ? WHERE \`employee_id\` = ?`,
+              cloudSqlQuery: `UPDATE \`${tableName}\` SET \`${resolvedColumn}\` = ? WHERE \`id\` = ?`,
             },
           });
 
@@ -403,6 +558,9 @@ export class WriteBackService {
               recordsApplied: records.length,
               recordsSkipped: skippedCount,
               schemaName,
+              historyInserted: enableHistory,
+              salaryCascade: enableSalaryCascade,
+              uniqueEmployees: uniqueEmployeeIds.length,
               idempotencyKey: batch.idempotencyKey,
             } as never,
           },
@@ -410,7 +568,7 @@ export class WriteBackService {
       });
 
       this.logger.log(
-        `Write-back batch ${batchId} applied: ${records.length} records to schema ${schemaName}`,
+        `Write-back batch ${batchId} applied: ${records.length} records (${uniqueEmployeeIds.length} employees) to schema ${schemaName} [history=${enableHistory}, cascade=${enableSalaryCascade}]`,
       );
 
       return {
@@ -420,6 +578,9 @@ export class WriteBackService {
         skippedRecords: selectedRecordIds?.length
           ? batch.totalRecords - selectedRecordIds.length
           : 0,
+        historyInserted: enableHistory,
+        salaryCascade: enableSalaryCascade,
+        uniqueEmployees: uniqueEmployeeIds.length,
       };
     } catch (error) {
       const errorMessage = (error as Error).message;

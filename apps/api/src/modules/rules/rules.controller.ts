@@ -24,6 +24,7 @@ import { SimulatorService } from './services/simulator.service';
 import { TestGeneratorService } from './services/test-generator.service';
 import { TestRunnerService } from './services/test-runner.service';
 import { RuleGeneratorService } from './services/rule-generator.service';
+import { LlmRuleGeneratorService } from './services/llm-rule-generator.service';
 import {
   ConvertPolicyDto,
   UpdateConversionCountsDto,
@@ -34,6 +35,8 @@ import {
   RuleSetQueryDto,
   SimulationParamsDto,
   GenerateRulesDto,
+  LlmAnalyzeDto,
+  LlmGenerateDto,
 } from './dto';
 
 interface AuthRequest {
@@ -57,6 +60,7 @@ export class RulesController {
     private readonly testGeneratorService: TestGeneratorService,
     private readonly testRunnerService: TestRunnerService,
     private readonly ruleGenerator: RuleGeneratorService,
+    private readonly llmRuleGenerator: LlmRuleGeneratorService,
   ) {}
 
   // ─── Policy Conversion ─────────────────────────────────────────
@@ -276,5 +280,49 @@ export class RulesController {
       sourceRuleSetId: ruleSetId,
       ...dto,
     });
+  }
+
+  // ─── LLM Rule Analysis & Generation ──────────────────────
+
+  @Post('rule-sets/:ruleSetId/analyze')
+  @ApiOperation({
+    summary: 'Analyse a rule set using AI — returns plain English explanation',
+  })
+  async analyzeRuleSet(
+    @Param('ruleSetId') ruleSetId: string,
+    @Body() dto: LlmAnalyzeDto,
+    @Request() req: AuthRequest,
+  ) {
+    if (dto.compareWithId) {
+      const analysis = await this.llmRuleGenerator.compareRuleSets(
+        req.user.tenantId,
+        req.user.userId,
+        ruleSetId,
+        dto.compareWithId,
+        req.user.role,
+      );
+      return { analysis };
+    }
+    const analysis = await this.llmRuleGenerator.analyzeRuleSet(
+      req.user.tenantId,
+      req.user.userId,
+      ruleSetId,
+      req.user.role,
+    );
+    return { analysis };
+  }
+
+  @Post('generate-from-instruction')
+  @ApiOperation({
+    summary: 'Generate compensation rules from a natural language instruction using AI',
+  })
+  async generateFromInstruction(@Body() dto: LlmGenerateDto, @Request() req: AuthRequest) {
+    const result = await this.llmRuleGenerator.generateFromInstruction(
+      req.user.tenantId,
+      req.user.userId,
+      dto.instruction,
+      req.user.role,
+    );
+    return { result };
   }
 }

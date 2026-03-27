@@ -20,3 +20,8 @@ export {
 } from './budget-optimizer-tools.js';
 
 export { createCalibrationTools, type CalibrationDbAdapter } from './calibration-tools.js';
+
+export {
+  createRuleManagementTools,
+  type RuleManagementDbAdapter,
+} from './rule-management-tools.js';

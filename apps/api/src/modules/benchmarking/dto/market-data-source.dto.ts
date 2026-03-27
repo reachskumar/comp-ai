@@ -7,8 +7,37 @@ export class CreateMarketDataSourceDto {
   @IsNotEmpty()
   name!: string;
 
-  @ApiProperty({ example: 'SURVEY', enum: ['MANUAL', 'SURVEY', 'API'] })
-  @IsEnum(['MANUAL', 'SURVEY', 'API'])
+  @ApiProperty({
+    example: 'MERCER',
+    enum: [
+      'MANUAL',
+      'SURVEY',
+      'API',
+      'RADFORD',
+      'MERCER',
+      'WTW',
+      'AON',
+      'KORN_FERRY',
+      'PAYSCALE',
+      'SALARY_COM',
+      'COMP_ANALYST',
+      'CUSTOM',
+    ],
+  })
+  @IsEnum([
+    'MANUAL',
+    'SURVEY',
+    'API',
+    'RADFORD',
+    'MERCER',
+    'WTW',
+    'AON',
+    'KORN_FERRY',
+    'PAYSCALE',
+    'SALARY_COM',
+    'COMP_ANALYST',
+    'CUSTOM',
+  ])
   provider!: string;
 
   @ApiPropertyOptional({ description: 'Provider-specific configuration' })

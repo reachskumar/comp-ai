@@ -9,6 +9,10 @@
 import { z } from 'zod';
 import { createDomainTool } from '../tools.js';
 import type { StructuredToolInterface } from '@langchain/core/tools';
+import {
+  createRuleManagementTools,
+  type RuleManagementDbAdapter,
+} from './rule-management-tools.js';
 
 /**
  * Database query interface — injected at tool creation time.
@@ -155,6 +159,10 @@ export interface CopilotDbAdapter {
       effectiveDate?: string;
     },
   ): Promise<unknown>;
+
+  // ─── Optional Rule Management Adapter ──────────────────────
+  /** If provided, rule management tools will be added to the copilot. */
+  ruleManagement?: RuleManagementDbAdapter;
 }
 
 /** Roles allowed to execute write actions through the copilot. */
@@ -423,7 +431,7 @@ export function createCopilotTools(
     },
   });
 
-  return [
+  const tools: StructuredToolInterface[] = [
     queryEmployees,
     queryCompensation,
     queryRules,
@@ -438,5 +446,13 @@ export function createCopilotTools(
     approveRecommendation,
     rejectRecommendation,
     requestLetter,
-  ] as StructuredToolInterface[];
+  ];
+
+  // Optionally add rule management tools (Task 4: Copilot Rule Management)
+  if (db.ruleManagement) {
+    const ruleTools = createRuleManagementTools(tenantId, db.ruleManagement, userId, userRole);
+    tools.push(...ruleTools);
+  }
+
+  return tools;
 }
