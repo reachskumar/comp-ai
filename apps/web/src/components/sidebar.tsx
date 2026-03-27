@@ -115,7 +115,19 @@ function NavGroupSection({ group, collapsed }: { group: NavGroup; collapsed?: bo
 export function Sidebar({ collapsed = false, onToggleCollapse }: SidebarProps) {
   const pathname = usePathname();
   const user = useAuthStore((s) => s.user);
+  const tenant = useAuthStore((s) => s.tenant);
   const isPlatformAdmin = user?.role === 'PLATFORM_ADMIN';
+
+  // Filter nav groups based on tenant's enabled features
+  // Platform admins always see everything; legacy tenants (no enabledFeatures) also see everything
+  const enabledFeatures = (tenant?.settings as Record<string, unknown> | undefined)
+    ?.enabledFeatures as string[] | undefined;
+  const filteredNavGroups =
+    isPlatformAdmin || !enabledFeatures || enabledFeatures.length === 0
+      ? navGroups
+      : navGroups.filter(
+          (group) => !group.featureKey || enabledFeatures.includes(group.featureKey),
+        );
 
   return (
     <div
@@ -202,7 +214,7 @@ export function Sidebar({ collapsed = false, onToggleCollapse }: SidebarProps) {
 
           <Separator className="my-3" />
 
-          {navGroups.map((group) => (
+          {filteredNavGroups.map((group) => (
             <NavGroupSection key={group.title} group={group} collapsed={collapsed} />
           ))}
 

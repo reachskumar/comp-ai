@@ -154,6 +154,12 @@ class ApiClient {
       accessToken: string;
       refreshToken: string;
       user: { id: string; email: string; name: string; role: string };
+      tenant?: {
+        id: string;
+        name: string;
+        slug: string;
+        settings?: Record<string, unknown>;
+      } | null;
     }>('/api/v1/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
@@ -358,6 +364,19 @@ class ApiClient {
     );
   }
 
+  async adminListCompportTenants() {
+    return this.fetch<{
+      tenants: Array<{
+        schemaName: string;
+        companyName: string;
+        status: string;
+        createdAt: string | null;
+        employeeCount: number | null;
+      }>;
+      count: number;
+    }>('/api/v1/platform-admin/compport-tenants');
+  }
+
   async adminOnboard(data: {
     companyName: string;
     compportSchema: string;
@@ -366,6 +385,7 @@ class ApiClient {
     adminName?: string;
     adminPassword?: string;
     adminRole?: string;
+    enabledFeatures?: string[];
   }) {
     return this.fetch<Record<string, unknown>>('/api/v1/platform-admin/onboard', {
       method: 'POST',

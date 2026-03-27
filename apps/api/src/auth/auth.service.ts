@@ -63,6 +63,11 @@ export class AuthService {
   async login(dto: LoginDto) {
     const user = await this.db.client.user.findFirst({
       where: { email: dto.email },
+      include: {
+        tenant: {
+          select: { id: true, name: true, slug: true, settings: true },
+        },
+      },
     });
 
     if (!user || !user.passwordHash) {
@@ -80,6 +85,14 @@ export class AuthService {
 
     return {
       user: { id: user.id, email: user.email, name: user.name, role: user.role },
+      tenant: user.tenant
+        ? {
+            id: user.tenant.id,
+            name: user.tenant.name,
+            slug: user.tenant.slug,
+            settings: user.tenant.settings,
+          }
+        : null,
       ...tokens,
     };
   }

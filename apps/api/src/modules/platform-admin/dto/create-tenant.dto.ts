@@ -5,6 +5,7 @@ import {
   IsOptional,
   IsBoolean,
   IsEnum,
+  IsArray,
   MinLength,
   Matches,
 } from 'class-validator';
@@ -165,4 +166,14 @@ export class OnboardTenantDto {
   @IsOptional()
   @IsString()
   adminRole?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Enabled feature keys for this tenant (e.g., ai_features, comp_cycles). If omitted, all features enabled.',
+    example: ['ai_features', 'comp_cycles', 'analytics'],
+  })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  enabledFeatures?: string[];
 }
