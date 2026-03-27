@@ -32,13 +32,25 @@ function createMockCredentialVault() {
   };
 }
 
+// ─── Mock History Service ────────────────────────────────────────────────
+function createMockHistoryService() {
+  return {
+    insertHistory: vi.fn().mockResolvedValue(0),
+    buildSalaryCascadeSetClauses: vi.fn().mockReturnValue([]),
+    buildDateCascadeSetClauses: vi.fn().mockReturnValue([]),
+    buildMetaSetClauses: vi.fn().mockReturnValue([]),
+    getMetaParams: vi.fn().mockReturnValue([]),
+  };
+}
+
 // ─── Factory ───────────────────────────────────────────────────────────────
 function createWriteBackService() {
   const db = createMockDatabaseService();
   const cloudSql = createMockCloudSqlService();
+  const historyService = createMockHistoryService();
   const credentialVault = createMockCredentialVault();
-  const service = new (WriteBackService as any)(db, cloudSql, credentialVault);
-  return { service: service as WriteBackService, db, cloudSql, credentialVault };
+  const service = new (WriteBackService as any)(db, cloudSql, historyService, credentialVault);
+  return { service: service as WriteBackService, db, cloudSql, historyService, credentialVault };
 }
 
 const CONNECTOR_ID = 'conn-cloudsql-001';
@@ -185,7 +197,8 @@ describe('WriteBackService — dryRun', () => {
     db.client.writeBackRecord.findMany.mockResolvedValue([MOCK_WRITE_BACK_RECORD]);
     db.client.writeBackBatch.update.mockResolvedValue({});
     db.client.auditLog.create.mockResolvedValue({});
-    cloudSql.executeQuery.mockResolvedValue([{ base_salary: '50000' }]);
+    // resolveColumnName maps 'base_salary' → 'current_base_salary'
+    cloudSql.executeQuery.mockResolvedValue([{ current_base_salary: '50000' }]);
 
     const result = await service.dryRun(TEST_TENANT_ID, BATCH_ID);
 
