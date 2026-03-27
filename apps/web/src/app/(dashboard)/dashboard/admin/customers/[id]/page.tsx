@@ -286,6 +286,7 @@ function CustomerUsersCard({
               placeholder="Min 8 chars"
               minLength={8}
             />
+            <p className="text-xs text-muted-foreground">Upper, lower, number &amp; special</p>
           </div>
           <div className="space-y-1">
             <Label>Role</Label>

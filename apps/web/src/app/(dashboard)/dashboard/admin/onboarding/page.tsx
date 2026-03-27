@@ -119,6 +119,9 @@ export default function AdminOnboardingPage() {
                 placeholder="Min 8 characters"
                 minLength={8}
               />
+              <p className="text-xs text-muted-foreground">
+                Min 8 chars, uppercase, lowercase, number &amp; special character
+              </p>
             </div>
             <div className="space-y-1">
               <Label>Role</Label>
