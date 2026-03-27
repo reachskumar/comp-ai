@@ -1,5 +1,5 @@
-import { create } from "zustand";
-import { apiClient } from "@/lib/api-client";
+import { create } from 'zustand';
+import { apiClient } from '@/lib/api-client';
 
 interface User {
   id: string;
@@ -8,10 +8,16 @@ interface User {
   role: string;
 }
 
+interface TenantSettings {
+  enabledFeatures?: string[];
+  [key: string]: unknown;
+}
+
 interface Tenant {
   id: string;
   name: string;
   slug: string;
+  settings?: TenantSettings;
 }
 
 interface AuthState {
@@ -21,7 +27,12 @@ interface AuthState {
   isLoading: boolean;
 
   login: (email: string, password: string) => Promise<void>;
-  register: (data: { email: string; password: string; name: string; tenantName: string }) => Promise<void>;
+  register: (data: {
+    email: string;
+    password: string;
+    name: string;
+    tenantName: string;
+  }) => Promise<void>;
   logout: () => void;
   hydrate: () => void;
 }
@@ -34,21 +45,24 @@ export const useAuthStore = create<AuthState>((set) => ({
 
   login: async (email, password) => {
     const data = await apiClient.login(email, password);
-    localStorage.setItem("accessToken", data.accessToken);
-    localStorage.setItem("refreshToken", data.refreshToken);
-    localStorage.setItem("user", JSON.stringify(data.user));
+    localStorage.setItem('accessToken', data.accessToken);
+    localStorage.setItem('refreshToken', data.refreshToken);
+    localStorage.setItem('user', JSON.stringify(data.user));
+    if (data.tenant) {
+      localStorage.setItem('tenant', JSON.stringify(data.tenant));
+    }
     // Mirror token to cookie so Next.js middleware can detect auth
     document.cookie = `accessToken=${data.accessToken}; path=/; max-age=${60 * 60 * 24 * 7}; SameSite=Lax`;
-    set({ user: data.user, isAuthenticated: true, isLoading: false });
+    set({ user: data.user, tenant: data.tenant ?? null, isAuthenticated: true, isLoading: false });
   },
 
   register: async (input) => {
     const data = await apiClient.register(input);
-    localStorage.setItem("accessToken", data.accessToken);
-    localStorage.setItem("refreshToken", data.refreshToken);
-    localStorage.setItem("user", JSON.stringify(data.user));
+    localStorage.setItem('accessToken', data.accessToken);
+    localStorage.setItem('refreshToken', data.refreshToken);
+    localStorage.setItem('user', JSON.stringify(data.user));
     if (data.tenant) {
-      localStorage.setItem("tenant", JSON.stringify(data.tenant));
+      localStorage.setItem('tenant', JSON.stringify(data.tenant));
     }
     // Mirror token to cookie so Next.js middleware can detect auth
     document.cookie = `accessToken=${data.accessToken}; path=/; max-age=${60 * 60 * 24 * 7}; SameSite=Lax`;
@@ -57,24 +71,24 @@ export const useAuthStore = create<AuthState>((set) => ({
 
   logout: () => {
     apiClient.clearTokens();
-    localStorage.removeItem("user");
-    localStorage.removeItem("tenant");
+    localStorage.removeItem('user');
+    localStorage.removeItem('tenant');
     // Clear the auth cookie
-    document.cookie = "accessToken=; path=/; max-age=0";
+    document.cookie = 'accessToken=; path=/; max-age=0';
     set({ user: null, tenant: null, isAuthenticated: false, isLoading: false });
-    if (typeof window !== "undefined") {
-      window.location.href = "/login";
+    if (typeof window !== 'undefined') {
+      window.location.href = '/login';
     }
   },
 
   hydrate: () => {
-    if (typeof window === "undefined") {
+    if (typeof window === 'undefined') {
       set({ isLoading: false });
       return;
     }
-    const token = localStorage.getItem("accessToken");
-    const userStr = localStorage.getItem("user");
-    const tenantStr = localStorage.getItem("tenant");
+    const token = localStorage.getItem('accessToken');
+    const userStr = localStorage.getItem('user');
+    const tenantStr = localStorage.getItem('tenant');
 
     if (token && userStr) {
       try {
@@ -89,4 +103,3 @@ export const useAuthStore = create<AuthState>((set) => ({
     }
   },
 }));
-

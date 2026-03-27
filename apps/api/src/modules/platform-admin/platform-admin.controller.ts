@@ -91,6 +91,14 @@ export class PlatformAdminController {
     return this.service.removeTenantUser(id, userId);
   }
 
+  // ─── Compport Tenant Discovery ───────────────────────────
+
+  @Get('compport-tenants')
+  @ApiOperation({ summary: 'List available Compport tenants from Cloud SQL' })
+  listCompportTenants() {
+    return this.service.listCompportTenants();
+  }
+
   // ─── Onboarding ──────────────────────────────────────────
 
   @Post('onboard')
