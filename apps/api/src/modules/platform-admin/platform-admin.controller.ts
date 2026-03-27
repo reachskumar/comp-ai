@@ -25,6 +25,15 @@ export class PlatformAdminController {
 
   constructor(private readonly service: PlatformAdminService) {}
 
+  // ─── Compport Tenant Discovery ───────────────────────────
+  // NOTE: Must be above tenants/:id to avoid route parameter capture
+
+  @Get('compport-tenants')
+  @ApiOperation({ summary: 'List available Compport tenants from Cloud SQL' })
+  listCompportTenants() {
+    return this.service.listCompportTenants();
+  }
+
   // ─── Tenant CRUD ──────────────────────────────────────────
 
   @Get('tenants')
@@ -89,14 +98,6 @@ export class PlatformAdminController {
   @ApiOperation({ summary: 'Remove a user from a tenant' })
   removeTenantUser(@Param('id') id: string, @Param('userId') userId: string) {
     return this.service.removeTenantUser(id, userId);
-  }
-
-  // ─── Compport Tenant Discovery ───────────────────────────
-
-  @Get('compport-tenants')
-  @ApiOperation({ summary: 'List available Compport tenants from Cloud SQL' })
-  listCompportTenants() {
-    return this.service.listCompportTenants();
   }
 
   // ─── Onboarding ──────────────────────────────────────────
