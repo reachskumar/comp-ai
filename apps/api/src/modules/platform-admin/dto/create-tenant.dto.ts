@@ -105,11 +105,16 @@ export class CreateTenantUserDto {
   role?: string;
 
   @ApiPropertyOptional({
-    description: 'User password (min 8 chars). If omitted, user is invite-based.',
+    description:
+      'Password (min 8 chars, 1 uppercase, 1 lowercase, 1 number, 1 special). If omitted, user is invite-based.',
   })
   @IsOptional()
   @IsString()
-  @MinLength(8)
+  @MinLength(8, { message: 'Password must be at least 8 characters long' })
+  @Matches(/[A-Z]/, { message: 'Password must contain at least one uppercase letter' })
+  @Matches(/[a-z]/, { message: 'Password must contain at least one lowercase letter' })
+  @Matches(/[0-9]/, { message: 'Password must contain at least one number' })
+  @Matches(/[^A-Za-z0-9]/, { message: 'Password must contain at least one special character' })
   password?: string;
 }
 
@@ -140,11 +145,16 @@ export class OnboardTenantDto {
   adminName?: string;
 
   @ApiPropertyOptional({
-    description: 'Admin user password (min 8 chars). If omitted, user is invite-based.',
+    description:
+      'Password (min 8 chars, 1 uppercase, 1 lowercase, 1 number, 1 special). If omitted, user is invite-based.',
   })
   @IsOptional()
   @IsString()
-  @MinLength(8)
+  @MinLength(8, { message: 'Password must be at least 8 characters long' })
+  @Matches(/[A-Z]/, { message: 'Password must contain at least one uppercase letter' })
+  @Matches(/[a-z]/, { message: 'Password must contain at least one lowercase letter' })
+  @Matches(/[0-9]/, { message: 'Password must contain at least one number' })
+  @Matches(/[^A-Za-z0-9]/, { message: 'Password must contain at least one special character' })
   adminPassword?: string;
 
   @ApiPropertyOptional({
