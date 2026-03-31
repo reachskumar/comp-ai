@@ -9,6 +9,10 @@ import {
   PieChart,
   Pie,
   Cell,
+  ScatterChart,
+  Scatter,
+  AreaChart,
+  Area,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -31,7 +35,7 @@ const CHART_COLORS = [
 ];
 
 export interface ChartConfig {
-  type: 'bar' | 'line' | 'pie';
+  type: 'bar' | 'line' | 'pie' | 'scatter' | 'area';
   title: string;
   xKey?: string;
   yKeys?: string[];
@@ -182,6 +186,94 @@ function renderChart(config: ChartConfig): React.ReactElement {
           />
         ))}
       </LineChart>
+    );
+  }
+
+  if (type === 'scatter') {
+    return (
+      <ScatterChart margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+        <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+        <XAxis
+          dataKey={xKey}
+          name={xKey}
+          className="text-[10px]"
+          tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 10 }}
+        />
+        <YAxis
+          dataKey={(yKeys ?? [])[0]}
+          name={(yKeys ?? [])[0]}
+          className="text-[10px]"
+          tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 10 }}
+        />
+        <Tooltip
+          contentStyle={{
+            backgroundColor: 'hsl(var(--background))',
+            border: '1px solid hsl(var(--border))',
+            borderRadius: '8px',
+            fontSize: '11px',
+          }}
+          cursor={{ strokeDasharray: '3 3' }}
+        />
+        <Legend wrapperStyle={{ fontSize: '10px' }} />
+        <Scatter
+          name={(yKeys ?? [])[0] ?? 'Value'}
+          data={data}
+          fill={CHART_COLORS[0]}
+          shape="circle"
+        />
+      </ScatterChart>
+    );
+  }
+
+  if (type === 'area') {
+    return (
+      <AreaChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+        <defs>
+          {(yKeys ?? []).map((key, i) => (
+            <linearGradient key={key} id={`gradient-${key}`} x1="0" y1="0" x2="0" y2="1">
+              <stop
+                offset="5%"
+                stopColor={CHART_COLORS[i % CHART_COLORS.length]}
+                stopOpacity={0.3}
+              />
+              <stop
+                offset="95%"
+                stopColor={CHART_COLORS[i % CHART_COLORS.length]}
+                stopOpacity={0}
+              />
+            </linearGradient>
+          ))}
+        </defs>
+        <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+        <XAxis
+          dataKey={xKey}
+          className="text-[10px]"
+          tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 10 }}
+        />
+        <YAxis
+          className="text-[10px]"
+          tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 10 }}
+        />
+        <Tooltip
+          contentStyle={{
+            backgroundColor: 'hsl(var(--background))',
+            border: '1px solid hsl(var(--border))',
+            borderRadius: '8px',
+            fontSize: '11px',
+          }}
+        />
+        <Legend wrapperStyle={{ fontSize: '10px' }} />
+        {(yKeys ?? []).map((key, i) => (
+          <Area
+            key={key}
+            type="monotone"
+            dataKey={key}
+            stroke={CHART_COLORS[i % CHART_COLORS.length]}
+            fill={`url(#gradient-${key})`}
+            strokeWidth={2}
+          />
+        ))}
+      </AreaChart>
     );
   }
 
