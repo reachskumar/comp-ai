@@ -1,13 +1,13 @@
 'use client';
 
-import { useState } from 'react';
-import { Upload, Loader2, CheckCircle2 } from 'lucide-react';
+import { useState, useMemo, useRef, useEffect } from 'react';
+import { Upload, Loader2, CheckCircle2, Search, X, ChevronDown } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/components/ui/toast';
-import { useAdminOnboard } from '@/hooks/use-admin';
+import { useAdminOnboard, useCompportTenants } from '@/hooks/use-admin';
 
 /** Canonical feature keys — keep in sync with backend FEATURE_KEYS */
 const ALL_FEATURES: { key: string; label: string }[] = [
@@ -25,6 +25,7 @@ const ALL_FEATURES: { key: string; label: string }[] = [
 export default function AdminOnboardingPage() {
   const { toast } = useToast();
   const onboard = useAdminOnboard();
+  const { data: compportData, isLoading: tenantsLoading } = useCompportTenants();
 
   const [form, setForm] = useState({
     companyName: '',
@@ -38,6 +39,32 @@ export default function AdminOnboardingPage() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [onboarded, setOnboarded] = useState<string[]>([]);
   const [enabledFeatures, setEnabledFeatures] = useState<string[]>(ALL_FEATURES.map((f) => f.key));
+
+  // Searchable dropdown state
+  const [companySearch, setCompanySearch] = useState('');
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [manualEntry, setManualEntry] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  const compportTenants = compportData?.tenants ?? [];
+  const filteredTenants = useMemo(() => {
+    if (!companySearch) return compportTenants;
+    const q = companySearch.toLowerCase();
+    return compportTenants.filter(
+      (t) => t.companyName.toLowerCase().includes(q) || t.schemaName.toLowerCase().includes(q),
+    );
+  }, [compportTenants, companySearch]);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
 
   const passwordMismatch =
     form.adminPassword.length > 0 &&
@@ -77,6 +104,8 @@ export default function AdminOnboardingPage() {
       });
       setConfirmPassword('');
       setEnabledFeatures(ALL_FEATURES.map((f) => f.key));
+      setCompanySearch('');
+      setManualEntry(false);
     } catch (e) {
       toast({
         title: e instanceof Error ? e.message : 'Onboarding failed',
@@ -103,27 +132,124 @@ export default function AdminOnboardingPage() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
-            {/* Company Name */}
-            <div className="space-y-1">
-              <Label>Company Name *</Label>
-              <Input
-                value={form.companyName}
-                onChange={(e) => setForm((f) => ({ ...f, companyName: e.target.value }))}
-                placeholder="e.g. Standard Bank"
-              />
-            </div>
+            {/* Compport Company Selector */}
+            <div className="space-y-1 col-span-2">
+              <div className="flex items-center justify-between">
+                <Label>Compport Company *</Label>
+                <button
+                  type="button"
+                  className="text-xs text-muted-foreground hover:text-foreground underline"
+                  onClick={() => {
+                    setManualEntry(!manualEntry);
+                    if (!manualEntry) {
+                      setDropdownOpen(false);
+                    }
+                  }}
+                >
+                  {manualEntry ? 'Select from list' : 'Enter manually'}
+                </button>
+              </div>
 
-            {/* Schema Name */}
-            <div className="space-y-1">
-              <Label>Compport Schema Name *</Label>
-              <Input
-                value={form.compportSchema}
-                onChange={(e) => setForm((f) => ({ ...f, compportSchema: e.target.value }))}
-                placeholder="e.g. 200326_1585209819"
-              />
-              <p className="text-xs text-muted-foreground">
-                The MySQL schema name used for inbound data sync
-              </p>
+              {manualEntry ? (
+                <div className="grid grid-cols-2 gap-4">
+                  <Input
+                    value={form.companyName}
+                    onChange={(e) => setForm((f) => ({ ...f, companyName: e.target.value }))}
+                    placeholder="e.g. Standard Bank"
+                  />
+                  <div>
+                    <Input
+                      value={form.compportSchema}
+                      onChange={(e) => setForm((f) => ({ ...f, compportSchema: e.target.value }))}
+                      placeholder="e.g. 200326_1585209819"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      MySQL schema name for data sync
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="relative" ref={dropdownRef}>
+                  <div
+                    className="flex items-center gap-2 w-full h-9 rounded-md border px-3 text-sm cursor-pointer hover:bg-accent/50"
+                    onClick={() => setDropdownOpen(!dropdownOpen)}
+                  >
+                    {form.companyName ? (
+                      <div className="flex items-center justify-between w-full">
+                        <span>
+                          {form.companyName}{' '}
+                          <span className="text-muted-foreground">({form.compportSchema})</span>
+                        </span>
+                        <X
+                          className="h-4 w-4 text-muted-foreground hover:text-foreground"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setForm((f) => ({ ...f, companyName: '', compportSchema: '' }));
+                            setCompanySearch('');
+                          }}
+                        />
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-between w-full text-muted-foreground">
+                        <span>
+                          {tenantsLoading ? 'Loading companies…' : 'Select a Compport company'}
+                        </span>
+                        <ChevronDown className="h-4 w-4" />
+                      </div>
+                    )}
+                  </div>
+
+                  {dropdownOpen && (
+                    <div className="absolute z-50 mt-1 w-full rounded-md border bg-popover shadow-lg">
+                      <div className="flex items-center gap-2 px-3 py-2 border-b">
+                        <Search className="h-4 w-4 text-muted-foreground" />
+                        <input
+                          autoFocus
+                          className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+                          placeholder="Search companies…"
+                          value={companySearch}
+                          onChange={(e) => setCompanySearch(e.target.value)}
+                        />
+                        {companySearch && (
+                          <X
+                            className="h-3 w-3 text-muted-foreground cursor-pointer"
+                            onClick={() => setCompanySearch('')}
+                          />
+                        )}
+                      </div>
+                      <div className="max-h-60 overflow-y-auto">
+                        {filteredTenants.length === 0 ? (
+                          <div className="px-3 py-4 text-sm text-muted-foreground text-center">
+                            {tenantsLoading ? 'Loading…' : 'No companies found'}
+                          </div>
+                        ) : (
+                          filteredTenants.map((t) => (
+                            <div
+                              key={t.schemaName}
+                              className="flex items-center justify-between px-3 py-2 text-sm cursor-pointer hover:bg-accent/50"
+                              onClick={() => {
+                                setForm((f) => ({
+                                  ...f,
+                                  companyName: t.companyName,
+                                  compportSchema: t.schemaName,
+                                }));
+                                setDropdownOpen(false);
+                                setCompanySearch('');
+                              }}
+                            >
+                              <span className="font-medium">{t.companyName}</span>
+                              <span className="text-xs text-muted-foreground">{t.schemaName}</span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                      <div className="px-3 py-1.5 border-t text-xs text-muted-foreground">
+                        {filteredTenants.length} of {compportTenants.length} companies
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="space-y-1">
