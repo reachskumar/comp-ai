@@ -767,6 +767,147 @@ export class CopilotService implements CopilotDbAdapter {
     });
   }
 
+  // ─── Performance Analytics (Copilot Charts) ────────────────
+
+  async queryPerformanceAnalytics(
+    tenantId: string,
+    filters: {
+      metric: string;
+      department?: string;
+      groupBy?: string;
+    },
+  ): Promise<unknown> {
+    const baseWhere: Prisma.EmployeeWhereInput = {
+      tenantId,
+      performanceRating: { not: null },
+    };
+    if (filters.department) baseWhere.department = filters.department;
+
+    return this.db.forTenant(tenantId, async (tx) => {
+      switch (filters.metric) {
+        case 'rating_distribution': {
+          const employees = await tx.employee.findMany({
+            where: baseWhere,
+            select: { performanceRating: true },
+          });
+          const buckets = new Map<string, number>();
+          for (const emp of employees) {
+            const rating = Number(emp.performanceRating);
+            const key = rating.toFixed(1);
+            buckets.set(key, (buckets.get(key) ?? 0) + 1);
+          }
+          const chartData = Array.from(buckets.entries())
+            .map(([rating, count]) => ({ rating, count }))
+            .sort((a, b) => Number(a.rating) - Number(b.rating));
+          return {
+            chartType: 'bar',
+            title: 'Performance Rating Distribution',
+            xKey: 'rating',
+            yKeys: ['count'],
+            data: chartData,
+          };
+        }
+
+        case 'avg_rating_by_department': {
+          const grouped = await tx.employee.groupBy({
+            by: ['department'],
+            where: baseWhere,
+            _avg: { performanceRating: true },
+            _count: true,
+          });
+          const chartData = grouped
+            .map((g) => ({
+              department: g.department,
+              avgRating: g._avg.performanceRating
+                ? Math.round(Number(g._avg.performanceRating) * 100) / 100
+                : 0,
+              count: g._count,
+            }))
+            .sort((a, b) => b.avgRating - a.avgRating);
+          return {
+            chartType: 'bar',
+            title: 'Average Performance Rating by Department',
+            xKey: 'department',
+            yKeys: ['avgRating'],
+            data: chartData,
+          };
+        }
+
+        case 'avg_rating_by_level': {
+          const grouped = await tx.employee.groupBy({
+            by: ['level'],
+            where: baseWhere,
+            _avg: { performanceRating: true },
+            _count: true,
+          });
+          const chartData = grouped
+            .map((g) => ({
+              level: g.level,
+              avgRating: g._avg.performanceRating
+                ? Math.round(Number(g._avg.performanceRating) * 100) / 100
+                : 0,
+              count: g._count,
+            }))
+            .sort((a, b) => b.avgRating - a.avgRating);
+          return {
+            chartType: 'bar',
+            title: 'Average Performance Rating by Level',
+            xKey: 'level',
+            yKeys: ['avgRating'],
+            data: chartData,
+          };
+        }
+
+        case 'performance_vs_salary': {
+          const employees = await tx.employee.findMany({
+            where: baseWhere,
+            select: {
+              performanceRating: true,
+              baseSalary: true,
+              department: true,
+              level: true,
+            },
+            take: 500,
+          });
+          const chartData = employees.map((emp) => ({
+            rating: Number(emp.performanceRating),
+            salary: Number(emp.baseSalary),
+            department: emp.department,
+            level: emp.level,
+          }));
+          return {
+            chartType: 'bar',
+            title: 'Performance Rating vs Base Salary',
+            xKey: 'rating',
+            yKeys: ['salary'],
+            data: chartData,
+          };
+        }
+
+        case 'rating_summary': {
+          const result = await tx.employee.aggregate({
+            where: baseWhere,
+            _avg: { performanceRating: true },
+            _min: { performanceRating: true },
+            _max: { performanceRating: true },
+            _count: true,
+          });
+          return {
+            avgRating: result._avg.performanceRating
+              ? Math.round(Number(result._avg.performanceRating) * 100) / 100
+              : null,
+            minRating: result._min.performanceRating ? Number(result._min.performanceRating) : null,
+            maxRating: result._max.performanceRating ? Number(result._max.performanceRating) : null,
+            totalEmployees: result._count,
+          };
+        }
+
+        default:
+          return { error: `Unknown performance metric: ${filters.metric}` };
+      }
+    });
+  }
+
   // ─── Action Tools (Task 4) ───────────────────────────────
 
   async approveRecommendation(

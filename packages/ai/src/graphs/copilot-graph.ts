@@ -97,7 +97,25 @@ Rule management guidelines:
 - When creating rules from instructions like "5% merit for rating 4+", translate to structured conditions and actions
 - When comparing rule sets, use compare_rule_sets and summarize differences
 - For any write operation (create, modify, delete), ALWAYS confirm with the user first
-- Rule write operations require ADMIN or HR_MANAGER role`;
+- Rule write operations require ADMIN or HR_MANAGER role
+
+Chart visualization guidelines:
+- When presenting performance analytics, compensation analytics, or any data that would benefit from visualization, output a chart block
+- Use the query_performance_analytics tool for performance-related data queries
+- After receiving chart-ready data from tools, render it as a chart block using this EXACT format:
+
+\`\`\`chart
+{"type":"bar","title":"Chart Title","xKey":"fieldName","yKeys":["value1","value2"],"data":[{"fieldName":"A","value1":10},{"fieldName":"B","value1":20}]}
+\`\`\`
+
+- Supported chart types: "bar", "line", "pie"
+- For pie charts, use "nameKey" instead of "xKey", and "valueKey" instead of "yKeys"
+- The JSON must be valid and on a SINGLE line inside the chart block
+- Always include a brief text explanation before or after the chart
+- When the tool response includes chartType, title, xKey, and yKeys fields, use those values directly in your chart block
+- You can also create charts from any tabular data when it would aid understanding
+- For pie charts format: {"type":"pie","title":"...","nameKey":"category","valueKey":"value","data":[...]}
+- Keep chart data concise — summarize if there are more than 20 data points`;
 
 const ROLE_PROMPTS: Record<CopilotUserRole, string> = {
   PLATFORM_ADMIN: `

@@ -21,6 +21,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { useCopilot, type ChatMessage, type ToolCallInfo } from '@/hooks/use-copilot';
+import { CopilotChart, parseChartBlock } from '@/components/copilot-chart';
 
 const STORAGE_KEY_PANEL_WIDTH = 'copilot:panelWidth';
 
@@ -36,6 +37,7 @@ const TOOL_LABELS: Record<string, string> = {
   query_salary_bands: 'Checking salary bands',
   query_notifications: 'Fetching notifications',
   query_team: 'Loading team data',
+  query_performance_analytics: 'Analyzing performance data',
   approve_recommendation: 'Approving recommendation',
   reject_recommendation: 'Rejecting recommendation',
   request_letter: 'Generating letter',
@@ -319,7 +321,33 @@ function PanelMessage({ message }: { message: ChatMessage }) {
               <span className="whitespace-pre-wrap">{message.content}</span>
             ) : (
               <div className="prose prose-xs dark:prose-invert max-w-none [&_table]:text-[10px] [&_th]:px-1.5 [&_td]:px-1.5 [&_p]:my-1 [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    code({ className, children, ...props }) {
+                      const match = /language-(\w+)/.exec(className || '');
+                      const lang = match?.[1];
+                      const codeStr = String(children).replace(/\n$/, '');
+                      if (lang === 'chart') {
+                        const chartConfig = parseChartBlock(codeStr);
+                        if (chartConfig) {
+                          return <CopilotChart config={chartConfig} />;
+                        }
+                      }
+                      // Default code rendering
+                      return (
+                        <code className={className} {...props}>
+                          {children}
+                        </code>
+                      );
+                    },
+                    pre({ children }) {
+                      return <>{children}</>;
+                    },
+                  }}
+                >
+                  {message.content}
+                </ReactMarkdown>
               </div>
             )
           ) : (

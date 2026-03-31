@@ -160,6 +160,15 @@ export interface CopilotDbAdapter {
     },
   ): Promise<unknown>;
 
+  queryPerformanceAnalytics(
+    tenantId: string,
+    filters: {
+      metric: string;
+      department?: string;
+      groupBy?: string;
+    },
+  ): Promise<unknown>;
+
   // ─── Optional Rule Management Adapter ──────────────────────
   /** If provided, rule management tools will be added to the copilot. */
   ruleManagement?: RuleManagementDbAdapter;
@@ -364,6 +373,25 @@ export function createCopilotTools(
     func: async (input) => db.queryTeam(tenantId, input),
   });
 
+  const queryPerformanceAnalytics = createDomainTool({
+    name: 'query_performance_analytics',
+    description:
+      'Get performance analytics data for visualization. Returns structured chart-ready data for performance rating distribution, average rating by department/level, performance vs salary correlation, and rating trends. Use this when the user asks about performance data, ratings, or wants to see performance charts.',
+    schema: z.object({
+      metric: z
+        .string()
+        .describe(
+          'The performance metric to compute: "rating_distribution" (count of employees per rating), "avg_rating_by_department" (average performance rating grouped by department), "avg_rating_by_level" (average rating grouped by level), "performance_vs_salary" (scatter data: rating vs base salary), "rating_summary" (overall stats: avg, min, max, count)',
+        ),
+      department: z.string().optional().describe('Filter to a specific department'),
+      groupBy: z
+        .string()
+        .optional()
+        .describe('Additional grouping: "department", "level", "location"'),
+    }),
+    func: async (input) => db.queryPerformanceAnalytics(tenantId, input),
+  });
+
   // ─── Action Tools (require userId) ────────────────────────
 
   const approveRecommendation = createDomainTool({
@@ -443,6 +471,7 @@ export function createCopilotTools(
     querySalaryBands,
     queryNotifications,
     queryTeam,
+    queryPerformanceAnalytics,
     approveRecommendation,
     rejectRecommendation,
     requestLetter,
