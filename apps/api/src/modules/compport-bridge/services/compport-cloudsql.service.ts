@@ -163,7 +163,9 @@ export class CompportCloudSqlService implements OnModuleDestroy {
     params: unknown[] = [],
   ): Promise<T[]> {
     return this.withSchema(schemaName, async (conn) => {
-      const [rows] = await conn.execute({ sql, values: params });
+      // Use query() instead of execute() to avoid MySQL prepared-statement
+      // bugs with wide tables (e.g. "Incorrect arguments to mysqld_stmt_execute").
+      const [rows] = await conn.query({ sql, values: params });
       return rows as T[];
     });
   }
