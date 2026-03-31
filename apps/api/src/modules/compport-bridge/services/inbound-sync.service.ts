@@ -295,23 +295,23 @@ export class InboundSyncService {
     const baseSalaryRaw = row['base_salary'] ?? row['current_base_salary'];
     const baseSalary = baseSalaryRaw != null ? Number(baseSalaryRaw) : null;
 
+    // Coerce all values to appropriate Prisma types (many Compport fields are numeric FK IDs)
+    const toStr = (v: unknown): string | null =>
+      v != null && v !== '' && v !== 0 ? String(v) : null;
+
     return {
       firstName: firstName ?? 'Unknown',
       lastName: lastName ?? '',
       email:
         email ??
         `${String(row['employee_code'] ?? row['employee_id'] ?? row['id'])}@imported.local`,
-      department: row['department'] ?? String(row['function'] ?? 'Unknown'),
-      jobTitle: row['title'] ?? row['job_title'] ?? row['designation'] ?? null,
-      jobLevel: row['job_level'] ?? row['level'] ?? null,
-      jobFamily: row['job_family'] ?? null,
-      level: row['level'] ?? row['grade'] ?? 'Unknown',
-      hireDate: hireDate && !isNaN(hireDate.getTime()) ? hireDate : new Date(),
-      status,
-      managerId: row['manager_id'] ?? null,
-      gender: row['gender'] ?? null,
-      ethnicity: row['ethnicity'] ?? null,
-      location: row['location'] ?? row['city'] ?? null,
+      department: toStr(row['department']) ?? toStr(row['function']) ?? 'Unknown',
+      jobFamily: toStr(row['job_family']),
+      level: toStr(row['level']) ?? toStr(row['grade']) ?? 'Unknown',
+      hireDate: hireDate && !isNaN(hireDate.getTime()) ? hireDate : new Date('2020-01-01'),
+      managerId: null, // manager_name in Compport is an employee_code, not a PG id
+      gender: toStr(row['gender']),
+      location: toStr(row['location']) ?? toStr(row['city']),
       baseSalary: baseSalary ?? 0,
       totalComp: row['total_comp'] != null ? Number(row['total_comp']) : (baseSalary ?? 0),
       currency: typeof row['currency'] === 'string' ? row['currency'] : 'INR',
@@ -319,6 +319,19 @@ export class InboundSyncService {
       performanceRating:
         row['performance_rating'] != null ? Number(row['performance_rating']) : null,
       isPeopleManager: row['is_manager'] === 1 || row['is_manager'] === true,
+      // Store original Compport data in metadata for reference
+      metadata: {
+        compportId: row['id'],
+        compportStatus: status,
+        employeeType: row['employee_type'],
+        managerCode: row['manager_name'],
+        designationId: row['designation'],
+        jobTitle: toStr(row['title']) ?? toStr(row['job_title']) ?? toStr(row['designation']),
+        gradeId: row['grade'],
+        functionId: row['function'],
+        cityId: row['city'],
+        countryId: row['country'],
+      },
     };
   }
 
