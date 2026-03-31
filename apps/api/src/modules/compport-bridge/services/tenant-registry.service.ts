@@ -33,11 +33,12 @@ export class TenantRegistryService {
   constructor(private readonly cloudSql: CompportCloudSqlService) {}
 
   /**
-   * Discover all tenants from the platform admin database.
-   * Reads the `clients` table which maps schema names to company info.
+   * Discover all active tenants from the platform admin database.
+   * Reads the `manage_company` table which maps dbname (schema) to company info.
+   * Only returns companies with status = 1 (active).
    */
   async discoverTenants(): Promise<CompportTenantInfo[]> {
-    this.logger.log('Discovering tenants from platform_admin_db');
+    this.logger.log('Discovering tenants from platform_admin_db.manage_company');
 
     try {
       // First verify the admin database exists
@@ -54,36 +55,49 @@ export class TenantRegistryService {
         );
       }
 
-      // Query the clients/companies table
-      // Compport stores tenant info with schema_name → company mapping
+      // Auto-discover the company name column from manage_company
+      const columns = await this.cloudSql.executeQuery<{ Field: string }>(
+        PLATFORM_ADMIN_DB,
+        'DESCRIBE manage_company',
+      );
+      const columnNames = columns.map((c) => c.Field);
+      this.logger.log(`manage_company columns: ${columnNames.join(', ')}`);
+
+      // Pick the best column for company name
+      const companyCol =
+        columnNames.find((c) => c === 'company_name') ||
+        columnNames.find((c) => c === 'name') ||
+        columnNames.find((c) => c.toLowerCase().includes('company')) ||
+        columnNames.find((c) => c.toLowerCase().includes('name')) ||
+        'dbname'; // fallback to dbname if no name column found
+
+      this.logger.log(`Using "${companyCol}" as company name column`);
+
+      // Query manage_company — status=1 means active
       const rows = await this.cloudSql.executeQuery<{
-        database_name: string;
+        dbname: string;
         company_name: string;
-        status: string;
-        created_at: string | null;
-        employee_count: number | null;
+        status: number;
       }>(
         PLATFORM_ADMIN_DB,
         `SELECT
-          database_name,
-          COALESCE(company_name, name, '') AS company_name,
-          COALESCE(status, 'active') AS status,
-          created_at,
-          employee_count
-        FROM clients
-        WHERE database_name IS NOT NULL AND database_name != ''
+          dbname,
+          COALESCE(\`${companyCol}\`, dbname) AS company_name,
+          status
+        FROM manage_company
+        WHERE dbname IS NOT NULL AND dbname != '' AND status = 1
         ORDER BY company_name`,
       );
 
       const tenants: CompportTenantInfo[] = rows.map((row) => ({
-        schemaName: row.database_name,
+        schemaName: row.dbname,
         companyName: row.company_name,
-        status: row.status,
-        createdAt: row.created_at,
-        employeeCount: row.employee_count,
+        status: String(row.status),
+        createdAt: null,
+        employeeCount: null,
       }));
 
-      this.logger.log(`Discovered ${tenants.length} tenants from platform_admin_db`);
+      this.logger.log(`Discovered ${tenants.length} active tenants from manage_company`);
       return tenants;
     } catch (error) {
       if (error instanceof BadRequestException) throw error;
@@ -91,11 +105,9 @@ export class TenantRegistryService {
       const message = error instanceof Error ? error.message : 'Unknown error';
       this.logger.error(`Failed to discover tenants: ${message}`);
 
-      // Check for common MySQL errors
       if (message.includes("doesn't exist") || message.includes('Table')) {
         throw new BadRequestException(
-          `The 'clients' table was not found in ${PLATFORM_ADMIN_DB}. ` +
-            'The table name may differ in this Compport installation. ' +
+          `The 'manage_company' table was not found in ${PLATFORM_ADMIN_DB}. ` +
             'Check the platform_admin_db structure manually.',
         );
       }
@@ -105,25 +117,18 @@ export class TenantRegistryService {
   }
 
   /**
-   * Look up a single tenant by schema name.
+   * Look up a single tenant by schema name (dbname).
    */
   async findTenantBySchema(schemaName: string): Promise<CompportTenantInfo | null> {
     const rows = await this.cloudSql.executeQuery<{
-      database_name: string;
+      dbname: string;
       company_name: string;
-      status: string;
-      created_at: string | null;
-      employee_count: number | null;
+      status: number;
     }>(
       PLATFORM_ADMIN_DB,
-      `SELECT
-        database_name,
-        COALESCE(company_name, name, '') AS company_name,
-        COALESCE(status, 'active') AS status,
-        created_at,
-        employee_count
-      FROM clients
-      WHERE database_name = ?`,
+      `SELECT dbname, dbname AS company_name, status
+      FROM manage_company
+      WHERE dbname = ?`,
       [schemaName],
     );
 
@@ -131,11 +136,11 @@ export class TenantRegistryService {
 
     const row = rows[0]!;
     return {
-      schemaName: row.database_name,
+      schemaName: row.dbname,
       companyName: row.company_name,
-      status: row.status,
-      createdAt: row.created_at,
-      employeeCount: row.employee_count,
+      status: String(row.status),
+      createdAt: null,
+      employeeCount: null,
     };
   }
 }

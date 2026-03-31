@@ -220,18 +220,43 @@ export class PlatformAdminService {
 
   // ─── Compport Tenant Discovery ──────────────────────────
 
-  async listCompportTenants() {
-    const host = this.configService.get('COMPPORT_CLOUDSQL_HOST', '');
+  /**
+   * Get MySQL connection config from environment.
+   * Primary: DB_HOST / DB_USER / DB_PWD (production Cloud Run)
+   * Fallback: COMPPORT_CLOUDSQL_HOST / USER / PASSWORD (legacy)
+   */
+  private getMySqlConfig() {
+    const host =
+      this.configService.get('DB_HOST', '') || this.configService.get('COMPPORT_CLOUDSQL_HOST', '');
     const port = parseInt(this.configService.get('COMPPORT_CLOUDSQL_PORT', '3306'), 10);
-    const user = this.configService.get('COMPPORT_CLOUDSQL_USER', '');
-    const password = this.configService.get('COMPPORT_CLOUDSQL_PASSWORD', '');
+    const user =
+      this.configService.get('DB_USER', '') || this.configService.get('COMPPORT_CLOUDSQL_USER', '');
+    const password =
+      this.configService.get('DB_PWD', '') ||
+      this.configService.get('COMPPORT_CLOUDSQL_PASSWORD', '');
+
+    return { host, port, user, password };
+  }
+
+  async listCompportTenants() {
+    const { host, port, user, password } = this.getMySqlConfig();
 
     if (!host || !user || !password) {
-      this.logger.warn('COMPPORT_CLOUDSQL_* env vars not set — returning empty tenant list');
+      this.logger.warn(
+        'MySQL env vars (DB_HOST/DB_USER/DB_PWD) not set — returning empty tenant list',
+      );
       return { tenants: [], count: 0 };
     }
 
-    await this.cloudSql.connect({ host, port, user, password });
+    await this.cloudSql.connect({
+      host,
+      port,
+      user,
+      password,
+      sslCa: process.env['MYSQL_CA_CERT'],
+      sslCert: process.env['MYSQL_CLIENT_CERT'],
+      sslKey: process.env['MYSQL_CLIENT_KEY'],
+    });
     try {
       const tenants = await this.tenantRegistry.discoverTenants();
       return { tenants, count: tenants.length };
@@ -297,11 +322,12 @@ export class PlatformAdminService {
       }
 
       // Create integration connector for Cloud SQL with encrypted credentials
+      const mysqlConfig = this.getMySqlConfig();
       const cloudSqlCreds: Record<string, unknown> = {
-        host: this.configService.get('COMPPORT_CLOUDSQL_HOST', ''),
-        port: parseInt(this.configService.get('COMPPORT_CLOUDSQL_PORT', '3306'), 10),
-        user: this.configService.get('COMPPORT_CLOUDSQL_USER', ''),
-        password: this.configService.get('COMPPORT_CLOUDSQL_PASSWORD', ''),
+        host: mysqlConfig.host,
+        port: mysqlConfig.port,
+        user: mysqlConfig.user,
+        password: mysqlConfig.password,
         database: dto.compportSchema,
       };
 
@@ -317,9 +343,7 @@ export class PlatformAdminService {
         this.logger.log(`Cloud SQL credentials provisioned for tenant ${tenant.id}`);
       } else {
         this.logger.warn(
-          'COMPPORT_CLOUDSQL_* env vars not set — connector created without credentials. ' +
-            'Set COMPPORT_CLOUDSQL_HOST, COMPPORT_CLOUDSQL_USER, COMPPORT_CLOUDSQL_PASSWORD ' +
-            'to enable immediate MySQL access after onboarding.',
+          'MySQL env vars (DB_HOST/DB_USER/DB_PWD) not set — connector created without credentials.',
         );
       }
 
