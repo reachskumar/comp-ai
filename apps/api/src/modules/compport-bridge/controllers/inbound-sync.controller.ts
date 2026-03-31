@@ -90,7 +90,7 @@ export class InboundSyncController {
       backoff: { type: 'exponential', delay: 30_000 },
       removeOnComplete: { age: 86400 },
       removeOnFail: { age: 604800 },
-      jobId: `inbound-sync-${tenantId}-${connectorId}`, // Prevent duplicate jobs
+      jobId: `inbound-sync-${tenantId}-${connectorId}-${Date.now()}`, // Unique per trigger
     });
 
     return {
