@@ -63,6 +63,7 @@ interface SSEData {
   message?: string;
   graphName?: string;
   runId?: string | null;
+  conversationId?: string;
   result?: Record<string, unknown>;
   timestamp?: number;
   [key: string]: unknown;
@@ -229,11 +230,14 @@ export function useCopilot(options?: { autoRestore?: boolean }) {
 
   const handleSSEEvent = useCallback((eventType: string, data: SSEData, assistantId: string) => {
     switch (eventType) {
-      case 'graph:start':
-        if (data.runId && typeof data.runId === 'string') {
-          setConversationId(data.runId);
-          storeConversationId(data.runId);
+      case 'conversation:id':
+        if (data.conversationId && typeof data.conversationId === 'string') {
+          setConversationId(data.conversationId);
+          storeConversationId(data.conversationId);
         }
+        break;
+      case 'graph:start':
+        // graph:start no longer carries the conversation ID — handled by conversation:id event
         break;
       case 'node:start':
         setActiveNode((data.node as string) ?? null);

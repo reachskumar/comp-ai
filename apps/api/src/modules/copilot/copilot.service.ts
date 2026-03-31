@@ -9,7 +9,7 @@ import {
   type SSEEvent,
   type RuleManagementDbAdapter,
 } from '@compensation/ai';
-import { HumanMessage } from '@langchain/core/messages';
+import { HumanMessage, AIMessage, type BaseMessage } from '@langchain/core/messages';
 import { Prisma } from '@compensation/database';
 
 @Injectable()
@@ -137,17 +137,49 @@ export class CopilotService implements CopilotDbAdapter {
       `Copilot chat: tenant=${tenantId} user=${userId} role=${role} conv=${conversationId ?? 'new'}`,
     );
 
+    // ── Step 1: Save user message & resolve conversation ID ──
+    const { conversationId: dbConvId } = await this.saveMessage(
+      tenantId,
+      userId,
+      conversationId,
+      'user',
+      message,
+    );
+
+    // Emit the DB conversation ID so the frontend can track it
+    yield {
+      event: 'conversation:id' as SSEEvent['event'],
+      data: { conversationId: dbConvId, timestamp: Date.now() },
+    };
+
+    // ── Step 2: Load prior messages for conversation context ──
+    const historyMessages: BaseMessage[] = [];
+    if (conversationId) {
+      const conv = await this.getConversation(tenantId, userId, conversationId);
+      if (conv?.messages) {
+        // Exclude the user message we just saved (last message) to avoid duplication
+        const priorMessages = conv.messages.slice(0, -1);
+        for (const m of priorMessages) {
+          if (m.role === 'user') {
+            historyMessages.push(new HumanMessage(m.content));
+          } else if (m.role === 'assistant') {
+            historyMessages.push(new AIMessage(m.content));
+          }
+        }
+      }
+    }
+
+    // ── Step 3: Build graph and stream ──
     const { graph } = await buildCopilotGraph(this, tenantId, userContext, { userId });
 
-    const config = conversationId
-      ? { configurable: { thread_id: conversationId } }
-      : { configurable: { thread_id: `copilot-${tenantId}-${userId}-${Date.now()}` } };
+    const threadId = dbConvId; // Use DB conversation ID as LangGraph thread_id
+    const config = { configurable: { thread_id: threadId } };
 
     const stream = graph.streamEvents(
       {
         tenantId,
         userId,
-        messages: [new HumanMessage(message)],
+        messages: [...historyMessages, new HumanMessage(message)],
         metadata: {},
         userRole: role,
         userName: userContext?.name ?? '',
@@ -155,10 +187,28 @@ export class CopilotService implements CopilotDbAdapter {
       { ...config, version: 'v2' },
     );
 
-    yield* streamGraphToSSE(stream, {
+    // ── Step 4: Stream SSE events and collect assistant response ──
+    let assistantContent = '';
+
+    for await (const sseEvent of streamGraphToSSE(stream, {
       graphName: 'copilot-graph',
-      runId: config.configurable.thread_id,
-    });
+      runId: threadId,
+    })) {
+      // Collect assistant text chunks for persistence
+      if (sseEvent.event === 'message:chunk' && sseEvent.data.content) {
+        assistantContent += sseEvent.data.content as string;
+      }
+      yield sseEvent;
+    }
+
+    // ── Step 5: Save assistant response to DB ──
+    if (assistantContent) {
+      try {
+        await this.saveMessage(tenantId, userId, dbConvId, 'assistant', assistantContent);
+      } catch (err) {
+        this.logger.error('Failed to save assistant message', err);
+      }
+    }
   }
 
   // ─── Conversation Persistence (Task 5) ─────────────────────
