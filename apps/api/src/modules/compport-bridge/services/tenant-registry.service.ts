@@ -78,12 +78,14 @@ export class TenantRegistryService {
         dbname: string;
         company_name: string;
         status: number;
+        createdon: string | null;
       }>(
         PLATFORM_ADMIN_DB,
         `SELECT
           dbname,
           COALESCE(\`${companyCol}\`, dbname) AS company_name,
-          status
+          status,
+          createdon
         FROM manage_company
         WHERE dbname IS NOT NULL AND dbname != '' AND status = 1
         ORDER BY company_name`,
@@ -93,7 +95,7 @@ export class TenantRegistryService {
         schemaName: row.dbname,
         companyName: row.company_name,
         status: String(row.status),
-        createdAt: null,
+        createdAt: row.createdon ? new Date(row.createdon).toISOString() : null,
         employeeCount: null,
       }));
 
@@ -118,29 +120,37 @@ export class TenantRegistryService {
 
   /**
    * Look up a single tenant by schema name (dbname).
+   * Reads the actual `company_name` column (not aliased from dbname).
    */
   async findTenantBySchema(schemaName: string): Promise<CompportTenantInfo | null> {
-    const rows = await this.cloudSql.executeQuery<{
-      dbname: string;
-      company_name: string;
-      status: number;
-    }>(
-      PLATFORM_ADMIN_DB,
-      `SELECT dbname, dbname AS company_name, status
-      FROM manage_company
-      WHERE dbname = ?`,
-      [schemaName],
-    );
+    try {
+      const rows = await this.cloudSql.executeQuery<{
+        dbname: string;
+        company_name: string;
+        status: number;
+        createdon: string | null;
+      }>(
+        PLATFORM_ADMIN_DB,
+        `SELECT dbname, company_name, status, createdon
+        FROM manage_company
+        WHERE dbname = ?`,
+        [schemaName],
+      );
 
-    if (rows.length === 0) return null;
+      if (rows.length === 0) return null;
 
-    const row = rows[0]!;
-    return {
-      schemaName: row.dbname,
-      companyName: row.company_name,
-      status: String(row.status),
-      createdAt: null,
-      employeeCount: null,
-    };
+      const row = rows[0]!;
+      return {
+        schemaName: row.dbname,
+        companyName: row.company_name || row.dbname,
+        status: String(row.status),
+        createdAt: row.createdon ? new Date(row.createdon).toISOString() : null,
+        employeeCount: null,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(`findTenantBySchema("${schemaName}") failed: ${message}`);
+      throw error;
+    }
   }
 }

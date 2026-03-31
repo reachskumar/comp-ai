@@ -242,24 +242,38 @@ export class PlatformAdminService {
     const { host, port, user, password } = this.getMySqlConfig();
 
     if (!host || !user || !password) {
+      const missing = [!host && 'DB_HOST', !user && 'DB_USER', !password && 'DB_PWD'].filter(
+        Boolean,
+      );
       this.logger.warn(
-        'MySQL env vars (DB_HOST/DB_USER/DB_PWD) not set — returning empty tenant list',
+        `MySQL env vars not set (missing: ${missing.join(', ')}) — returning empty tenant list`,
       );
       return { tenants: [], count: 0 };
     }
 
-    await this.cloudSql.connect({
-      host,
-      port,
-      user,
-      password,
-      sslCa: process.env['MYSQL_CA_CERT'],
-      sslCert: process.env['MYSQL_CLIENT_CERT'],
-      sslKey: process.env['MYSQL_CLIENT_KEY'],
-    });
+    const sslCa = process.env['MYSQL_CA_CERT'];
+    const sslCert = process.env['MYSQL_CLIENT_CERT'];
+    const sslKey = process.env['MYSQL_CLIENT_KEY'];
+
+    try {
+      await this.cloudSql.connect({ host, port, user, password, sslCa, sslCert, sslKey });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(
+        `MySQL connection failed (host=${host}, port=${port}, user=${user}, ` +
+          `ssl=${sslCa ? 'yes' : 'no'}): ${msg}`,
+      );
+      return { tenants: [], count: 0 };
+    }
+
     try {
       const tenants = await this.tenantRegistry.discoverTenants();
+      this.logger.log(`Compport tenant discovery returned ${tenants.length} tenants`);
       return { tenants, count: tenants.length };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(`Tenant discovery query failed: ${msg}`);
+      throw error;
     } finally {
       await this.cloudSql.disconnect();
     }
