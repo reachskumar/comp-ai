@@ -124,7 +124,20 @@ export async function withTenantScope<T>(
   }
 
   return client.$transaction(async (tx: Prisma.TransactionClient) => {
+    console.log(`[RLS] Setting tenant context: ${tenantId}`);
     await setTenantContext(tx, tenantId);
+
+    // Verify the setting was applied
+    const result = await (tx as any).$queryRaw<
+      Array<{ current_setting: string }>
+    >`SELECT current_setting('app.current_tenant_id', true) as current_setting`;
+    const actualTenantId = result[0]?.current_setting;
+    console.log(`[RLS] Verified tenant context: ${actualTenantId} (expected: ${tenantId})`);
+
+    if (actualTenantId !== tenantId) {
+      throw new Error(`RLS tenant context mismatch: got ${actualTenantId}, expected ${tenantId}`);
+    }
+
     return callback(tx);
   });
 }
