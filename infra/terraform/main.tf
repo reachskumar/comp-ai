@@ -30,6 +30,7 @@ resource "google_project_service" "apis" {
     "servicenetworking.googleapis.com",
     "iam.googleapis.com",
     "iamcredentials.googleapis.com",
+    "certificatemanager.googleapis.com",
   ])
 
   project                    = var.gcp_project
@@ -165,6 +166,7 @@ module "load_balancer" {
   gcp_project      = var.gcp_project
   domain_name      = var.domain_name
   wildcard_domain  = var.wildcard_domain
+  dns_zone_name    = "compportiq-ai"
   api_service_name = module.cloudrun.api_service_name
   web_service_name = module.cloudrun.web_service_name
   gcp_region       = var.gcp_region
