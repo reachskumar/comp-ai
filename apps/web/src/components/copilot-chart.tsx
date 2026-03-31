@@ -1,41 +1,22 @@
 'use client';
 
-import { useRef, useCallback } from 'react';
-import {
-  BarChart,
-  Bar,
-  LineChart,
-  Line,
-  PieChart,
-  Pie,
-  Cell,
-  ScatterChart,
-  Scatter,
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  Legend,
-} from 'recharts';
+import { useRef, useCallback, useEffect, useState, type ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
-import { Download, FileText } from 'lucide-react';
+import { Download, FileText, Loader2 } from 'lucide-react';
 
 const CHART_COLORS = [
-  'hsl(var(--primary))',
-  'hsl(220, 70%, 50%)',
-  'hsl(150, 60%, 45%)',
-  'hsl(280, 65%, 55%)',
-  'hsl(30, 80%, 55%)',
+  '#6366f1', // indigo
+  '#3b82f6', // blue
+  '#22c55e', // green
+  '#a855f7', // purple
+  '#f97316', // orange
   '#8884d8',
   '#82ca9d',
   '#ffc658',
 ];
 
 export interface ChartConfig {
-  type: 'bar' | 'line' | 'pie' | 'scatter' | 'area';
+  type: 'bar' | 'line' | 'pie' | 'scatter' | 'area' | 'radar';
   title: string;
   xKey?: string;
   yKeys?: string[];
@@ -44,16 +25,64 @@ export interface ChartConfig {
   data: Record<string, unknown>[];
 }
 
+/**
+ * Recursively extract text from React children (handles react-markdown v10
+ * which may pass arrays / nested elements instead of a plain string).
+ */
+export function extractText(node: ReactNode): string {
+  if (node == null || typeof node === 'boolean') return '';
+  if (typeof node === 'string') return node;
+  if (typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(extractText).join('');
+  if (typeof node === 'object' && 'props' in node) {
+    return extractText((node as { props: { children?: ReactNode } }).props.children);
+  }
+  return '';
+}
+
 export function parseChartBlock(code: string): ChartConfig | null {
   try {
-    const parsed = JSON.parse(code);
+    // Normalise: strip stray newlines, trim
+    const cleaned = code.replace(/\n/g, ' ').trim();
+    const parsed = JSON.parse(cleaned);
     if (!parsed.type || !parsed.data || !Array.isArray(parsed.data)) return null;
+    const VALID_TYPES = new Set(['bar', 'line', 'pie', 'scatter', 'area', 'radar']);
+    if (!VALID_TYPES.has(parsed.type)) return null;
     if (parsed.type === 'pie' && (!parsed.nameKey || !parsed.valueKey)) return null;
-    if (parsed.type !== 'pie' && (!parsed.xKey || !parsed.yKeys)) return null;
+    if (parsed.type === 'radar' && (!parsed.xKey || !parsed.yKeys)) return null;
+    if (!['pie', 'radar'].includes(parsed.type) && (!parsed.xKey || !parsed.yKeys)) return null;
     return parsed as ChartConfig;
   } catch {
     return null;
   }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyRC = React.ComponentType<any>;
+
+interface RC {
+  BarChart: AnyRC;
+  Bar: AnyRC;
+  LineChart: AnyRC;
+  Line: AnyRC;
+  PieChart: AnyRC;
+  Pie: AnyRC;
+  Cell: AnyRC;
+  ScatterChart: AnyRC;
+  Scatter: AnyRC;
+  AreaChart: AnyRC;
+  Area: AnyRC;
+  RadarChart: AnyRC;
+  Radar: AnyRC;
+  PolarGrid: AnyRC;
+  PolarAngleAxis: AnyRC;
+  PolarRadiusAxis: AnyRC;
+  XAxis: AnyRC;
+  YAxis: AnyRC;
+  CartesianGrid: AnyRC;
+  Tooltip: AnyRC;
+  ResponsiveContainer: AnyRC;
+  Legend: AnyRC;
 }
 
 function exportCSV(config: ChartConfig) {
@@ -94,8 +123,52 @@ function exportPDF(chartRef: HTMLDivElement | null, title: string) {
 
 export function CopilotChart({ config }: { config: ChartConfig }) {
   const chartRef = useRef<HTMLDivElement>(null);
+  const [rc, setRc] = useState<RC | null>(null);
   const handleCSV = useCallback(() => exportCSV(config), [config]);
   const handlePDF = useCallback(() => exportPDF(chartRef.current, config.title), [config.title]);
+
+  // Dynamic import — SSR-safe (matches codebase pattern)
+  useEffect(() => {
+    import('recharts').then((mod) => {
+      setRc({
+        BarChart: mod.BarChart,
+        Bar: mod.Bar,
+        LineChart: mod.LineChart,
+        Line: mod.Line,
+        PieChart: mod.PieChart,
+        Pie: mod.Pie,
+        Cell: mod.Cell,
+        ScatterChart: mod.ScatterChart,
+        Scatter: mod.Scatter,
+        AreaChart: mod.AreaChart,
+        Area: mod.Area,
+        RadarChart: mod.RadarChart,
+        Radar: mod.Radar,
+        PolarGrid: mod.PolarGrid,
+        PolarAngleAxis: mod.PolarAngleAxis,
+        PolarRadiusAxis: mod.PolarRadiusAxis,
+        XAxis: mod.XAxis,
+        YAxis: mod.YAxis,
+        CartesianGrid: mod.CartesianGrid,
+        Tooltip: mod.Tooltip,
+        ResponsiveContainer: mod.ResponsiveContainer,
+        Legend: mod.Legend,
+      });
+    });
+  }, []);
+
+  if (!rc) {
+    return (
+      <div className="my-2 rounded-lg border border-border/60 bg-background p-3">
+        <div className="flex items-center justify-between mb-2">
+          <h4 className="text-xs font-semibold">{config.title}</h4>
+        </div>
+        <div className="flex items-center justify-center h-[220px] text-muted-foreground text-xs">
+          <Loader2 className="h-4 w-4 animate-spin mr-2" /> Loading chart…
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="my-2 rounded-lg border border-border/60 bg-background p-3">
@@ -111,21 +184,31 @@ export function CopilotChart({ config }: { config: ChartConfig }) {
         </div>
       </div>
       <div ref={chartRef} className="w-full">
-        <ResponsiveContainer width="100%" height={220}>
-          {renderChart(config)}
-        </ResponsiveContainer>
+        <rc.ResponsiveContainer width="100%" height={220}>
+          {renderChart(config, rc)}
+        </rc.ResponsiveContainer>
       </div>
     </div>
   );
 }
 
-function renderChart(config: ChartConfig): React.ReactElement {
+const TT_STYLE = {
+  backgroundColor: 'hsl(var(--background))',
+  border: '1px solid hsl(var(--border))',
+  borderRadius: '8px',
+  fontSize: '11px',
+};
+const TICK = { fill: 'hsl(var(--muted-foreground))', fontSize: 10 };
+const MARGIN = { top: 5, right: 10, left: 0, bottom: 5 };
+
+function renderChart(config: ChartConfig, rc: RC): React.ReactElement {
   const { type, data, xKey, yKeys, nameKey, valueKey } = config;
+  const { CartesianGrid: CG, XAxis: XA, YAxis: YA, Tooltip: TT, Legend: LG } = rc;
 
   if (type === 'pie') {
     return (
-      <PieChart>
-        <Pie
+      <rc.PieChart>
+        <rc.Pie
           data={data}
           dataKey={valueKey!}
           nameKey={nameKey!}
@@ -137,46 +220,25 @@ function renderChart(config: ChartConfig): React.ReactElement {
           }
         >
           {data.map((_, i) => (
-            <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+            <rc.Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
           ))}
-        </Pie>
-        <Tooltip
-          contentStyle={{
-            backgroundColor: 'hsl(var(--background))',
-            border: '1px solid hsl(var(--border))',
-            borderRadius: '8px',
-            fontSize: '11px',
-          }}
-        />
-        <Legend wrapperStyle={{ fontSize: '10px' }} />
-      </PieChart>
+        </rc.Pie>
+        <TT contentStyle={TT_STYLE} />
+        <LG wrapperStyle={{ fontSize: '10px' }} />
+      </rc.PieChart>
     );
   }
 
   if (type === 'line') {
     return (
-      <LineChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-        <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-        <XAxis
-          dataKey={xKey}
-          className="text-[10px]"
-          tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 10 }}
-        />
-        <YAxis
-          className="text-[10px]"
-          tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 10 }}
-        />
-        <Tooltip
-          contentStyle={{
-            backgroundColor: 'hsl(var(--background))',
-            border: '1px solid hsl(var(--border))',
-            borderRadius: '8px',
-            fontSize: '11px',
-          }}
-        />
-        <Legend wrapperStyle={{ fontSize: '10px' }} />
+      <rc.LineChart data={data} margin={MARGIN}>
+        <CG strokeDasharray="3 3" className="stroke-muted" />
+        <XA dataKey={xKey} tick={TICK} />
+        <YA tick={TICK} />
+        <TT contentStyle={TT_STYLE} />
+        <LG wrapperStyle={{ fontSize: '10px' }} />
         {(yKeys ?? []).map((key, i) => (
-          <Line
+          <rc.Line
             key={key}
             type="monotone"
             dataKey={key}
@@ -185,49 +247,31 @@ function renderChart(config: ChartConfig): React.ReactElement {
             dot={{ r: 3 }}
           />
         ))}
-      </LineChart>
+      </rc.LineChart>
     );
   }
 
   if (type === 'scatter') {
     return (
-      <ScatterChart margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-        <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-        <XAxis
-          dataKey={xKey}
-          name={xKey}
-          className="text-[10px]"
-          tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 10 }}
-        />
-        <YAxis
-          dataKey={(yKeys ?? [])[0]}
-          name={(yKeys ?? [])[0]}
-          className="text-[10px]"
-          tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 10 }}
-        />
-        <Tooltip
-          contentStyle={{
-            backgroundColor: 'hsl(var(--background))',
-            border: '1px solid hsl(var(--border))',
-            borderRadius: '8px',
-            fontSize: '11px',
-          }}
-          cursor={{ strokeDasharray: '3 3' }}
-        />
-        <Legend wrapperStyle={{ fontSize: '10px' }} />
-        <Scatter
+      <rc.ScatterChart margin={MARGIN}>
+        <CG strokeDasharray="3 3" className="stroke-muted" />
+        <XA dataKey={xKey} name={xKey} tick={TICK} />
+        <YA dataKey={(yKeys ?? [])[0]} name={(yKeys ?? [])[0]} tick={TICK} />
+        <TT contentStyle={TT_STYLE} cursor={{ strokeDasharray: '3 3' }} />
+        <LG wrapperStyle={{ fontSize: '10px' }} />
+        <rc.Scatter
           name={(yKeys ?? [])[0] ?? 'Value'}
           data={data}
           fill={CHART_COLORS[0]}
           shape="circle"
         />
-      </ScatterChart>
+      </rc.ScatterChart>
     );
   }
 
   if (type === 'area') {
     return (
-      <AreaChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+      <rc.AreaChart data={data} margin={MARGIN}>
         <defs>
           {(yKeys ?? []).map((key, i) => (
             <linearGradient key={key} id={`gradient-${key}`} x1="0" y1="0" x2="0" y2="1">
@@ -244,27 +288,13 @@ function renderChart(config: ChartConfig): React.ReactElement {
             </linearGradient>
           ))}
         </defs>
-        <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-        <XAxis
-          dataKey={xKey}
-          className="text-[10px]"
-          tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 10 }}
-        />
-        <YAxis
-          className="text-[10px]"
-          tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 10 }}
-        />
-        <Tooltip
-          contentStyle={{
-            backgroundColor: 'hsl(var(--background))',
-            border: '1px solid hsl(var(--border))',
-            borderRadius: '8px',
-            fontSize: '11px',
-          }}
-        />
-        <Legend wrapperStyle={{ fontSize: '10px' }} />
+        <CG strokeDasharray="3 3" className="stroke-muted" />
+        <XA dataKey={xKey} tick={TICK} />
+        <YA tick={TICK} />
+        <TT contentStyle={TT_STYLE} />
+        <LG wrapperStyle={{ fontSize: '10px' }} />
         {(yKeys ?? []).map((key, i) => (
-          <Area
+          <rc.Area
             key={key}
             type="monotone"
             dataKey={key}
@@ -273,40 +303,48 @@ function renderChart(config: ChartConfig): React.ReactElement {
             strokeWidth={2}
           />
         ))}
-      </AreaChart>
+      </rc.AreaChart>
+    );
+  }
+
+  if (type === 'radar') {
+    return (
+      <rc.RadarChart cx="50%" cy="50%" outerRadius="70%" data={data}>
+        <rc.PolarGrid />
+        <rc.PolarAngleAxis dataKey={xKey} tick={TICK} />
+        <rc.PolarRadiusAxis tick={TICK} />
+        <TT contentStyle={TT_STYLE} />
+        <LG wrapperStyle={{ fontSize: '10px' }} />
+        {(yKeys ?? []).map((key, i) => (
+          <rc.Radar
+            key={key}
+            name={key}
+            dataKey={key}
+            stroke={CHART_COLORS[i % CHART_COLORS.length]}
+            fill={CHART_COLORS[i % CHART_COLORS.length]}
+            fillOpacity={0.25}
+          />
+        ))}
+      </rc.RadarChart>
     );
   }
 
   // Default: bar chart
   return (
-    <BarChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-      <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-      <XAxis
-        dataKey={xKey}
-        className="text-[10px]"
-        tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 10 }}
-      />
-      <YAxis
-        className="text-[10px]"
-        tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 10 }}
-      />
-      <Tooltip
-        contentStyle={{
-          backgroundColor: 'hsl(var(--background))',
-          border: '1px solid hsl(var(--border))',
-          borderRadius: '8px',
-          fontSize: '11px',
-        }}
-      />
-      <Legend wrapperStyle={{ fontSize: '10px' }} />
+    <rc.BarChart data={data} margin={MARGIN}>
+      <CG strokeDasharray="3 3" className="stroke-muted" />
+      <XA dataKey={xKey} tick={TICK} />
+      <YA tick={TICK} />
+      <TT contentStyle={TT_STYLE} />
+      <LG wrapperStyle={{ fontSize: '10px' }} />
       {(yKeys ?? []).map((key, i) => (
-        <Bar
+        <rc.Bar
           key={key}
           dataKey={key}
           fill={CHART_COLORS[i % CHART_COLORS.length]}
           radius={[4, 4, 0, 0]}
         />
       ))}
-    </BarChart>
+    </rc.BarChart>
   );
 }

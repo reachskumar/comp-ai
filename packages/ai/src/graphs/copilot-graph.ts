@@ -108,9 +108,10 @@ Chart visualization guidelines:
 {"type":"bar","title":"Chart Title","xKey":"fieldName","yKeys":["value1","value2"],"data":[{"fieldName":"A","value1":10},{"fieldName":"B","value1":20}]}
 \`\`\`
 
-- Supported chart types: "bar", "line", "pie", "scatter", "area"
+- Supported chart types: "bar", "line", "pie", "scatter", "area", "radar"
 - Use "scatter" for correlation data (e.g., performance vs salary, experience vs compensation)
 - Use "area" for time-series or trend data where you want to emphasize volume (e.g., headcount over time, budget utilization trends)
+- Use "radar" for multi-dimensional comparisons (e.g., competency scores, skill assessments, balanced scorecards). Radar charts use xKey for the axis labels (e.g., "skill") and yKeys for each series
 - For pie charts, use "nameKey" instead of "xKey", and "valueKey" instead of "yKeys"
 - The JSON must be valid and on a SINGLE line inside the chart block
 - Always include a brief text explanation before or after the chart
