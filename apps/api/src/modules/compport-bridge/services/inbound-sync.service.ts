@@ -137,12 +137,26 @@ export class InboundSyncService {
           const parsed = CloudSqlEmployeeRowSchema.safeParse(row);
           if (!parsed.success) {
             skipped++;
-            const employeeId = String(row['employee_id'] ?? row['id'] ?? 'unknown');
+            const employeeId = String(
+              row['employee_code'] ?? row['employee_id'] ?? row['id'] ?? 'unknown',
+            );
             details.push({ id: employeeId, status: 'skipped', reason: parsed.error.message });
             continue;
           }
 
           const validRow = parsed.data;
+
+          // Resolve the canonical employee identifier (prefer employee_code > employee_id > id)
+          const employeeId = String(
+            validRow.employee_code || validRow.employee_id || validRow.id || 'unknown',
+          );
+
+          // Skip rows without a usable employee identifier
+          if (!employeeId || employeeId === 'unknown' || employeeId === '') {
+            skipped++;
+            details.push({ id: 'unknown', status: 'skipped', reason: 'No employee identifier' });
+            continue;
+          }
 
           // 2. Apply field mappings (if configured)
           let mappedData: Record<string, unknown>;
@@ -155,9 +169,8 @@ export class InboundSyncService {
               })),
             );
             if (!mapResult.success && mapResult.errors.length > 0) {
-              // Log mapping errors but continue with partial data
               this.logger.warn(
-                `Field mapping errors for ${validRow.employee_id}: ${mapResult.errors.map((e) => e.message).join(', ')}`,
+                `Field mapping errors for ${employeeId}: ${mapResult.errors.map((e) => e.message).join(', ')}`,
               );
             }
             mappedData = mapResult.mappedData;
@@ -167,12 +180,14 @@ export class InboundSyncService {
           }
 
           // 3. Upsert into PostgreSQL
-          await this.upsertEmployee(tenantId, validRow.employee_id, mappedData);
+          await this.upsertEmployee(tenantId, employeeId, mappedData);
           synced++;
-          details.push({ id: validRow.employee_id, status: 'synced' });
+          details.push({ id: employeeId, status: 'synced' });
         } catch (err) {
           errors++;
-          const employeeId = String(row['employee_id'] ?? row['id'] ?? 'unknown');
+          const employeeId = String(
+            row['employee_code'] ?? row['employee_id'] ?? row['id'] ?? 'unknown',
+          );
           const message = err instanceof Error ? err.message : 'Unknown error';
           details.push({ id: employeeId, status: 'error', reason: message.substring(0, 200) });
           this.logger.warn(`Failed to sync employee ${employeeId}: ${message}`);
@@ -241,29 +256,69 @@ export class InboundSyncService {
 
   /**
    * Default field mapping when no FieldMappings are configured.
-   * Maps snake_case Cloud SQL columns → camelCase Prisma fields.
+   * Maps Cloud SQL columns → camelCase Prisma Employee fields.
+   *
+   * Handles both standard schemas (first_name, last_name, employee_id)
+   * and Compport legacy schemas (name, employee_code, login_user table).
    */
   private defaultMapping(row: Record<string, unknown>): Record<string, unknown> {
+    // Handle name: split "name" into firstName/lastName if first_name not present
+    let firstName = row['first_name'] as string | null;
+    let lastName = row['last_name'] as string | null;
+    if (!firstName && row['name']) {
+      const nameParts = String(row['name']).trim().split(/\s+/);
+      firstName = nameParts[0] ?? null;
+      lastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : null;
+    }
+
+    // Handle email: Compport sometimes stores employee_code as email
+    let email = row['email'] as string | null;
+    if (email && !email.includes('@')) {
+      // Not a real email — construct a placeholder
+      email = null;
+    }
+
+    // Handle hire date: check both hire_date and company_joining_date
+    const hireDateRaw = row['hire_date'] ?? row['company_joining_date'];
+    const hireDate = hireDateRaw ? new Date(String(hireDateRaw)) : null;
+
+    // Handle status: Compport uses numeric 1=active, others may be string
+    const rawStatus = row['status'];
+    let status: string;
+    if (typeof rawStatus === 'number') {
+      status = rawStatus === 1 ? 'active' : 'inactive';
+    } else {
+      status = String(rawStatus ?? 'active');
+    }
+
+    // Handle salary: check both base_salary and current_base_salary
+    const baseSalaryRaw = row['base_salary'] ?? row['current_base_salary'];
+    const baseSalary = baseSalaryRaw != null ? Number(baseSalaryRaw) : null;
+
     return {
-      firstName: row['first_name'] ?? null,
-      lastName: row['last_name'] ?? null,
-      email: row['email'] ?? null,
-      department: row['department'] ?? null,
-      jobTitle: row['title'] ?? row['job_title'] ?? null,
-      jobLevel: row['job_level'] ?? null,
+      firstName: firstName ?? 'Unknown',
+      lastName: lastName ?? '',
+      email:
+        email ??
+        `${String(row['employee_code'] ?? row['employee_id'] ?? row['id'])}@imported.local`,
+      department: row['department'] ?? String(row['function'] ?? 'Unknown'),
+      jobTitle: row['title'] ?? row['job_title'] ?? row['designation'] ?? null,
+      jobLevel: row['job_level'] ?? row['level'] ?? null,
       jobFamily: row['job_family'] ?? null,
-      hireDate: row['hire_date'] ? new Date(String(row['hire_date'])) : null,
-      status: row['status'] ?? 'active',
+      level: row['level'] ?? row['grade'] ?? 'Unknown',
+      hireDate: hireDate && !isNaN(hireDate.getTime()) ? hireDate : new Date(),
+      status,
       managerId: row['manager_id'] ?? null,
       gender: row['gender'] ?? null,
       ethnicity: row['ethnicity'] ?? null,
-      location: row['location'] ?? null,
-      baseSalary: row['base_salary'] != null ? Number(row['base_salary']) : null,
-      totalComp: row['total_comp'] != null ? Number(row['total_comp']) : null,
-      currency: row['currency'] ?? null,
+      location: row['location'] ?? row['city'] ?? null,
+      baseSalary: baseSalary ?? 0,
+      totalComp: row['total_comp'] != null ? Number(row['total_comp']) : (baseSalary ?? 0),
+      currency: typeof row['currency'] === 'string' ? row['currency'] : 'INR',
       compaRatio: row['compa_ratio'] != null ? Number(row['compa_ratio']) : null,
       performanceRating:
         row['performance_rating'] != null ? Number(row['performance_rating']) : null,
+      isPeopleManager: row['is_manager'] === 1 || row['is_manager'] === true,
     };
   }
 
