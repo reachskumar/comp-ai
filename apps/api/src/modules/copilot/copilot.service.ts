@@ -5,7 +5,6 @@ import {
   streamGraphToSSE,
   type CopilotDbAdapter,
   type CopilotUserContext,
-  type CopilotUserRole,
   type SSEEvent,
   type RuleManagementDbAdapter,
 } from '@compensation/ai';

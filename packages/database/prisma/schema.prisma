@@ -14,14 +14,9 @@ datasource db {
 // Enums
 // ─────────────────────────────────────────────────────────────
 
-enum UserRole {
-  PLATFORM_ADMIN
-  ADMIN
-  HR_MANAGER
-  MANAGER
-  ANALYST
-  EMPLOYEE
-}
+// UserRole enum removed — User.role is now a String storing the actual
+// Compport role ID (e.g., "1.00", "10.00") or "PLATFORM_ADMIN" for
+// cross-tenant system admins.
 
 enum ImportStatus {
   PENDING
@@ -255,6 +250,9 @@ model Tenant {
   writeBackBatches    WriteBackBatch[]
   copilotConversations CopilotConversation[]
   payEquityReports     PayEquityReport[]
+  tenantRoles          TenantRole[]
+  tenantPages          TenantPage[]
+  tenantRolePermissions TenantRolePermission[]
 
   @@map("tenants")
 }
@@ -266,12 +264,14 @@ model User {
   name         String
   passwordHash String?
   azureAdOid   String?  // Azure AD Object ID for SSO users
-  role         UserRole @default(EMPLOYEE)
+  role         String   @default("EMPLOYEE") // Compport role ID (e.g., "1.00") or "PLATFORM_ADMIN"
+  employeeId   String?  @unique // Link to synced Employee record (nullable for platform admins)
   avatarUrl    String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
   tenant              Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  employee            Employee?           @relation(fields: [employeeId], references: [id], onDelete: SetNull)
   importJobs          ImportJob[]
   simulationRuns      SimulationRun[]
   approvedRecs        CompRecommendation[]
@@ -284,8 +284,77 @@ model User {
 
   @@unique([tenantId, email])
   @@index([tenantId])
+  @@index([employeeId])
   @@map("users")
 }
+
+// ─────────────────────────────────────────────────────────────
+// Dynamic Roles & Permissions (synced from Compport Cloud SQL)
+// ─────────────────────────────────────────────────────────────
+
+model TenantRole {
+  id              String   @id @default(cuid())
+  tenantId        String
+  compportRoleId  String   // Compport role ID, e.g., "1.00", "10.00"
+  name            String   // Role name from Compport, e.g., "HR Admin", "Approver"
+  module          String?  // Module scope from Compport (e.g., "compensation", "sip")
+  isActive        Boolean  @default(true)
+  syncedAt        DateTime @default(now()) // Last sync timestamp
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  permissions     TenantRolePermission[]
+
+  @@unique([tenantId, compportRoleId])
+  @@index([tenantId])
+  @@map("tenant_roles")
+}
+
+model TenantPage {
+  id              String   @id @default(cuid())
+  tenantId        String
+  compportPageId  String   // Compport page ID
+  name            String   // Page name, e.g., "Salary Review", "Analytics/Reports"
+  uriSegment      String?  // URI segment from Compport
+  pageType        String?  // Type from Compport (e.g., "menu", "submenu")
+  status          String?  // Status from Compport
+  syncedAt        DateTime @default(now())
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  permissions     TenantRolePermission[]
+
+  @@unique([tenantId, compportPageId])
+  @@index([tenantId])
+  @@map("tenant_pages")
+}
+
+model TenantRolePermission {
+  id              String   @id @default(cuid())
+  tenantId        String
+  roleId          String   // FK to TenantRole
+  pageId          String   // FK to TenantPage
+  canView         Boolean  @default(false)
+  canInsert       Boolean  @default(false)
+  canUpdate       Boolean  @default(false)
+  canDelete       Boolean  @default(false)
+  syncedAt        DateTime @default(now())
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant          Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  role            TenantRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  page            TenantPage @relation(fields: [pageId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, roleId, pageId])
+  @@index([tenantId])
+  @@index([roleId])
+  @@index([tenantId, roleId])
+  @@map("tenant_role_permissions")
+}
+
 
 // ─────────────────────────────────────────────────────────────
 // Employee Master
@@ -345,6 +414,7 @@ model Employee {
   attritionRiskScores   AttritionRiskScore[]
   jobLevelId            String?
   jobLevel              JobLevel?  @relation(fields: [jobLevelId], references: [id], onDelete: SetNull)
+  user                  User?      // Back-reference: the auth user linked to this employee
 
   @@unique([tenantId, employeeCode])
   @@unique([tenantId, email])

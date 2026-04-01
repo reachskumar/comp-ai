@@ -25,13 +25,9 @@ import { createCopilotTools, type CopilotDbAdapter } from '../tools/copilot-tool
 
 /* ─── User Role Types ─────────────────────────────────────── */
 
-export type CopilotUserRole =
-  | 'PLATFORM_ADMIN'
-  | 'ADMIN'
-  | 'HR_MANAGER'
-  | 'MANAGER'
-  | 'ANALYST'
-  | 'EMPLOYEE';
+// Roles are now dynamic strings from Compport (e.g., "1.00", "10.00").
+// PLATFORM_ADMIN is a reserved system-level string.
+export type CopilotUserRole = string;
 
 export interface CopilotUserContext {
   role: CopilotUserRole;
@@ -50,9 +46,9 @@ export const CopilotState = Annotation.Root({
     reducer: (current, update) => ({ ...current, ...update }),
     default: () => ({}),
   }),
-  userRole: Annotation<CopilotUserRole>({
+  userRole: Annotation<string>({
     reducer: (_current, update) => update,
-    default: () => 'EMPLOYEE' as CopilotUserRole,
+    default: () => 'EMPLOYEE',
   }),
   userName: Annotation<string>({
     reducer: (_current, update) => update,
@@ -120,7 +116,9 @@ Chart visualization guidelines:
 - For pie charts format: {"type":"pie","title":"...","nameKey":"category","valueKey":"value","data":[...]}
 - Keep chart data concise — summarize if there are more than 20 data points`;
 
-const ROLE_PROMPTS: Record<CopilotUserRole, string> = {
+// Maps known role categories to copilot prompts.
+// Dynamic Compport role IDs fall through to the default EMPLOYEE prompt.
+const ROLE_PROMPTS: Record<string, string> = {
   PLATFORM_ADMIN: `
 You are speaking with a Platform Administrator. They have full system access across all tenants.
 - They can view all compensation data, rules, cycles, payroll, and analytics
@@ -171,7 +169,9 @@ You are speaking with an Employee. Their view is limited to their own data.
 
 function buildSystemPrompt(role: CopilotUserRole, userName: string): string {
   const greeting = userName ? `\nThe user's name is ${userName}.` : '';
-  return `${BASE_PROMPT}${greeting}\n${ROLE_PROMPTS[role]}`;
+  // For dynamic Compport role IDs (e.g., "1.00"), fall back to EMPLOYEE prompt
+  const rolePrompt = ROLE_PROMPTS[role] ?? ROLE_PROMPTS['EMPLOYEE'];
+  return `${BASE_PROMPT}${greeting}\n${rolePrompt}`;
 }
 
 export interface CopilotGraphInput {

@@ -20,7 +20,7 @@ import { JwtAuthGuard } from '../../auth';
 import { TenantGuard } from '../../common';
 import { CopilotService } from './copilot.service';
 import { ChatMessageDto, ConversationQueryDto } from './dto';
-import { formatSSE, type CopilotUserRole } from '@compensation/ai';
+import { formatSSE } from '@compensation/ai';
 
 interface AuthRequest {
   user: { userId: string; tenantId: string; email: string; role: string; name?: string };
@@ -67,7 +67,7 @@ export class CopilotController {
         dto.message,
         dto.conversationId,
         {
-          role: role as CopilotUserRole,
+          role,
           name: name ?? 'User',
         },
       );
