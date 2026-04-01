@@ -356,6 +356,13 @@ export class CopilotService implements CopilotDbAdapter {
           currency: true,
           hireDate: true,
           managerId: true,
+          gender: true,
+          jobFamily: true,
+          performanceRating: true,
+          compaRatio: true,
+          terminationDate: true,
+          isPeopleManager: true,
+          metadata: true,
           manager: {
             select: {
               id: true,

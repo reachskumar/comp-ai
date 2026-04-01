@@ -3,6 +3,7 @@
 import { useRef, useEffect, useState, type KeyboardEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { CopilotChart, parseChartBlock, extractText } from '@/components/copilot-chart';
 import {
   MessageSquareText,
   Send,
@@ -408,7 +409,32 @@ function MessageBubble({ message, isStreaming }: { message: ChatMessage; isStrea
               <span className="whitespace-pre-wrap">{message.content}</span>
             ) : (
               <div className="prose prose-sm dark:prose-invert max-w-none [&_table]:text-xs [&_th]:px-2 [&_td]:px-2 [&_p]:my-1.5 [&_ul]:my-1.5 [&_ol]:my-1.5 [&_li]:my-0.5">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    code({ className, children, ...props }) {
+                      const match = /language-(\w+)/.exec(className || '');
+                      const lang = match?.[1];
+                      const codeStr = extractText(children).replace(/\n$/, '');
+                      if (lang === 'chart') {
+                        const chartConfig = parseChartBlock(codeStr);
+                        if (chartConfig) {
+                          return <CopilotChart config={chartConfig} />;
+                        }
+                      }
+                      return (
+                        <code className={className} {...props}>
+                          {children}
+                        </code>
+                      );
+                    },
+                    pre({ children }) {
+                      return <>{children}</>;
+                    },
+                  }}
+                >
+                  {message.content}
+                </ReactMarkdown>
               </div>
             )
           ) : (

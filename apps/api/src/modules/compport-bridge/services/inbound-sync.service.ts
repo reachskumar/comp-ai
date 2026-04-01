@@ -342,8 +342,8 @@ export class InboundSyncService {
       status = String(rawStatus ?? 'active');
     }
 
-    // Handle salary: check both base_salary and current_base_salary
-    const baseSalaryRaw = row['base_salary'] ?? row['current_base_salary'];
+    // Handle salary: check base_salary, current_base_salary, and assignment_based_salary
+    const baseSalaryRaw = row['base_salary'] ?? row['current_base_salary'] ?? row['assignment_based_salary'];
     const baseSalary = baseSalaryRaw != null ? Number(baseSalaryRaw) : null;
 
     // Coerce all values to appropriate Prisma types (many Compport fields are numeric FK IDs)
