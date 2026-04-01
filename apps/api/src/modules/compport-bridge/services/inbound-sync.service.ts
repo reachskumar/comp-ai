@@ -341,16 +341,24 @@ export class InboundSyncService {
     const toStr = (v: unknown): string | null =>
       v != null && v !== '' && v !== 0 ? String(v) : null;
 
+    // Strip Compport internal code suffixes like "(BFDL_BFSD_SL_SAL)" from lookup names
+    const stripCodeSuffix = (name: string | null): string | null =>
+      name ? name.replace(/\s*\([A-Z0-9_]+\)\s*$/, '').trim() || name : null;
+
     // Resolve FK IDs to human-readable names via lookup maps
     const department =
-      resolve(lookups.functions, row['function']) ?? toStr(row['department']) ?? 'Unknown';
+      stripCodeSuffix(resolve(lookups.functions, row['function'])) ??
+      toStr(row['department']) ??
+      'Unknown';
     const level =
       resolve(lookups.levels, row['level']) ?? resolve(lookups.grades, row['grade']) ?? 'Unknown';
     // City names in Compport are stored as "CityName|BranchCode" — extract just the city name
     const rawCity = resolve(lookups.cities, row['city']) ?? toStr(row['location']) ?? null;
     const location = rawCity?.split('|')[0]?.trim() ?? null;
     const jobFamily =
-      resolve(lookups.subfunctions, row['subfunction']) ?? toStr(row['job_family']) ?? null;
+      stripCodeSuffix(resolve(lookups.subfunctions, row['subfunction'])) ??
+      toStr(row['job_family']) ??
+      null;
     const designationName = resolve(lookups.designations, row['designation']);
     const gradeName = resolve(lookups.grades, row['grade']);
 
