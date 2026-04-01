@@ -259,10 +259,15 @@ export class InboundSyncService {
       `Inbound sync complete: synced=${synced}, skipped=${skipped}, errors=${errors}, duration=${durationMs}ms`,
     );
 
+    // Second pass: resolve manager relationships (employee_code → PG id)
+    await this.resolveManagerRelationships(tenantId, schemaName, tableName);
+
+    const totalDurationMs = Date.now() - start;
+
     return {
       syncJobId,
       entityType: 'employee',
-      durationMs,
+      durationMs: totalDurationMs,
       totalRecords: synced + skipped + errors,
       processedRecords: synced,
       failedRecords: errors,
@@ -429,6 +434,103 @@ export class InboundSyncService {
     ]);
 
     return { functions, levels, grades, designations, cities, subfunctions };
+  }
+
+  /**
+   * Second pass: resolve manager_name (employee_code) → PG Employee.id.
+   *
+   * 1. Build employeeCode → PG id map from PostgreSQL
+   * 2. Query Cloud SQL for employee_code → manager_name pairs
+   * 3. Batch-update managerId for each employee
+   */
+  private async resolveManagerRelationships(
+    tenantId: string,
+    schemaName: string,
+    tableName: string,
+  ): Promise<void> {
+    const start = Date.now();
+
+    // Step 1: Build employeeCode → PG id map
+    const employees = await this.db.forTenant(tenantId, (tx) =>
+      tx.employee.findMany({
+        where: { tenantId },
+        select: { id: true, employeeCode: true },
+      }),
+    );
+    const codeToId = new Map<string, string>();
+    for (const emp of employees) {
+      codeToId.set(emp.employeeCode, emp.id);
+    }
+
+    // Step 2: Query Cloud SQL for employee_code → manager_name pairs
+    let offset = 0;
+    let hasMore = true;
+    let resolved = 0;
+    let unresolved = 0;
+    let selfRef = 0;
+    let noManager = 0;
+
+    while (hasMore) {
+      const rows = await this.cloudSql.executeQuery<{
+        employee_code: string;
+        manager_name: string | null;
+      }>(schemaName, `SELECT employee_code, manager_name FROM \`${tableName}\` LIMIT ? OFFSET ?`, [
+        BATCH_SIZE,
+        offset,
+      ]);
+
+      if (rows.length === 0) {
+        hasMore = false;
+        break;
+      }
+
+      // Step 3: Batch-update managerId
+      for (const row of rows) {
+        const empCode = String(row.employee_code);
+        const mgrCode = row.manager_name ? String(row.manager_name).trim() : null;
+
+        if (!mgrCode || mgrCode === '' || mgrCode === '0') {
+          noManager++;
+          continue;
+        }
+
+        // Skip self-referencing managers
+        if (mgrCode === empCode) {
+          selfRef++;
+          continue;
+        }
+
+        const employeeId = codeToId.get(empCode);
+        const managerId = codeToId.get(mgrCode);
+
+        if (!employeeId) continue; // Employee not in PG (shouldn't happen)
+
+        if (managerId) {
+          try {
+            await this.db.forTenant(tenantId, (tx) =>
+              tx.employee.update({
+                where: { id: employeeId },
+                data: { managerId },
+              }),
+            );
+            resolved++;
+          } catch (err) {
+            this.logger.warn(`Failed to set manager for ${empCode}: ${(err as Error).message}`);
+          }
+        } else {
+          unresolved++;
+        }
+      }
+
+      offset += rows.length;
+      if (rows.length < BATCH_SIZE) hasMore = false;
+    }
+
+    const duration = Date.now() - start;
+    this.logger.log(
+      `Manager resolution: resolved=${resolved}, unresolved=${unresolved}, ` +
+        `selfRef=${selfRef}, noManager=${noManager}, duration=${duration}ms`,
+    );
   }
 
   /**
