@@ -343,8 +343,16 @@ export class InboundSyncService {
     }
 
     // Handle salary: check base_salary, current_base_salary, and assignment_based_salary
-    const baseSalaryRaw = row['base_salary'] ?? row['current_base_salary'] ?? row['assignment_based_salary'];
-    const baseSalary = baseSalaryRaw != null ? Number(baseSalaryRaw) : null;
+    // Use a helper that treats 0 / "0.00" / null as "no data" so we fall through to the next source
+    const nonZero = (v: unknown): number | null => {
+      if (v == null || v === '') return null;
+      const n = Number(v);
+      return isNaN(n) || n === 0 ? null : n;
+    };
+    const baseSalary =
+      nonZero(row['base_salary']) ??
+      nonZero(row['current_base_salary']) ??
+      nonZero(row['assignment_based_salary']);
 
     // Coerce all values to appropriate Prisma types (many Compport fields are numeric FK IDs)
     const toStr = (v: unknown): string | null =>
