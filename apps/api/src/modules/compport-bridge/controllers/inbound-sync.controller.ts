@@ -244,6 +244,8 @@ export class InboundSyncController {
     @Query('columns') columnsStr?: string,
     @Query('orderBy') orderBy?: string,
     @Query('orderDir') orderDir?: string,
+    @Query('filterColumn') filterColumn?: string,
+    @Query('filterValues') filterValues?: string,
   ) {
     this.validateIdentifier(schemaName, 'schema name');
     this.validateIdentifier(tableName, 'table name');
@@ -264,6 +266,22 @@ export class InboundSyncController {
       columnsSql = cols.map((c) => `\`${c}\``).join(', ');
     }
 
+    // Build WHERE clause for filtering by column values (IN clause)
+    let whereSql = '';
+    const whereParams: unknown[] = [];
+    if (filterColumn && filterValues) {
+      this.validateIdentifier(filterColumn, 'filter column');
+      const values = filterValues
+        .split(',')
+        .map((v) => v.trim())
+        .filter(Boolean);
+      if (values.length > 0 && values.length <= 200) {
+        const placeholders = values.map(() => '?').join(', ');
+        whereSql = ` WHERE \`${filterColumn}\` IN (${placeholders})`;
+        whereParams.push(...values);
+      }
+    }
+
     // Build ORDER BY clause
     let orderSql = '';
     if (orderBy) {
@@ -278,12 +296,13 @@ export class InboundSyncController {
       const [countRows, rows] = await Promise.all([
         this.cloudSql.executeQuery<{ cnt: number }>(
           schemaName,
-          `SELECT COUNT(*) AS cnt FROM \`${tableName}\``,
+          `SELECT COUNT(*) AS cnt FROM \`${tableName}\`${whereSql}`,
+          whereParams.length > 0 ? whereParams : undefined,
         ),
         this.cloudSql.executeQuery(
           schemaName,
-          `SELECT ${columnsSql} FROM \`${tableName}\`${orderSql} LIMIT ? OFFSET ?`,
-          [limit, offset],
+          `SELECT ${columnsSql} FROM \`${tableName}\`${whereSql}${orderSql} LIMIT ? OFFSET ?`,
+          [...whereParams, limit, offset],
         ),
       ]);
 
