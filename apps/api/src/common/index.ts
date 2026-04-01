@@ -13,4 +13,5 @@ export { BaseCrudService } from './services/base-crud.service';
 export type { PaginationParams, PaginatedResult } from './services/base-crud.service';
 export { DataScopeService, clearDataScopeCache } from './services/data-scope.service';
 export type { DataScope, ScopeTier } from './services/data-scope.service';
+export { AuditInterceptor, SkipAudit, SKIP_AUDIT_KEY } from './interceptors/audit.interceptor';
 export { ShutdownService } from './lifecycle';

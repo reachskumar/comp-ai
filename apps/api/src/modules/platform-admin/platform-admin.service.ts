@@ -681,4 +681,65 @@ export class PlatformAdminService {
       totalEmployees,
     };
   }
+
+  // ─── Audit Logs (cross-tenant) ──────────────────────────────
+
+  async listAuditLogs(query: {
+    page?: number;
+    limit?: number;
+    tenantId?: string;
+    userId?: string;
+    action?: string;
+    entityType?: string;
+    dateFrom?: string;
+    dateTo?: string;
+  }) {
+    const page = query.page ?? 1;
+    const limit = Math.min(query.limit ?? 20, 100);
+    const skip = (page - 1) * limit;
+
+    const where: Record<string, unknown> = {};
+    if (query.tenantId) where['tenantId'] = query.tenantId;
+    if (query.userId) where['userId'] = query.userId;
+    if (query.action) where['action'] = query.action;
+    if (query.entityType) where['entityType'] = query.entityType;
+    if (query.dateFrom || query.dateTo) {
+      const createdAt: Record<string, Date> = {};
+      if (query.dateFrom) createdAt['gte'] = new Date(query.dateFrom);
+      if (query.dateTo) createdAt['lte'] = new Date(query.dateTo);
+      where['createdAt'] = createdAt;
+    }
+
+    // Direct client — no RLS scoping (platform admin sees all)
+    const [data, total] = await Promise.all([
+      this.db.client.auditLog.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          user: { select: { id: true, name: true, email: true } },
+          tenant: { select: { id: true, name: true, slug: true } },
+        },
+      }),
+      this.db.client.auditLog.count({ where }),
+    ]);
+
+    return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
+  }
+
+  async getTenantAuditLogs(
+    tenantId: string,
+    query: {
+      page?: number;
+      limit?: number;
+      userId?: string;
+      action?: string;
+      entityType?: string;
+      dateFrom?: string;
+      dateTo?: string;
+    },
+  ) {
+    return this.listAuditLogs({ ...query, tenantId });
+  }
 }

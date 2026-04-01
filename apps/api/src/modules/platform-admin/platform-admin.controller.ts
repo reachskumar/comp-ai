@@ -141,4 +141,53 @@ export class PlatformAdminController {
   getStats() {
     return this.service.getStats();
   }
+
+  // ─── Audit Logs ─────────────────────────────────────────
+
+  @Get('audit-logs')
+  @ApiOperation({ summary: 'List audit logs across all tenants (paginated, filterable)' })
+  listAuditLogs(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('tenantId') tenantId?: string,
+    @Query('userId') userId?: string,
+    @Query('action') action?: string,
+    @Query('entityType') entityType?: string,
+    @Query('dateFrom') dateFrom?: string,
+    @Query('dateTo') dateTo?: string,
+  ) {
+    return this.service.listAuditLogs({
+      page: page ? parseInt(page, 10) : undefined,
+      limit: limit ? parseInt(limit, 10) : undefined,
+      tenantId,
+      userId,
+      action,
+      entityType,
+      dateFrom,
+      dateTo,
+    });
+  }
+
+  @Get('tenants/:id/audit-logs')
+  @ApiOperation({ summary: 'List audit logs for a specific tenant' })
+  getTenantAuditLogs(
+    @Param('id') id: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('userId') userId?: string,
+    @Query('action') action?: string,
+    @Query('entityType') entityType?: string,
+    @Query('dateFrom') dateFrom?: string,
+    @Query('dateTo') dateTo?: string,
+  ) {
+    return this.service.getTenantAuditLogs(id, {
+      page: page ? parseInt(page, 10) : undefined,
+      limit: limit ? parseInt(limit, 10) : undefined,
+      userId,
+      action,
+      entityType,
+      dateFrom,
+      dateTo,
+    });
+  }
 }
