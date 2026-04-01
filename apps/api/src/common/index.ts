@@ -11,4 +11,6 @@ export {
 export type { PermissionAction, RequiredPermission } from './guards/permission.guard';
 export { BaseCrudService } from './services/base-crud.service';
 export type { PaginationParams, PaginatedResult } from './services/base-crud.service';
+export { DataScopeService, clearDataScopeCache } from './services/data-scope.service';
+export type { DataScope, ScopeTier } from './services/data-scope.service';
 export { ShutdownService } from './lifecycle';

@@ -1,5 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { DatabaseService } from '../../database';
+import { DataScopeService } from '../../common';
+import { Prisma } from '@compensation/database';
 
 export interface HrDashboardResponse {
   headcountByDepartment: Array<{ department: string; count: number }>;
@@ -17,14 +19,28 @@ export interface HrDashboardResponse {
 export class HrDashboardService {
   private readonly logger = new Logger(HrDashboardService.name);
 
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly dataScopeService: DataScopeService,
+  ) {}
 
-  async getDashboard(tenantId: string): Promise<HrDashboardResponse> {
-    this.logger.log(`HR Dashboard request: tenant=${tenantId}`);
+  async getDashboard(
+    tenantId: string,
+    userId?: string,
+    role?: string,
+  ): Promise<HrDashboardResponse> {
+    this.logger.log(`HR Dashboard request: tenant=${tenantId} user=${userId ?? 'unknown'}`);
+
+    // Resolve data scope filter — if no userId/role, fall back to tenant-wide (legacy callers)
+    let scopeFilter: Prisma.EmployeeWhereInput = { tenantId };
+    if (userId && role) {
+      const scope = await this.dataScopeService.resolveScope(tenantId, userId, role);
+      scopeFilter = scope.employeeFilter;
+    }
 
     const employees = await this.db.forTenant(tenantId, (tx) =>
       tx.employee.findMany({
-        where: { tenantId, terminationDate: null },
+        where: { ...scopeFilter, terminationDate: null },
         select: {
           department: true,
           level: true,

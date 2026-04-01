@@ -11,6 +11,7 @@ import {
 import { HumanMessage } from '@langchain/core/messages';
 import { evaluateRules } from '@compensation/shared';
 import type { EmployeeData, RuleSet, Rule } from '@compensation/shared';
+import { DataScopeService, type DataScope } from '../../common';
 
 @Injectable()
 export class SimulationService implements SimulationDbAdapter {
@@ -19,6 +20,7 @@ export class SimulationService implements SimulationDbAdapter {
   constructor(
     private readonly db: DatabaseService,
     private readonly marketDataAgeing: MarketDataAgeingService,
+    private readonly dataScopeService: DataScopeService,
   ) {}
 
   // ─── Graph Invocation ──────────────────────────────────────
@@ -27,6 +29,7 @@ export class SimulationService implements SimulationDbAdapter {
     tenantId: string,
     userId: string,
     prompt: string,
+    role?: string,
   ): Promise<{
     id: string;
     response: string;
@@ -44,9 +47,14 @@ export class SimulationService implements SimulationDbAdapter {
     );
 
     try {
+      // Resolve data scope and build scoped adapter
+      const dbAdapter = role
+        ? await this.buildScopedAdapter(tenantId, userId, role)
+        : (this as SimulationDbAdapter);
+
       const result = await invokeSimulationGraph(
         { tenantId, userId, message: prompt, conversationId: `sim-${scenario.id}` },
-        this,
+        dbAdapter,
       );
 
       // Update scenario with results
@@ -86,10 +94,14 @@ export class SimulationService implements SimulationDbAdapter {
     tenantId: string,
     userId: string,
     prompt: string,
+    role?: string,
   ): AsyncGenerator<SSEEvent> {
     this.logger.log(`Simulation stream: tenant=${tenantId} user=${userId}`);
 
-    const { graph } = await buildSimulationGraph(this, tenantId);
+    const dbAdapter = role
+      ? await this.buildScopedAdapter(tenantId, userId, role)
+      : (this as SimulationDbAdapter);
+    const { graph } = await buildSimulationGraph(dbAdapter, tenantId);
 
     const threadId = `simulation-${tenantId}-${userId}-${Date.now()}`;
     const config = { configurable: { thread_id: threadId } };
@@ -115,13 +127,14 @@ export class SimulationService implements SimulationDbAdapter {
     userId: string,
     promptA: string,
     promptB: string,
+    role?: string,
   ): Promise<{
     scenarioA: { id: string; response: string };
     scenarioB: { id: string; response: string };
   }> {
     const [resultA, resultB] = await Promise.all([
-      this.runSimulation(tenantId, userId, promptA),
-      this.runSimulation(tenantId, userId, promptB),
+      this.runSimulation(tenantId, userId, promptA, role),
+      this.runSimulation(tenantId, userId, promptB, role),
     ]);
 
     return {
@@ -467,6 +480,74 @@ export class SimulationService implements SimulationDbAdapter {
       source: 'Internal Benchmark (placeholder)',
       asOfDate: new Date().toISOString().split('T')[0],
       note: 'No market data available. Upload survey data from Mercer, WTW, or other providers.',
+    };
+  }
+
+  // ─── Data Scope Adapter ─────────────────────────────────
+
+  /**
+   * Build a scoped SimulationDbAdapter that applies data-scope
+   * filtering to employee queries. Each invocation gets its own closure.
+   */
+  private async buildScopedAdapter(
+    tenantId: string,
+    userId: string,
+    role: string,
+  ): Promise<SimulationDbAdapter> {
+    const scope = await this.dataScopeService.resolveScope(tenantId, userId, role);
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const self = this;
+
+    return {
+      // Delegate non-employee methods
+      runRulesSimulation: self.runRulesSimulation.bind(self),
+      calculateBudgetImpact: self.calculateBudgetImpact.bind(self),
+      getMarketData: self.getMarketData.bind(self),
+
+      // Override employee query with scope
+      async queryEmployeesForScenario(tid, filters) {
+        const where: Record<string, unknown> = { ...scope.employeeFilter };
+        if (filters.department) where['department'] = filters.department;
+        if (filters.level) where['level'] = filters.level;
+        if (filters.location) where['location'] = filters.location;
+        if (filters.minSalary != null || filters.maxSalary != null) {
+          const salary: Record<string, unknown> = {};
+          if (filters.minSalary != null) salary['gte'] = filters.minSalary;
+          if (filters.maxSalary != null) salary['lte'] = filters.maxSalary;
+          where['baseSalary'] = salary;
+        }
+
+        const employees = await self.db.forTenant(tid, (tx) =>
+          tx.employee.findMany({
+            where: where as never,
+            take: filters.limit ?? 500,
+            select: {
+              id: true,
+              employeeCode: true,
+              firstName: true,
+              lastName: true,
+              department: true,
+              level: true,
+              location: true,
+              baseSalary: true,
+              totalComp: true,
+              currency: true,
+              hireDate: true,
+              metadata: true,
+            },
+          }),
+        );
+
+        if (filters.performanceRating != null) {
+          return employees.filter((e) => {
+            const meta = (e.metadata ?? {}) as Record<string, unknown>;
+            const rating = Number(meta['performanceRating'] ?? 0);
+            return rating >= (filters.performanceRating ?? 0);
+          });
+        }
+
+        return employees;
+      },
     };
   }
 }

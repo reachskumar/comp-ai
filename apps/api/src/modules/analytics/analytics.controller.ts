@@ -58,7 +58,7 @@ export class AnalyticsController {
   @ApiOperation({ summary: 'Get HR dashboard stats: headcount, salary distribution, etc.' })
   async getHrDashboard(@Request() req: AuthRequest) {
     this.logger.log(`HR Dashboard request: user=${req.user.userId}`);
-    return this.hrDashboardService.getDashboard(req.user.tenantId);
+    return this.hrDashboardService.getDashboard(req.user.tenantId, req.user.userId, req.user.role);
   }
 
   @Get('total-rewards')
@@ -136,7 +136,12 @@ export class AnalyticsController {
   @ApiOperation({ summary: 'Run a compensation simulation from a natural language prompt' })
   async runSimulation(@Body() dto: RunSimulationDto, @Request() req: AuthRequest) {
     this.logger.log(`Simulation: user=${req.user.userId} prompt="${dto.prompt.slice(0, 80)}"`);
-    return this.simulationService.runSimulation(req.user.tenantId, req.user.userId, dto.prompt);
+    return this.simulationService.runSimulation(
+      req.user.tenantId,
+      req.user.userId,
+      dto.prompt,
+      req.user.role,
+    );
   }
 
   @Post('simulate/stream')
@@ -166,6 +171,7 @@ export class AnalyticsController {
         req.user.tenantId,
         req.user.userId,
         dto.prompt,
+        req.user.role,
       )) {
         reply.raw.write(formatSSE(event));
       }
@@ -194,6 +200,7 @@ export class AnalyticsController {
       req.user.userId,
       dto.promptA,
       dto.promptB,
+      req.user.role,
     );
   }
 

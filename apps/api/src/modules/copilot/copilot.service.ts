@@ -10,12 +10,16 @@ import {
 } from '@compensation/ai';
 import { HumanMessage, AIMessage, type BaseMessage } from '@langchain/core/messages';
 import { Prisma } from '@compensation/database';
+import { DataScopeService, type DataScope } from '../../common';
 
 @Injectable()
 export class CopilotService implements CopilotDbAdapter {
   private readonly logger = new Logger(CopilotService.name);
 
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly dataScopeService: DataScopeService,
+  ) {}
 
   // ─── Rule Management Adapter (for Copilot rule tools) ───────
 
@@ -168,8 +172,10 @@ export class CopilotService implements CopilotDbAdapter {
       }
     }
 
-    // ── Step 3: Build graph and stream ──
-    const { graph } = await buildCopilotGraph(this, tenantId, userContext, { userId });
+    // ── Step 3: Resolve data scope & build graph with scoped adapter ──
+    const scope = await this.dataScopeService.resolveScope(tenantId, userId, role);
+    const scopedDb = this.buildScopedAdapter(scope);
+    const { graph } = await buildCopilotGraph(scopedDb, tenantId, userContext, { userId });
 
     const threadId = dbConvId; // Use DB conversation ID as LangGraph thread_id
     const config = { configurable: { thread_id: threadId } };
@@ -1160,5 +1166,94 @@ export class CopilotService implements CopilotDbAdapter {
         },
       };
     });
+  }
+
+  // ─── Data Scope Adapter ─────────────────────────────────
+
+  /**
+   * Build a scoped CopilotDbAdapter that wraps `this` but applies
+   * data-scope filtering to employee queries. This is request-safe
+   * because each streamChat invocation gets its own closure.
+   */
+  private buildScopedAdapter(scope: DataScope): CopilotDbAdapter {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const self = this;
+    return {
+      // Delegate all non-employee methods to `this`
+      queryCompensation: self.queryCompensation.bind(self),
+      queryRules: self.queryRules.bind(self),
+      queryCycles: self.queryCycles.bind(self),
+      queryPayroll: self.queryPayroll.bind(self),
+      queryAnalytics: self.queryAnalytics.bind(self),
+      queryBenefits: self.queryBenefits.bind(self),
+      queryEquity: self.queryEquity.bind(self),
+      querySalaryBands: self.querySalaryBands.bind(self),
+      queryNotifications: self.queryNotifications.bind(self),
+      queryTeam: self.queryTeam.bind(self),
+      queryPerformanceAnalytics: self.queryPerformanceAnalytics.bind(self),
+      approveRecommendation: self.approveRecommendation.bind(self),
+      rejectRecommendation: self.rejectRecommendation.bind(self),
+      requestLetter: self.requestLetter.bind(self),
+      get ruleManagement() {
+        return self.ruleManagement;
+      },
+
+      // Override queryEmployees with scope filter
+      async queryEmployees(tenantId, filters) {
+        const where: Prisma.EmployeeWhereInput = { ...scope.employeeFilter };
+        if (filters.department) where.department = filters.department;
+        if (filters.level) where.level = filters.level;
+        if (filters.location) where.location = filters.location;
+        if (filters.managerId) where.managerId = filters.managerId;
+        if (filters.minSalary || filters.maxSalary) {
+          where.baseSalary = {};
+          if (filters.minSalary) where.baseSalary.gte = filters.minSalary;
+          if (filters.maxSalary) where.baseSalary.lte = filters.maxSalary;
+        }
+        if (filters.search) {
+          where.OR = [
+            { firstName: { contains: filters.search, mode: 'insensitive' } },
+            { lastName: { contains: filters.search, mode: 'insensitive' } },
+            { employeeCode: { contains: filters.search, mode: 'insensitive' } },
+          ];
+        }
+
+        return self.db.forTenant(tenantId, (tx) =>
+          tx.employee.findMany({
+            where,
+            take: filters.limit ?? 50,
+            select: {
+              id: true,
+              employeeCode: true,
+              firstName: true,
+              lastName: true,
+              department: true,
+              level: true,
+              location: true,
+              baseSalary: true,
+              totalComp: true,
+              currency: true,
+              hireDate: true,
+              managerId: true,
+              gender: true,
+              jobFamily: true,
+              performanceRating: true,
+              compaRatio: true,
+              terminationDate: true,
+              isPeopleManager: true,
+              metadata: true,
+              manager: {
+                select: {
+                  id: true,
+                  firstName: true,
+                  lastName: true,
+                  employeeCode: true,
+                },
+              },
+            },
+          }),
+        );
+      },
+    };
   }
 }
