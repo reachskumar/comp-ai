@@ -7,6 +7,16 @@ import { CloudSqlEmployeeRowSchema } from '../schemas/compport-data.schemas';
 
 const BATCH_SIZE = 1000;
 
+/** Lookup tables from Compport manage_* tables: numeric ID → human-readable name */
+interface LookupMaps {
+  functions: Map<number, string>;
+  levels: Map<number, string>;
+  grades: Map<number, string>;
+  designations: Map<number, string>;
+  cities: Map<number, string>;
+  subfunctions: Map<number, string>;
+}
+
 export interface InboundSyncResult {
   syncJobId: string;
   entityType: string;
@@ -115,6 +125,14 @@ export class InboundSyncService {
     let errors = 0;
     const details: { id: string; status: 'synced' | 'skipped' | 'error'; reason?: string }[] = [];
 
+    // Pre-load lookup tables for resolving numeric FK IDs → human-readable names
+    const lookups = await this.loadLookupMaps(schemaName);
+    this.logger.log(
+      `Loaded lookup maps: functions=${lookups.functions.size}, levels=${lookups.levels.size}, ` +
+        `grades=${lookups.grades.size}, designations=${lookups.designations.size}, ` +
+        `cities=${lookups.cities.size}, subfunctions=${lookups.subfunctions.size}`,
+    );
+
     let offset = 0;
     let hasMore = true;
 
@@ -175,8 +193,8 @@ export class InboundSyncService {
             }
             mappedData = mapResult.mappedData;
           } else {
-            // No mappings — use direct field names
-            mappedData = this.defaultMapping(validRow);
+            // No mappings — use direct field names with lookup resolution
+            mappedData = this.defaultMapping(validRow, lookups);
           }
 
           // 3. Upsert into PostgreSQL
@@ -260,8 +278,21 @@ export class InboundSyncService {
    *
    * Handles both standard schemas (first_name, last_name, employee_id)
    * and Compport legacy schemas (name, employee_code, login_user table).
+   *
+   * Uses pre-loaded lookup maps to resolve numeric FK IDs to human-readable names.
    */
-  private defaultMapping(row: Record<string, unknown>): Record<string, unknown> {
+  private defaultMapping(
+    row: Record<string, unknown>,
+    lookups: LookupMaps,
+  ): Record<string, unknown> {
+    // Helper: resolve a numeric FK ID using a lookup map, fallback to string
+    const resolve = (map: Map<number, string>, val: unknown): string | null => {
+      if (val == null || val === '' || val === 0) return null;
+      const id = typeof val === 'number' ? val : Number(val);
+      if (isNaN(id)) return String(val);
+      return map.get(id) ?? String(val);
+    };
+
     // Handle name: split "name" into firstName/lastName if first_name not present
     let firstName = row['first_name'] as string | null;
     let lastName = row['last_name'] as string | null;
@@ -305,19 +336,30 @@ export class InboundSyncService {
     const toStr = (v: unknown): string | null =>
       v != null && v !== '' && v !== 0 ? String(v) : null;
 
+    // Resolve FK IDs to human-readable names via lookup maps
+    const department =
+      resolve(lookups.functions, row['function']) ?? toStr(row['department']) ?? 'Unknown';
+    const level =
+      resolve(lookups.levels, row['level']) ?? resolve(lookups.grades, row['grade']) ?? 'Unknown';
+    const location = resolve(lookups.cities, row['city']) ?? toStr(row['location']) ?? null;
+    const jobFamily =
+      resolve(lookups.subfunctions, row['subfunction']) ?? toStr(row['job_family']) ?? null;
+    const designationName = resolve(lookups.designations, row['designation']);
+    const gradeName = resolve(lookups.grades, row['grade']);
+
     return {
       firstName: firstName ?? 'Unknown',
       lastName: lastName ?? '',
       email:
         email ??
         `${String(row['employee_code'] ?? row['employee_id'] ?? row['id'])}@imported.local`,
-      department: toStr(row['department']) ?? toStr(row['function']) ?? 'Unknown',
-      jobFamily: toStr(row['job_family']),
-      level: toStr(row['level']) ?? toStr(row['grade']) ?? 'Unknown',
+      department,
+      jobFamily,
+      level,
       hireDate: hireDate && !isNaN(hireDate.getTime()) ? hireDate : new Date('2020-01-01'),
       managerId: null, // manager_name in Compport is an employee_code, not a PG id
       gender: toStr(row['gender']),
-      location: toStr(row['location']) ?? toStr(row['city']),
+      location,
       baseSalary: baseSalary ?? 0,
       totalComp: row['total_comp'] != null ? Number(row['total_comp']) : (baseSalary ?? 0),
       currency: typeof row['currency'] === 'string' ? row['currency'] : 'INR',
@@ -332,13 +374,59 @@ export class InboundSyncService {
         employeeType: row['employee_type'],
         managerCode: row['manager_name'],
         designationId: row['designation'],
-        jobTitle: toStr(row['title']) ?? toStr(row['job_title']) ?? toStr(row['designation']),
+        designationName,
+        jobTitle:
+          designationName ??
+          toStr(row['title']) ??
+          toStr(row['job_title']) ??
+          toStr(row['designation']),
         gradeId: row['grade'],
+        gradeName,
         functionId: row['function'],
+        functionName: resolve(lookups.functions, row['function']),
         cityId: row['city'],
+        cityName: resolve(lookups.cities, row['city']),
         countryId: row['country'],
       },
     };
+  }
+
+  /**
+   * Pre-load all manage_* lookup tables from Cloud SQL into memory.
+   * These are small tables (10–870 rows each) used to resolve numeric FK IDs
+   * in the login_user table to human-readable names.
+   */
+  private async loadLookupMaps(schemaName: string): Promise<LookupMaps> {
+    const loadTable = async (tableName: string): Promise<Map<number, string>> => {
+      try {
+        const rows = await this.cloudSql.executeQuery<{ id: number; name: string }>(
+          schemaName,
+          `SELECT id, name FROM \`${tableName}\``,
+          [],
+        );
+        const map = new Map<number, string>();
+        for (const row of rows) {
+          if (row.id != null && row.name != null) {
+            map.set(Number(row.id), String(row.name));
+          }
+        }
+        return map;
+      } catch (err) {
+        this.logger.warn(`Failed to load lookup table ${tableName}: ${(err as Error).message}`);
+        return new Map();
+      }
+    };
+
+    const [functions, levels, grades, designations, cities, subfunctions] = await Promise.all([
+      loadTable('manage_function'),
+      loadTable('manage_level'),
+      loadTable('manage_grade'),
+      loadTable('manage_designation'),
+      loadTable('manage_city'),
+      loadTable('manage_subfunction'),
+    ]);
+
+    return { functions, levels, grades, designations, cities, subfunctions };
   }
 
   /**
