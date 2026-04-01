@@ -13,7 +13,7 @@ import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { JwtAuthGuard } from '../../../auth';
-import { TenantGuard, RolesGuard, Roles } from '../../../common';
+import { TenantGuard, PermissionGuard, RequirePermission } from '../../../common';
 import { WriteBackService } from '../services/write-back.service';
 import { WRITE_BACK_QUEUE, WriteBackJobData } from '../processors/write-back.processor';
 
@@ -35,8 +35,8 @@ interface AuthRequest {
  */
 @ApiTags('compport-write-back')
 @Controller('compport-bridge/write-back')
-@UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)
-@Roles('ADMIN')
+@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
+@RequirePermission('Write Back', 'update')
 @ApiBearerAuth()
 export class WriteBackController {
   private readonly logger = new Logger(WriteBackController.name);

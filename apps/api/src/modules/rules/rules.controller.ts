@@ -17,7 +17,7 @@ import {
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiConsumes, ApiQuery } from '@nestjs/swagger';
 import { FastifyRequest } from 'fastify';
 import { JwtAuthGuard } from '../../auth';
-import { TenantGuard, RolesGuard, Roles } from '../../common';
+import { TenantGuard, PermissionGuard, RequirePermission } from '../../common';
 import { PolicyConverterService } from './services/policy-converter.service';
 import { RuleSetCrudService, RuleCrudService } from './services/rules-crud.service';
 import { SimulatorService } from './services/simulator.service';
@@ -51,7 +51,7 @@ interface AuthenticatedFastifyRequest extends FastifyRequest {
 
 @ApiTags('rules')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
 @Controller('rules')
 export class RulesController {
   constructor(
@@ -69,7 +69,7 @@ export class RulesController {
   // ─── Policy Conversion ─────────────────────────────────────────
 
   @Post('convert-policy')
-  @Roles('ADMIN', 'HR_MANAGER')
+  @RequirePermission('Rules', 'insert')
   @ApiOperation({ summary: 'Convert a natural language policy document into structured rules' })
   async convertPolicy(@Body() dto: ConvertPolicyDto, @Request() req: AuthRequest) {
     return this.policyConverter.convertPolicy(
@@ -82,7 +82,7 @@ export class RulesController {
   }
 
   @Post('convert-policy/upload')
-  @Roles('ADMIN', 'HR_MANAGER')
+  @RequirePermission('Rules', 'insert')
   @ApiOperation({
     summary: 'Upload a PDF, TXT, CSV, or Excel file and convert to structured rules',
   })
@@ -154,7 +154,7 @@ export class RulesController {
   // ─── Rule Set CRUD ────────────────────────────────────────────
 
   @Post('rule-sets')
-  @Roles('ADMIN', 'HR_MANAGER')
+  @RequirePermission('Rules', 'insert')
   @ApiOperation({ summary: 'Create a new rule set' })
   async createRuleSet(@Body() dto: CreateRuleSetDto, @Request() req: AuthRequest) {
     return this.ruleSetCrud.createRuleSet(req.user.tenantId, dto);
@@ -177,7 +177,7 @@ export class RulesController {
   }
 
   @Patch('rule-sets/:id')
-  @Roles('ADMIN', 'HR_MANAGER')
+  @RequirePermission('Rules', 'update')
   @ApiOperation({ summary: 'Update a rule set' })
   async updateRuleSet(
     @Param('id') id: string,
@@ -188,7 +188,7 @@ export class RulesController {
   }
 
   @Delete('rule-sets/:id')
-  @Roles('ADMIN', 'HR_MANAGER')
+  @RequirePermission('Rules', 'delete')
   @ApiOperation({ summary: 'Delete a rule set' })
   async deleteRuleSet(@Param('id') id: string, @Request() req: AuthRequest) {
     return this.ruleSetCrud.delete(req.user.tenantId, id);
@@ -197,7 +197,7 @@ export class RulesController {
   // ─── Rule CRUD ────────────────────────────────────────────────
 
   @Post('rule-sets/:ruleSetId/rules')
-  @Roles('ADMIN', 'HR_MANAGER')
+  @RequirePermission('Rules', 'insert')
   @ApiOperation({ summary: 'Add a rule to a rule set' })
   async addRule(
     @Param('ruleSetId') ruleSetId: string,
@@ -208,7 +208,7 @@ export class RulesController {
   }
 
   @Patch('rule-sets/:ruleSetId/rules/:ruleId')
-  @Roles('ADMIN', 'HR_MANAGER')
+  @RequirePermission('Rules', 'update')
   @ApiOperation({ summary: 'Update a rule' })
   async updateRule(
     @Param('ruleSetId') ruleSetId: string,
@@ -220,7 +220,7 @@ export class RulesController {
   }
 
   @Delete('rule-sets/:ruleSetId/rules/:ruleId')
-  @Roles('ADMIN', 'HR_MANAGER')
+  @RequirePermission('Rules', 'delete')
   @ApiOperation({ summary: 'Delete a rule from a rule set' })
   async deleteRule(
     @Param('ruleSetId') ruleSetId: string,
@@ -290,7 +290,7 @@ export class RulesController {
   // ─── AI Rule Generation ──────────────────────────────────────
 
   @Post('rule-sets/:ruleSetId/generate')
-  @Roles('ADMIN', 'HR_MANAGER')
+  @RequirePermission('Rules', 'insert')
   @ApiOperation({ summary: 'Clone a rule set and apply AI-based adjustments for a new cycle' })
   async generateRules(
     @Param('ruleSetId') ruleSetId: string,
@@ -334,7 +334,7 @@ export class RulesController {
   }
 
   @Post('generate-from-instruction')
-  @Roles('ADMIN', 'HR_MANAGER')
+  @RequirePermission('Rules', 'insert')
   @ApiOperation({
     summary: 'Generate compensation rules from a natural language instruction using AI',
   })
@@ -351,7 +351,7 @@ export class RulesController {
   // ─── Rule Upload (CSV / Excel) ───────────────────────────
 
   @Post('upload')
-  @Roles('ADMIN', 'HR_MANAGER')
+  @RequirePermission('Rules', 'insert')
   @ApiOperation({ summary: 'Upload a CSV or Excel file containing compensation rules' })
   @ApiConsumes('multipart/form-data')
   @ApiQuery({
@@ -395,7 +395,7 @@ export class RulesController {
   }
 
   @Post('upload/:uploadId/approve')
-  @Roles('ADMIN', 'HR_MANAGER')
+  @RequirePermission('Rules', 'insert')
   @ApiOperation({ summary: 'Approve a previewed rule upload and persist as a new RuleSet' })
   @HttpCode(HttpStatus.CREATED)
   async approveUpload(

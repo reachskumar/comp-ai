@@ -14,7 +14,7 @@ import {
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { FastifyReply } from 'fastify';
 import { JwtAuthGuard } from '../../auth';
-import { TenantGuard, RolesGuard, Roles } from '../../common';
+import { TenantGuard, PermissionGuard, RequirePermission } from '../../common';
 import { ReportsService } from './reports.service';
 import { GenerateReportDto, ExportReportDto } from './dto';
 import { formatSSE } from '@compensation/ai';
@@ -25,8 +25,8 @@ interface AuthRequest {
 
 @ApiTags('reports')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)
-@Roles('ADMIN', 'HR_MANAGER', 'ANALYST')
+@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
+@RequirePermission('Reports', 'view')
 @Controller('reports')
 export class ReportsController {
   private readonly logger = new Logger(ReportsController.name);

@@ -16,7 +16,7 @@ import {
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { FastifyReply } from 'fastify';
 import { JwtAuthGuard } from '../../auth';
-import { TenantGuard, RolesGuard, Roles } from '../../common';
+import { TenantGuard, PermissionGuard, RequirePermission } from '../../common';
 import { LettersService } from './letters.service';
 import { GenerateLetterDto } from './dto/generate-letter.dto';
 import { GenerateBatchLetterDto } from './dto/generate-batch-letter.dto';
@@ -29,8 +29,8 @@ interface AuthRequest {
 
 @ApiTags('letters')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)
-@Roles('ADMIN', 'HR_MANAGER')
+@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
+@RequirePermission('Letters', 'view')
 @Controller('letters')
 export class LettersController {
   private readonly logger = new Logger(LettersController.name);
