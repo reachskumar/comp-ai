@@ -5,6 +5,7 @@ import { DatabaseService } from '../../database';
 import { CredentialVaultService } from '../integrations/services/credential-vault.service';
 import { TenantRegistryService } from '../compport-bridge/services/tenant-registry.service';
 import { CompportCloudSqlService } from '../compport-bridge/services/compport-cloudsql.service';
+import { InboundSyncService } from '../compport-bridge/services/inbound-sync.service';
 import { CreateTenantDto, UpdateTenantDto, CreateTenantUserDto, OnboardTenantDto } from './dto';
 
 /** Canonical feature keys that can be toggled per-tenant */
@@ -32,6 +33,7 @@ export class PlatformAdminService {
     private readonly configService: ConfigService,
     private readonly tenantRegistry: TenantRegistryService,
     private readonly cloudSql: CompportCloudSqlService,
+    private readonly inboundSyncService: InboundSyncService,
   ) {}
 
   // ─── Tenant CRUD ──────────────────────────────────────────
@@ -393,11 +395,45 @@ export class PlatformAdminService {
       `Onboarded: ${dto.companyName} (schema=${dto.compportSchema}, tenant=${tenant.id})`,
     );
 
+    // Immediately sync roles & permissions so tenant is usable from day one
+    let roleSyncResult = null;
+    if (queryReady) {
+      try {
+        // Cloud SQL connection is already available via getMySqlConfig
+        const mysqlConfig = this.getMySqlConfig();
+        await this.cloudSql.connect({
+          host: mysqlConfig.host!,
+          port: mysqlConfig.port ?? 3306,
+          user: mysqlConfig.user!,
+          password: mysqlConfig.password!,
+          database: dto.compportSchema,
+        });
+
+        roleSyncResult = await this.inboundSyncService.syncRolesAndPermissions(
+          tenant.id,
+          dto.compportSchema,
+        );
+        this.logger.log(
+          `Initial role sync for ${dto.companyName}: roles=${roleSyncResult.roles.synced}, ` +
+            `pages=${roleSyncResult.pages.synced}, permissions=${roleSyncResult.permissions.synced}, ` +
+            `users=${roleSyncResult.users.synced}`,
+        );
+      } catch (err) {
+        this.logger.warn(
+          `Initial role sync failed for ${dto.companyName}: ${(err as Error).message}. ` +
+            `Roles will be synced on the next scheduled inbound sync.`,
+        );
+      } finally {
+        await this.cloudSql.disconnect();
+      }
+    }
+
     return {
       tenant,
       adminUser,
       connector: { id: connector.id, name: connector.name },
       queryReady,
+      roleSyncResult,
     };
   }
 

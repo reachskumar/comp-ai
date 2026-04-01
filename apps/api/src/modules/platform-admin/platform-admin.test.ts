@@ -107,6 +107,26 @@ describe('PlatformAdminService', () => {
     maskCredentials: vi.fn(() => ({})),
   };
 
+  const mockTenantRegistry = {
+    discoverTenants: vi.fn(() => Promise.resolve([])),
+  };
+  const mockCloudSql = {
+    connect: vi.fn(() => Promise.resolve()),
+    disconnect: vi.fn(() => Promise.resolve()),
+    executeQuery: vi.fn(() => Promise.resolve([])),
+  };
+  const mockInboundSyncService = {
+    syncRolesAndPermissions: vi.fn(() =>
+      Promise.resolve({
+        roles: { synced: 0, errors: 0 },
+        pages: { synced: 0, errors: 0 },
+        permissions: { synced: 0, errors: 0 },
+        users: { synced: 0, linked: 0, errors: 0 },
+        durationMs: 0,
+      }),
+    ),
+  };
+
   beforeEach(() => {
     db = createMockDatabaseService();
     const configService = createMockConfigService({
@@ -116,7 +136,14 @@ describe('PlatformAdminService', () => {
       COMPPORT_CLOUDSQL_PASSWORD: 'secret',
       INTEGRATION_ENCRYPTION_KEY: 'a'.repeat(32),
     });
-    service = new (PlatformAdminService as any)(db, mockCredentialVault, configService);
+    service = new (PlatformAdminService as any)(
+      db,
+      mockCredentialVault,
+      configService,
+      mockTenantRegistry,
+      mockCloudSql,
+      mockInboundSyncService,
+    );
   });
 
   describe('listTenants', () => {

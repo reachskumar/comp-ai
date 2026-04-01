@@ -36,6 +36,14 @@ export interface InboundSyncResult {
   skippedRecords: number;
 }
 
+export interface RoleSyncResult {
+  roles: { synced: number; errors: number };
+  pages: { synced: number; errors: number };
+  permissions: { synced: number; errors: number };
+  users: { synced: number; linked: number; errors: number };
+  durationMs: number;
+}
+
 /**
  * Inbound Sync Service
  *
@@ -96,6 +104,14 @@ export class InboundSyncService {
     const mappings = await this.fieldMappingService.findByConnector(tenantId, connectorId);
 
     try {
+      // Sync roles, pages, and permissions first (they don't depend on employees)
+      const roleSyncResult = await this.syncRolesAndPermissions(tenantId, schemaName);
+      this.logger.log(
+        `Role sync complete: roles=${roleSyncResult.roles.synced}, pages=${roleSyncResult.pages.synced}, ` +
+          `permissions=${roleSyncResult.permissions.synced}, users=${roleSyncResult.users.synced}`,
+      );
+
+      // Then sync employees
       const result = await this.syncEmployees(
         tenantId,
         connectorId,
@@ -696,6 +712,267 @@ export class InboundSyncService {
         update: data as never,
       }),
     );
+  }
+
+  /**
+   * Sync roles, pages, and role_permissions from Compport Cloud SQL into
+   * CompportIQ's TenantRole, TenantPage, and TenantRolePermission tables.
+   *
+   * Also syncs login_user records: updates User.role with the actual Compport
+   * role ID and links User ↔ Employee via employee_code.
+   *
+   * Assumes Cloud SQL connection is already established.
+   */
+  async syncRolesAndPermissions(tenantId: string, schemaName: string): Promise<RoleSyncResult> {
+    const start = Date.now();
+    const result: RoleSyncResult = {
+      roles: { synced: 0, errors: 0 },
+      pages: { synced: 0, errors: 0 },
+      permissions: { synced: 0, errors: 0 },
+      users: { synced: 0, linked: 0, errors: 0 },
+      durationMs: 0,
+    };
+
+    // ── Step 1: Sync roles ─────────────────────────────────────
+    try {
+      const rows = await this.cloudSql.executeQuery<{
+        role_pk_id: number;
+        id: string;
+        name: string;
+        module: string | null;
+      }>(schemaName, 'SELECT role_pk_id, id, name, module FROM `roles`');
+
+      for (const row of rows) {
+        try {
+          const compportRoleId = String(row.id).trim();
+          await this.db.forTenant(tenantId, (tx) =>
+            tx.tenantRole.upsert({
+              where: { tenantId_compportRoleId: { tenantId, compportRoleId } },
+              create: {
+                tenantId,
+                compportRoleId,
+                name: String(row.name ?? '').trim(),
+                module: row.module ? String(row.module).trim() : null,
+                isActive: true,
+                syncedAt: new Date(),
+              },
+              update: {
+                name: String(row.name ?? '').trim(),
+                module: row.module ? String(row.module).trim() : null,
+                isActive: true,
+                syncedAt: new Date(),
+              },
+            }),
+          );
+          result.roles.synced++;
+        } catch (err) {
+          result.roles.errors++;
+          this.logger.warn(`Failed to sync role ${row.id}: ${(err as Error).message}`);
+        }
+      }
+      this.logger.log(`Roles synced: ${result.roles.synced} ok, ${result.roles.errors} errors`);
+    } catch (err) {
+      this.logger.warn(`Failed to load roles table: ${(err as Error).message}`);
+    }
+
+    // ── Step 2: Sync pages ─────────────────────────────────────
+    try {
+      const rows = await this.cloudSql.executeQuery<{
+        id: number;
+        name: string;
+        uri_segment: string | null;
+        type: string | null;
+        status: string | null;
+      }>(schemaName, 'SELECT id, name, uri_segment, type, status FROM `pages`');
+
+      for (const row of rows) {
+        try {
+          const compportPageId = String(row.id);
+          await this.db.forTenant(tenantId, (tx) =>
+            tx.tenantPage.upsert({
+              where: { tenantId_compportPageId: { tenantId, compportPageId } },
+              create: {
+                tenantId,
+                compportPageId,
+                name: String(row.name ?? '').trim(),
+                uriSegment: row.uri_segment ? String(row.uri_segment) : null,
+                pageType: row.type ? String(row.type) : null,
+                status: row.status ? String(row.status) : null,
+                syncedAt: new Date(),
+              },
+              update: {
+                name: String(row.name ?? '').trim(),
+                uriSegment: row.uri_segment ? String(row.uri_segment) : null,
+                pageType: row.type ? String(row.type) : null,
+                status: row.status ? String(row.status) : null,
+                syncedAt: new Date(),
+              },
+            }),
+          );
+          result.pages.synced++;
+        } catch (err) {
+          result.pages.errors++;
+          this.logger.warn(`Failed to sync page ${row.id}: ${(err as Error).message}`);
+        }
+      }
+      this.logger.log(`Pages synced: ${result.pages.synced} ok, ${result.pages.errors} errors`);
+    } catch (err) {
+      this.logger.warn(`Failed to load pages table: ${(err as Error).message}`);
+    }
+
+    // ── Step 3: Sync role_permissions ───────────────────────────
+    // Build lookup maps: compportRoleId → TenantRole.id, compportPageId → TenantPage.id
+    const roleMap = new Map<string, string>();
+    const pageMap = new Map<string, string>();
+
+    await this.db.forTenant(tenantId, async (tx) => {
+      const roles = await tx.tenantRole.findMany({
+        where: { tenantId },
+        select: { id: true, compportRoleId: true },
+      });
+      for (const r of roles) roleMap.set(r.compportRoleId, r.id);
+
+      const pages = await tx.tenantPage.findMany({
+        where: { tenantId },
+        select: { id: true, compportPageId: true },
+      });
+      for (const p of pages) pageMap.set(p.compportPageId, p.id);
+    });
+
+    try {
+      const rows = await this.cloudSql.executeQuery<{
+        role_id: string;
+        page_id: number;
+        view: number;
+        insert: number;
+        update: number;
+        delete: number;
+      }>(
+        schemaName,
+        'SELECT role_id, page_id, `view`, `insert`, `update`, `delete` FROM `role_permissions`',
+      );
+
+      for (const row of rows) {
+        try {
+          const compportRoleId = String(row.role_id).trim();
+          const compportPageId = String(row.page_id);
+          const roleId = roleMap.get(compportRoleId);
+          const pageId = pageMap.get(compportPageId);
+
+          if (!roleId || !pageId) {
+            // Role or page not found — skip (may not have synced yet)
+            continue;
+          }
+
+          await this.db.forTenant(tenantId, (tx) =>
+            tx.tenantRolePermission.upsert({
+              where: { tenantId_roleId_pageId: { tenantId, roleId, pageId } },
+              create: {
+                tenantId,
+                roleId,
+                pageId,
+                canView: row.view === 1,
+                canInsert: row.insert === 1,
+                canUpdate: row.update === 1,
+                canDelete: row.delete === 1,
+                syncedAt: new Date(),
+              },
+              update: {
+                canView: row.view === 1,
+                canInsert: row.insert === 1,
+                canUpdate: row.update === 1,
+                canDelete: row.delete === 1,
+                syncedAt: new Date(),
+              },
+            }),
+          );
+          result.permissions.synced++;
+        } catch (err) {
+          result.permissions.errors++;
+          this.logger.warn(`Failed to sync permission: ${(err as Error).message}`);
+        }
+      }
+      this.logger.log(
+        `Permissions synced: ${result.permissions.synced} ok, ${result.permissions.errors} errors`,
+      );
+    } catch (err) {
+      this.logger.warn(`Failed to load role_permissions table: ${(err as Error).message}`);
+    }
+
+    // ── Step 4: Sync login_user → User records ─────────────────
+    try {
+      const rows = await this.cloudSql.executeQuery<{
+        employee_code: string;
+        role: string;
+        email: string | null;
+        name: string | null;
+        is_people_manager: number | null;
+      }>(
+        schemaName,
+        'SELECT employee_code, role, email, name, is_people_manager FROM `login_user`',
+      );
+
+      for (const row of rows) {
+        try {
+          const employeeCode = String(row.employee_code).trim();
+          const roleId = String(row.role).trim();
+          const email = row.email ? String(row.email).trim() : `${employeeCode}@compport.local`;
+          const name = row.name ? String(row.name).trim() : employeeCode;
+
+          // Upsert user with actual Compport role ID
+          const user = await this.db.forTenant(tenantId, (tx) =>
+            tx.user.upsert({
+              where: { tenantId_email: { tenantId, email } },
+              create: {
+                tenantId,
+                email,
+                name,
+                role: roleId,
+                passwordHash: '', // No password — SSO only
+              },
+              update: {
+                name,
+                role: roleId,
+              },
+              select: { id: true },
+            }),
+          );
+          result.users.synced++;
+
+          // Link User → Employee via employee_code
+          const employee = await this.db.forTenant(tenantId, (tx) =>
+            tx.employee.findFirst({
+              where: { tenantId, employeeCode },
+              select: { id: true },
+            }),
+          );
+
+          if (employee) {
+            await this.db.forTenant(tenantId, (tx) =>
+              tx.user.update({
+                where: { id: user.id },
+                data: { employeeId: employee.id },
+              }),
+            );
+            result.users.linked++;
+          }
+        } catch (err) {
+          result.users.errors++;
+          this.logger.warn(
+            `Failed to sync login_user ${row.employee_code}: ${(err as Error).message}`,
+          );
+        }
+      }
+      this.logger.log(
+        `Users synced: ${result.users.synced} ok, ${result.users.linked} linked, ${result.users.errors} errors`,
+      );
+    } catch (err) {
+      this.logger.warn(`Failed to load login_user table: ${(err as Error).message}`);
+    }
+
+    result.durationMs = Date.now() - start;
+    this.logger.log(`Role & permission sync complete in ${result.durationMs}ms`);
+    return result;
   }
 
   private async getConnectorOrThrow(tenantId: string, connectorId: string) {
