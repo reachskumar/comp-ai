@@ -279,8 +279,14 @@ export class InboundSyncService {
     }
 
     // Handle hire date: check both hire_date and company_joining_date
+    // MySQL2 returns Date objects for datetime columns, so handle both Date and string
     const hireDateRaw = row['hire_date'] ?? row['company_joining_date'];
-    const hireDate = hireDateRaw ? new Date(String(hireDateRaw)) : null;
+    const hireDate =
+      hireDateRaw instanceof Date
+        ? hireDateRaw
+        : hireDateRaw
+          ? new Date(String(hireDateRaw))
+          : null;
 
     // Handle status: Compport uses numeric 1=active, others may be string
     const rawStatus = row['status'];
