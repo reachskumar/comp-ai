@@ -156,6 +156,50 @@ export const CloudSqlEmployeeRowSchema = z
     employee_type: z.union([z.string(), z.number()]).optional().nullable(),
     employee_role: z.union([z.string(), z.number()]).optional().nullable(),
     is_manager: z.union([z.boolean(), z.number()]).optional().nullable(),
+
+    // Hierarchy / business levels
+    subfunction: z.union([z.string(), z.number()]).optional().nullable(),
+    sub_subfunction: z.union([z.string(), z.number()]).optional().nullable(),
+    business_level_1: z.union([z.string(), z.number()]).optional().nullable(),
+    business_level_2: z.union([z.string(), z.number()]).optional().nullable(),
+    business_level_3: z.union([z.string(), z.number()]).optional().nullable(),
+    cost_center: z.union([z.string(), z.number()]).optional().nullable(),
+    role: z.union([z.string(), z.number()]).optional().nullable(), // system role (Compport)
+    education: z.union([z.string(), z.number()]).optional().nullable(),
+    company_name: z.string().optional().nullable(),
+
+    // Approver chain
+    approver_1: z.string().optional().nullable(),
+    approver_2: z.string().optional().nullable(),
+    approver_3: z.string().optional().nullable(),
+    approver_4: z.string().optional().nullable(),
+
+    // Talent flags
+    critical_talent: z.union([z.string(), z.number()]).optional().nullable(),
+    critical_position: z.union([z.string(), z.number()]).optional().nullable(),
+    special_category: z.union([z.string(), z.number()]).optional().nullable(),
+
+    // Tenure and promotion
+    tenure_company: z.union([z.string(), z.number()]).optional().nullable(),
+    tenure_role: z.union([z.string(), z.number()]).optional().nullable(),
+    recently_promoted: z.string().optional().nullable(),
+
+    // Ratings
+    rating_for_current_year: z.union([z.string(), z.number()]).optional().nullable(),
+    rating_for_last_year: z.union([z.string(), z.number()]).optional().nullable(),
+
+    // Compensation
+    total_compensation: z.union([z.string(), z.number()]).transform(Number).optional().nullable(),
+    current_target_bonus: z.union([z.string(), z.number()]).transform(Number).optional().nullable(),
+
+    // Termination
+    termination_date: z.union([z.string(), z.date()]).optional().nullable(),
+    termination_category: z.string().optional().nullable(),
+    termination_reason: z.string().optional().nullable(),
+
+    // Job info
+    job_code: z.union([z.string(), z.number()]).optional().nullable(),
+    job_name: z.string().optional().nullable(),
   })
   .passthrough() // Allow extra columns we don't know about
   .refine((data) => data.employee_id || data.employee_code || data.id, {

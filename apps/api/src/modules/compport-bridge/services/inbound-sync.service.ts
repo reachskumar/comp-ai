@@ -15,6 +15,15 @@ interface LookupMaps {
   designations: Map<number, string>;
   cities: Map<number, string>;
   subfunctions: Map<number, string>;
+  employeeRoles: Map<number, string>;
+  employeeTypes: Map<number, string>;
+  costCenters: Map<number, string>;
+  countries: Map<number, string>;
+  businessLevel1: Map<number, string>;
+  businessLevel2: Map<number, string>;
+  businessLevel3: Map<number, string>;
+  educations: Map<number, string>;
+  roles: Map<number, string>;
 }
 
 export interface InboundSyncResult {
@@ -362,6 +371,35 @@ export class InboundSyncService {
     const designationName = resolve(lookups.designations, row['designation']);
     const gradeName = resolve(lookups.grades, row['grade']);
 
+    // Resolve additional lookups
+    const employeeTypeName = resolve(lookups.employeeTypes, row['employee_type']);
+    const employeeRoleName = resolve(lookups.employeeRoles, row['employee_role']);
+    const costCenterName = resolve(lookups.costCenters, row['cost_center']);
+    const countryName = resolve(lookups.countries, row['country']);
+    const bl1Name = stripCodeSuffix(resolve(lookups.businessLevel1, row['business_level_1']));
+    const bl2Name = stripCodeSuffix(resolve(lookups.businessLevel2, row['business_level_2']));
+    const bl3Name = stripCodeSuffix(resolve(lookups.businessLevel3, row['business_level_3']));
+    const educationName = resolve(lookups.educations, row['education']);
+    const systemRoleName = resolve(lookups.roles, row['role']);
+
+    // Handle termination date: Compport uses 1899-11-30 as a null sentinel
+    const termDateRaw = row['termination_date'];
+    let terminationDate: Date | null = null;
+    if (termDateRaw != null) {
+      const td = termDateRaw instanceof Date ? termDateRaw : new Date(String(termDateRaw));
+      if (!isNaN(td.getTime()) && td.getFullYear() > 1900) {
+        terminationDate = td;
+      }
+    }
+
+    // Handle totalComp: prefer total_compensation over total_comp
+    const totalCompRaw = row['total_compensation'] ?? row['total_comp'];
+    const totalComp = totalCompRaw != null ? Number(totalCompRaw) : (baseSalary ?? 0);
+
+    // Performance rating: prefer rating_for_current_year over performance_rating
+    const perfRatingRaw = row['rating_for_current_year'] ?? row['performance_rating'];
+    const performanceRating = perfRatingRaw != null ? Number(perfRatingRaw) : null;
+
     return {
       firstName: firstName ?? 'Unknown',
       lastName: lastName ?? '',
@@ -372,22 +410,22 @@ export class InboundSyncService {
       jobFamily,
       level,
       hireDate: hireDate && !isNaN(hireDate.getTime()) ? hireDate : new Date('2020-01-01'),
+      terminationDate,
       managerId: null, // manager_name in Compport is an employee_code, not a PG id
       gender: toStr(row['gender']),
       location,
       baseSalary: baseSalary ?? 0,
-      totalComp: row['total_comp'] != null ? Number(row['total_comp']) : (baseSalary ?? 0),
+      totalComp,
       currency: typeof row['currency'] === 'string' ? row['currency'] : 'INR',
       compaRatio: row['compa_ratio'] != null ? Number(row['compa_ratio']) : null,
-      performanceRating:
-        row['performance_rating'] != null ? Number(row['performance_rating']) : null,
+      performanceRating,
       isPeopleManager: row['is_manager'] === 1 || row['is_manager'] === true,
       // Store original Compport data in metadata for reference
       metadata: {
         compportId: row['id'],
         compportStatus: status,
-        employeeType: row['employee_type'],
         managerCode: row['manager_name'],
+        // Designation / job
         designationId: row['designation'],
         designationName,
         jobTitle:
@@ -395,13 +433,59 @@ export class InboundSyncService {
           toStr(row['title']) ??
           toStr(row['job_title']) ??
           toStr(row['designation']),
+        jobCode: toStr(row['job_code']),
+        jobName: toStr(row['job_name']),
+        // Grade / level IDs
         gradeId: row['grade'],
         gradeName,
         functionId: row['function'],
         functionName: resolve(lookups.functions, row['function']),
+        // Geography
         cityId: row['city'],
         cityName: resolve(lookups.cities, row['city']),
         countryId: row['country'],
+        countryName,
+        // Hierarchy / business levels
+        businessLevel1: bl1Name,
+        businessLevel2: bl2Name,
+        businessLevel3: bl3Name,
+        // Employee classification
+        employeeTypeId: row['employee_type'],
+        employeeType: employeeTypeName,
+        employeeRoleId: row['employee_role'],
+        employeeRole: employeeRoleName,
+        systemRoleId: row['role'],
+        systemRole: systemRoleName,
+        costCenterId: row['cost_center'],
+        costCenter: costCenterName,
+        educationId: row['education'],
+        education: educationName,
+        companyName: toStr(row['company_name']),
+        // Approver chain
+        approver1: toStr(row['approver_1']),
+        approver2: toStr(row['approver_2']),
+        approver3: toStr(row['approver_3']),
+        approver4: toStr(row['approver_4']),
+        // Talent flags
+        criticalTalent: row['critical_talent'] != null ? Number(row['critical_talent']) : null,
+        criticalPosition:
+          row['critical_position'] != null ? Number(row['critical_position']) : null,
+        specialCategory: row['special_category'] != null ? Number(row['special_category']) : null,
+        // Tenure
+        tenureCompany: row['tenure_company'] != null ? Number(row['tenure_company']) : null,
+        tenureRole: row['tenure_role'] != null ? Number(row['tenure_role']) : null,
+        recentlyPromoted: toStr(row['recently_promoted']),
+        // Ratings
+        ratingCurrentYear:
+          row['rating_for_current_year'] != null ? Number(row['rating_for_current_year']) : null,
+        ratingLastYear:
+          row['rating_for_last_year'] != null ? Number(row['rating_for_last_year']) : null,
+        // Compensation details
+        targetBonus:
+          row['current_target_bonus'] != null ? Number(row['current_target_bonus']) : null,
+        // Termination
+        terminationCategory: toStr(row['termination_category']),
+        terminationReason: toStr(row['termination_reason']),
       },
     };
   }
@@ -432,16 +516,57 @@ export class InboundSyncService {
       }
     };
 
-    const [functions, levels, grades, designations, cities, subfunctions] = await Promise.all([
+    const [
+      functions,
+      levels,
+      grades,
+      designations,
+      cities,
+      subfunctions,
+      employeeRoles,
+      employeeTypes,
+      costCenters,
+      countries,
+      businessLevel1,
+      businessLevel2,
+      businessLevel3,
+      educations,
+      roles,
+    ] = await Promise.all([
       loadTable('manage_function'),
       loadTable('manage_level'),
       loadTable('manage_grade'),
       loadTable('manage_designation'),
       loadTable('manage_city'),
       loadTable('manage_subfunction'),
+      loadTable('manage_employee_role'),
+      loadTable('manage_employee_type'),
+      loadTable('manage_cost_center'),
+      loadTable('manage_country'),
+      loadTable('manage_business_level_1'),
+      loadTable('manage_business_level_2'),
+      loadTable('manage_business_level_3'),
+      loadTable('manage_education'),
+      loadTable('manage_role'),
     ]);
 
-    return { functions, levels, grades, designations, cities, subfunctions };
+    return {
+      functions,
+      levels,
+      grades,
+      designations,
+      cities,
+      subfunctions,
+      employeeRoles,
+      employeeTypes,
+      costCenters,
+      countries,
+      businessLevel1,
+      businessLevel2,
+      businessLevel3,
+      educations,
+      roles,
+    };
   }
 
   /**
