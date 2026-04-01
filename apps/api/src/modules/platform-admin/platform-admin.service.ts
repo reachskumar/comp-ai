@@ -437,6 +437,215 @@ export class PlatformAdminService {
     };
   }
 
+  // ─── Tenant Overview & Roles ────────────────────────────
+
+  /**
+   * Full tenant overview: counts, role distribution, last sync, permission summary.
+   */
+  async getTenantOverview(tenantId: string) {
+    const tenant = await this.getTenant(tenantId);
+
+    const [userCount, employeeCount, roles, pages, permissions, lastSync] = await this.db.forTenant(
+      tenantId,
+      (tx) =>
+        Promise.all([
+          tx.user.count({ where: { tenantId } }),
+          tx.employee.count({ where: { tenantId } }),
+          tx.tenantRole.findMany({
+            where: { tenantId, isActive: true },
+            select: { id: true, compportRoleId: true, name: true },
+          }),
+          tx.tenantPage.count({ where: { tenantId } }),
+          tx.tenantRolePermission.count({ where: { tenantId } }),
+          tx.syncJob.findFirst({
+            where: { tenantId },
+            orderBy: { createdAt: 'desc' },
+            select: {
+              id: true,
+              status: true,
+              entityType: true,
+              totalRecords: true,
+              processedRecords: true,
+              failedRecords: true,
+              startedAt: true,
+              completedAt: true,
+              errorMessage: true,
+            },
+          }),
+        ]),
+    );
+
+    // Build role distribution: count users per Compport role
+    const users = await this.db.forTenant(tenantId, (tx) =>
+      tx.user.findMany({
+        where: { tenantId },
+        select: { role: true },
+      }),
+    );
+
+    const roleCountMap = new Map<string, number>();
+    for (const u of users) {
+      roleCountMap.set(u.role, (roleCountMap.get(u.role) ?? 0) + 1);
+    }
+
+    const roleDistribution = roles.map((r) => ({
+      compportRoleId: r.compportRoleId,
+      name: r.name,
+      userCount: roleCountMap.get(r.compportRoleId) ?? 0,
+    }));
+
+    // Add any user roles that aren't in TenantRole (e.g., PLATFORM_ADMIN, legacy roles)
+    for (const [role, count] of roleCountMap) {
+      if (!roles.some((r) => r.compportRoleId === role)) {
+        roleDistribution.push({ compportRoleId: role, name: role, userCount: count });
+      }
+    }
+
+    return {
+      tenant: {
+        id: tenant.id,
+        name: tenant.name,
+        slug: tenant.slug,
+        isActive: tenant.isActive,
+        plan: tenant.plan,
+        compportSchema: tenant.compportSchema,
+      },
+      counts: { users: userCount, employees: employeeCount },
+      syncedEntities: { roles: roles.length, pages, permissions },
+      roleDistribution,
+      lastSync: lastSync ?? null,
+    };
+  }
+
+  /**
+   * Recent sync jobs for a tenant.
+   */
+  async getTenantSyncStatus(tenantId: string, limit = 10) {
+    await this.getTenant(tenantId); // ensure exists
+
+    const syncJobs = await this.db.forTenant(tenantId, (tx) =>
+      tx.syncJob.findMany({
+        where: { tenantId },
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        select: {
+          id: true,
+          status: true,
+          entityType: true,
+          direction: true,
+          totalRecords: true,
+          processedRecords: true,
+          failedRecords: true,
+          skippedRecords: true,
+          startedAt: true,
+          completedAt: true,
+          errorMessage: true,
+          createdAt: true,
+        },
+      }),
+    );
+
+    return { tenantId, syncJobs, total: syncJobs.length };
+  }
+
+  /**
+   * All synced Compport roles for a tenant with user counts.
+   */
+  async getTenantRoles(tenantId: string) {
+    await this.getTenant(tenantId);
+
+    const [roles, users] = await this.db.forTenant(tenantId, (tx) =>
+      Promise.all([
+        tx.tenantRole.findMany({
+          where: { tenantId },
+          select: {
+            id: true,
+            compportRoleId: true,
+            name: true,
+            module: true,
+            isActive: true,
+            syncedAt: true,
+          },
+          orderBy: { name: 'asc' },
+        }),
+        tx.user.findMany({
+          where: { tenantId },
+          select: { role: true },
+        }),
+      ]),
+    );
+
+    const roleCountMap = new Map<string, number>();
+    for (const u of users) {
+      roleCountMap.set(u.role, (roleCountMap.get(u.role) ?? 0) + 1);
+    }
+
+    const data = roles.map((r) => ({
+      ...r,
+      userCount: roleCountMap.get(r.compportRoleId) ?? 0,
+    }));
+
+    return { tenantId, roles: data, total: data.length };
+  }
+
+  /**
+   * Full role→page→action permission matrix for a tenant.
+   */
+  async getTenantPermissions(tenantId: string) {
+    await this.getTenant(tenantId);
+
+    const permissions = await this.db.forTenant(tenantId, (tx) =>
+      tx.tenantRolePermission.findMany({
+        where: { tenantId },
+        include: {
+          role: { select: { compportRoleId: true, name: true } },
+          page: { select: { name: true, compportPageId: true } },
+        },
+        orderBy: [{ role: { name: 'asc' } }, { page: { name: 'asc' } }],
+      }),
+    );
+
+    // Group by role
+    const byRole = new Map<
+      string,
+      {
+        compportRoleId: string;
+        roleName: string;
+        pages: Array<{
+          pageName: string;
+          canView: boolean;
+          canInsert: boolean;
+          canUpdate: boolean;
+          canDelete: boolean;
+        }>;
+      }
+    >();
+
+    for (const p of permissions) {
+      const key = p.role.compportRoleId;
+      if (!byRole.has(key)) {
+        byRole.set(key, {
+          compportRoleId: p.role.compportRoleId,
+          roleName: p.role.name,
+          pages: [],
+        });
+      }
+      byRole.get(key)!.pages.push({
+        pageName: p.page.name,
+        canView: p.canView,
+        canInsert: p.canInsert,
+        canUpdate: p.canUpdate,
+        canDelete: p.canDelete,
+      });
+    }
+
+    return {
+      tenantId,
+      roles: Array.from(byRole.values()),
+      totalPermissions: permissions.length,
+    };
+  }
+
   // ─── Platform Stats ──────────────────────────────────────
 
   async getStats() {

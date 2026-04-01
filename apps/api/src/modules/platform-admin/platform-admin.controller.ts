@@ -108,6 +108,32 @@ export class PlatformAdminController {
     return this.service.onboardFromCompport(dto);
   }
 
+  // ─── Tenant Overview & Roles ────────────────────────────
+
+  @Get('tenants/:id/overview')
+  @ApiOperation({ summary: 'Full tenant overview: counts, role distribution, sync status' })
+  getTenantOverview(@Param('id') id: string) {
+    return this.service.getTenantOverview(id);
+  }
+
+  @Get('tenants/:id/sync-status')
+  @ApiOperation({ summary: 'Recent sync jobs for a tenant' })
+  getTenantSyncStatus(@Param('id') id: string, @Query('limit') limit?: string) {
+    return this.service.getTenantSyncStatus(id, limit ? parseInt(limit, 10) : 10);
+  }
+
+  @Get('tenants/:id/roles')
+  @ApiOperation({ summary: 'List synced Compport roles with user counts' })
+  getTenantRoles(@Param('id') id: string) {
+    return this.service.getTenantRoles(id);
+  }
+
+  @Get('tenants/:id/permissions')
+  @ApiOperation({ summary: 'Full role→page permission matrix for a tenant' })
+  getTenantPermissions(@Param('id') id: string) {
+    return this.service.getTenantPermissions(id);
+  }
+
   // ─── Stats ───────────────────────────────────────────────
 
   @Get('stats')
