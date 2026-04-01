@@ -317,6 +317,7 @@ export class CopilotService implements CopilotDbAdapter {
       minSalary?: number;
       maxSalary?: number;
       search?: string;
+      managerId?: string;
       limit?: number;
     },
   ): Promise<unknown[]> {
@@ -324,6 +325,7 @@ export class CopilotService implements CopilotDbAdapter {
     if (filters.department) where.department = filters.department;
     if (filters.level) where.level = filters.level;
     if (filters.location) where.location = filters.location;
+    if (filters.managerId) where.managerId = filters.managerId;
     if (filters.minSalary || filters.maxSalary) {
       where.baseSalary = {};
       if (filters.minSalary) where.baseSalary.gte = filters.minSalary;
@@ -353,6 +355,15 @@ export class CopilotService implements CopilotDbAdapter {
           totalComp: true,
           currency: true,
           hireDate: true,
+          managerId: true,
+          manager: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              employeeCode: true,
+            },
+          },
         },
       }),
     );

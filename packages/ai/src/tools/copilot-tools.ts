@@ -197,7 +197,7 @@ export function createCopilotTools(
   const queryEmployees = createDomainTool({
     name: 'query_employees',
     description:
-      'Search and filter employees by department, level, location, or salary range. Returns employee records with name, department, level, location, and salary.',
+      'Search and filter employees by department, level, location, salary range, or manager. Returns employee records with name, department, level, location, salary, and manager details.',
     schema: z.object({
       department: z.string().optional().describe('Filter by department name'),
       level: z.string().optional().describe('Filter by job level'),
@@ -205,6 +205,7 @@ export function createCopilotTools(
       minSalary: z.number().optional().describe('Minimum base salary'),
       maxSalary: z.number().optional().describe('Maximum base salary'),
       search: z.string().optional().describe('Search by name or employee code'),
+      managerId: z.string().optional().describe('Filter by manager ID to find direct reports'),
       limit: z.number().optional().default(50).describe('Max results to return'),
     }),
     func: async (input) => db.queryEmployees(tenantId, input),
