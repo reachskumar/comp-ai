@@ -341,7 +341,9 @@ export class InboundSyncService {
       resolve(lookups.functions, row['function']) ?? toStr(row['department']) ?? 'Unknown';
     const level =
       resolve(lookups.levels, row['level']) ?? resolve(lookups.grades, row['grade']) ?? 'Unknown';
-    const location = resolve(lookups.cities, row['city']) ?? toStr(row['location']) ?? null;
+    // City names in Compport are stored as "CityName|BranchCode" — extract just the city name
+    const rawCity = resolve(lookups.cities, row['city']) ?? toStr(row['location']) ?? null;
+    const location = rawCity?.split('|')[0]?.trim() ?? null;
     const jobFamily =
       resolve(lookups.subfunctions, row['subfunction']) ?? toStr(row['job_family']) ?? null;
     const designationName = resolve(lookups.designations, row['designation']);
