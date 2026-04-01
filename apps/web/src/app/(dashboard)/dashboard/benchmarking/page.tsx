@@ -577,6 +577,15 @@ function AddSourceForm({
             <option value="MANUAL">Manual</option>
             <option value="SURVEY">Survey</option>
             <option value="API">API</option>
+            <option value="RADFORD">Radford</option>
+            <option value="MERCER">Mercer</option>
+            <option value="WTW">WTW (Willis Towers Watson)</option>
+            <option value="AON">Aon / McLagan</option>
+            <option value="KORN_FERRY">Korn Ferry</option>
+            <option value="PAYSCALE">PayScale</option>
+            <option value="SALARY_COM">Salary.com</option>
+            <option value="COMP_ANALYST">CompAnalyst</option>
+            <option value="CUSTOM">Custom</option>
           </select>
         </div>
         <div className="mt-4 flex gap-2">

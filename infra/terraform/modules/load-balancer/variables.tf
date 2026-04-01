@@ -17,6 +17,11 @@ variable "wildcard_domain" {
   default     = ""
 }
 
+variable "dns_zone_name" {
+  description = "Cloud DNS managed zone name for DNS authorization CNAME records"
+  type        = string
+}
+
 variable "labels" {
   type    = map(string)
   default = {}

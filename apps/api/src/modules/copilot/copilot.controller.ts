@@ -20,7 +20,7 @@ import { JwtAuthGuard } from '../../auth';
 import { TenantGuard } from '../../common';
 import { CopilotService } from './copilot.service';
 import { ChatMessageDto, ConversationQueryDto } from './dto';
-import { formatSSE, type CopilotUserRole } from '@compensation/ai';
+import { formatSSE } from '@compensation/ai';
 
 interface AuthRequest {
   user: { userId: string; tenantId: string; email: string; role: string; name?: string };
@@ -67,7 +67,7 @@ export class CopilotController {
         dto.message,
         dto.conversationId,
         {
-          role: role as CopilotUserRole,
+          role,
           name: name ?? 'User',
         },
       );
@@ -117,5 +117,39 @@ export class CopilotController {
     const result = await this.copilotService.deleteConversation(tenantId, userId, id);
     if (!result.deleted) throw new NotFoundException(`Conversation ${id} not found`);
     return { message: 'Conversation deleted' };
+  }
+
+  @Get('conversations/:id/export')
+  @ApiOperation({ summary: 'Export a conversation as JSON (messages with metadata)' })
+  async exportConversation(@Param('id') id: string, @Request() req: AuthRequest) {
+    const { tenantId, userId } = req.user;
+    const conversation = await this.copilotService.getConversation(tenantId, userId, id);
+    if (!conversation) throw new NotFoundException(`Conversation ${id} not found`);
+
+    return {
+      exportedAt: new Date().toISOString(),
+      conversation: {
+        id: conversation.id,
+        title: conversation.title,
+        createdAt: conversation.createdAt,
+        updatedAt: conversation.updatedAt,
+        messageCount: conversation.messages?.length ?? 0,
+        messages: (conversation.messages ?? []).map(
+          (m: {
+            id: string;
+            role: string;
+            content: string;
+            metadata: unknown;
+            createdAt: Date;
+          }) => ({
+            id: m.id,
+            role: m.role,
+            content: m.content,
+            metadata: m.metadata,
+            timestamp: m.createdAt,
+          }),
+        ),
+      },
+    };
   }
 }

@@ -118,27 +118,92 @@ export type SyncResult = z.infer<typeof SyncResultSchema>;
  */
 export const CloudSqlEmployeeRowSchema = z
   .object({
-    employee_id: z.union([z.string(), z.number()]).transform(String),
+    // Identity — accept any of these as the employee identifier
+    employee_id: z.union([z.string(), z.number()]).transform(String).optional().nullable(),
+    employee_code: z.union([z.string(), z.number()]).transform(String).optional().nullable(),
+    id: z.union([z.string(), z.number()]).transform(String).optional().nullable(),
+
+    // Name fields — some schemas split first/last, others use 'name'
     first_name: z.string().optional().nullable(),
     last_name: z.string().optional().nullable(),
+    name: z.string().optional().nullable(),
     email: z.string().optional().nullable(),
     department: z.string().optional().nullable(),
     title: z.string().optional().nullable(),
     job_title: z.string().optional().nullable(),
+    designation: z.union([z.string(), z.number()]).optional().nullable(),
     job_level: z.string().optional().nullable(),
     job_family: z.string().optional().nullable(),
-    hire_date: z.string().optional().nullable(),
-    status: z.string().optional().nullable(),
+    grade: z.union([z.string(), z.number()]).optional().nullable(),
+    level: z.union([z.string(), z.number()]).optional().nullable(),
+    function: z.union([z.string(), z.number()]).optional().nullable(),
+    hire_date: z.union([z.string(), z.date()]).optional().nullable(),
+    company_joining_date: z.union([z.string(), z.date()]).optional().nullable(),
+    status: z.union([z.string(), z.number()]).optional().nullable(),
     manager_id: z.union([z.string(), z.number()]).transform(String).optional().nullable(),
+    manager_name: z.union([z.string(), z.number()]).transform(String).optional().nullable(),
     gender: z.string().optional().nullable(),
     ethnicity: z.string().optional().nullable(),
     location: z.string().optional().nullable(),
+    city: z.union([z.string(), z.number()]).optional().nullable(),
+    country: z.union([z.string(), z.number()]).optional().nullable(),
     base_salary: z.union([z.string(), z.number()]).transform(Number).optional().nullable(),
+    current_base_salary: z.union([z.string(), z.number()]).transform(Number).optional().nullable(),
     total_comp: z.union([z.string(), z.number()]).transform(Number).optional().nullable(),
-    currency: z.string().optional().nullable(),
+    currency: z.union([z.string(), z.number()]).optional().nullable(),
     compa_ratio: z.union([z.string(), z.number()]).transform(Number).optional().nullable(),
     performance_rating: z.union([z.string(), z.number()]).transform(Number).optional().nullable(),
+    employee_type: z.union([z.string(), z.number()]).optional().nullable(),
+    employee_role: z.union([z.string(), z.number()]).optional().nullable(),
+    is_manager: z.union([z.boolean(), z.number()]).optional().nullable(),
+
+    // Hierarchy / business levels
+    subfunction: z.union([z.string(), z.number()]).optional().nullable(),
+    sub_subfunction: z.union([z.string(), z.number()]).optional().nullable(),
+    business_level_1: z.union([z.string(), z.number()]).optional().nullable(),
+    business_level_2: z.union([z.string(), z.number()]).optional().nullable(),
+    business_level_3: z.union([z.string(), z.number()]).optional().nullable(),
+    cost_center: z.union([z.string(), z.number()]).optional().nullable(),
+    role: z.union([z.string(), z.number()]).optional().nullable(), // system role (Compport)
+    education: z.union([z.string(), z.number()]).optional().nullable(),
+    company_name: z.string().optional().nullable(),
+
+    // Approver chain
+    approver_1: z.string().optional().nullable(),
+    approver_2: z.string().optional().nullable(),
+    approver_3: z.string().optional().nullable(),
+    approver_4: z.string().optional().nullable(),
+
+    // Talent flags
+    critical_talent: z.union([z.string(), z.number()]).optional().nullable(),
+    critical_position: z.union([z.string(), z.number()]).optional().nullable(),
+    special_category: z.union([z.string(), z.number()]).optional().nullable(),
+
+    // Tenure and promotion
+    tenure_company: z.union([z.string(), z.number()]).optional().nullable(),
+    tenure_role: z.union([z.string(), z.number()]).optional().nullable(),
+    recently_promoted: z.string().optional().nullable(),
+
+    // Ratings
+    rating_for_current_year: z.union([z.string(), z.number()]).optional().nullable(),
+    rating_for_last_year: z.union([z.string(), z.number()]).optional().nullable(),
+
+    // Compensation
+    total_compensation: z.union([z.string(), z.number()]).transform(Number).optional().nullable(),
+    current_target_bonus: z.union([z.string(), z.number()]).transform(Number).optional().nullable(),
+
+    // Termination
+    termination_date: z.union([z.string(), z.date()]).optional().nullable(),
+    termination_category: z.string().optional().nullable(),
+    termination_reason: z.string().optional().nullable(),
+
+    // Job info
+    job_code: z.union([z.string(), z.number()]).optional().nullable(),
+    job_name: z.string().optional().nullable(),
   })
-  .passthrough(); // Allow extra columns we don't know about
+  .passthrough() // Allow extra columns we don't know about
+  .refine((data) => data.employee_id || data.employee_code || data.id, {
+    message: 'At least one of employee_id, employee_code, or id is required',
+  });
 
 export type CloudSqlEmployeeRow = z.infer<typeof CloudSqlEmployeeRowSchema>;

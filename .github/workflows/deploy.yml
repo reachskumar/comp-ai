@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       run_seed:
-        description: "Run database seed (creates demo tenant + users). Safe to re-run."
+        description: "Run production seed (creates Platform Admin user). Idempotent — safe to re-run."
         required: false
         default: "false"
         type: choice
@@ -132,12 +132,8 @@ jobs:
       # ─── Run database migrations ────────────────────────────
       - name: Run Prisma migrations
         run: |
-          # Use the API Cloud Run service to run migrations via a one-off job
-          # The API image has prisma CLI and the schema baked in
-          #
-          # Strategy: Nuke public schema first (fresh DB, no real data).
-          # This avoids partial-migration state issues from previous failed runs.
-          # Remove the schema reset line once the DB has real production data.
+          # Incremental migrations — data is preserved across deploys.
+          # prisma migrate deploy applies only pending migrations.
           gcloud run jobs create migrate-${{ steps.tag.outputs.TAG }} \
             --image=${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/api:${{ steps.tag.outputs.TAG }} \
             --region=${{ env.GCP_REGION }} \
@@ -148,7 +144,7 @@ jobs:
             --task-timeout=300s \
             --memory=1Gi \
             --command="sh" \
-            --args="-c,cd /app/packages/database && echo 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;' | node_modules/.bin/prisma db execute --stdin && node_modules/.bin/prisma migrate deploy" \
+            --args="-c,cd /app/packages/database && node_modules/.bin/prisma migrate deploy" \
             --quiet
 
           gcloud run jobs execute migrate-${{ steps.tag.outputs.TAG }} \
@@ -159,10 +155,10 @@ jobs:
           echo "✅ Database migrations applied successfully"
 
       # ─── Seed Database (optional) ─────────────────────────────
-      - name: Seed database (demo tenant + users)
+      - name: Seed Platform Admin user
         if: ${{ github.event.inputs.run_seed == 'true' }}
         run: |
-          echo "🌱 Running production seed..."
+          echo "🌱 Running production seed (Platform Admin only)..."
           gcloud run jobs create seed-${{ steps.tag.outputs.TAG }} \
             --image=${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/api:${{ steps.tag.outputs.TAG }} \
             --region=${{ env.GCP_REGION }} \
@@ -174,7 +170,7 @@ jobs:
             --memory=1Gi \
             --set-env-vars=NODE_TLS_REJECT_UNAUTHORIZED=0 \
             --command="sh" \
-            --args="-c,cd /app/packages/database && node_modules/.bin/tsx prisma/seed.ts" \
+            --args="-c,cd /app/packages/database && node_modules/.bin/tsx prisma/seed-prod.ts" \
             --quiet
 
           gcloud run jobs execute seed-${{ steps.tag.outputs.TAG }} \
@@ -195,7 +191,7 @@ jobs:
           echo "API URL: $API_URL"
           # Retry up to 5 times with 10s interval (Cloud Run cold start)
           for i in 1 2 3 4 5; do
-            if curl -sf "${API_URL}/api/health"; then
+            if curl -sf "${API_URL}/health"; then
               echo "✅ API health check passed (attempt $i)"
               exit 0
             fi

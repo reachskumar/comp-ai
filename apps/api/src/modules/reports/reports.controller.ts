@@ -14,7 +14,7 @@ import {
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { FastifyReply } from 'fastify';
 import { JwtAuthGuard } from '../../auth';
-import { TenantGuard } from '../../common';
+import { TenantGuard, PermissionGuard, RequirePermission } from '../../common';
 import { ReportsService } from './reports.service';
 import { GenerateReportDto, ExportReportDto } from './dto';
 import { formatSSE } from '@compensation/ai';
@@ -25,7 +25,8 @@ interface AuthRequest {
 
 @ApiTags('reports')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
+@RequirePermission('Reports', 'view')
 @Controller('reports')
 export class ReportsController {
   private readonly logger = new Logger(ReportsController.name);
@@ -42,9 +43,7 @@ export class ReportsController {
   ) {
     const { tenantId, userId } = req.user;
 
-    this.logger.log(
-      `Report generate: user=${userId} tenant=${tenantId}`,
-    );
+    this.logger.log(`Report generate: user=${userId} tenant=${tenantId}`);
 
     void reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -83,10 +82,15 @@ export class ReportsController {
   @Post('save')
   @ApiOperation({ summary: 'Save a generated report' })
   async save(
-    @Body() body: {
-      title: string; prompt: string; queryType?: string;
-      filters?: Record<string, unknown>; results?: unknown;
-      chartConfig?: Record<string, unknown>; narrative?: string;
+    @Body()
+    body: {
+      title: string;
+      prompt: string;
+      queryType?: string;
+      filters?: Record<string, unknown>;
+      results?: unknown;
+      chartConfig?: Record<string, unknown>;
+      narrative?: string;
     },
     @Request() req: AuthRequest,
   ) {
@@ -116,15 +120,14 @@ export class ReportsController {
     @Request() req: AuthRequest,
     @Res() reply: FastifyReply,
   ) {
-    const content = await this.reportsService.exportReport(
-      req.user.tenantId, id, dto.format,
-    );
+    const content = await this.reportsService.exportReport(req.user.tenantId, id, dto.format);
 
-    const contentType = dto.format === 'csv'
-      ? 'text/csv'
-      : dto.format === 'excel'
-        ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        : 'application/json';
+    const contentType =
+      dto.format === 'csv'
+        ? 'text/csv'
+        : dto.format === 'excel'
+          ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+          : 'application/json';
 
     void reply
       .header('Content-Type', contentType)
@@ -132,4 +135,3 @@ export class ReportsController {
       .send(content);
   }
 }
-

@@ -5,8 +5,11 @@ import { PayEquityService } from './pay-equity.service';
 import { SimulationService } from './simulation.service';
 import { HrDashboardService } from './hr-dashboard.service';
 import { EdgeRegressionService } from './edge-regression.service';
+import { BenchmarkingModule } from '../benchmarking/benchmarking.module';
+import { DataScopeService } from '../../common';
 
 @Module({
+  imports: [BenchmarkingModule],
   controllers: [AnalyticsController],
   providers: [
     TotalRewardsService,
@@ -14,6 +17,7 @@ import { EdgeRegressionService } from './edge-regression.service';
     SimulationService,
     HrDashboardService,
     EdgeRegressionService,
+    DataScopeService,
   ],
   exports: [
     TotalRewardsService,

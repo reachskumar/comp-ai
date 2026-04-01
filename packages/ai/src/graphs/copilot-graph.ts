@@ -25,13 +25,9 @@ import { createCopilotTools, type CopilotDbAdapter } from '../tools/copilot-tool
 
 /* ─── User Role Types ─────────────────────────────────────── */
 
-export type CopilotUserRole =
-  | 'PLATFORM_ADMIN'
-  | 'ADMIN'
-  | 'HR_MANAGER'
-  | 'MANAGER'
-  | 'ANALYST'
-  | 'EMPLOYEE';
+// Roles are now dynamic strings from Compport (e.g., "1.00", "10.00").
+// PLATFORM_ADMIN is a reserved system-level string.
+export type CopilotUserRole = string;
 
 export interface CopilotUserContext {
   role: CopilotUserRole;
@@ -50,9 +46,9 @@ export const CopilotState = Annotation.Root({
     reducer: (current, update) => ({ ...current, ...update }),
     default: () => ({}),
   }),
-  userRole: Annotation<CopilotUserRole>({
+  userRole: Annotation<string>({
     reducer: (_current, update) => update,
-    default: () => 'EMPLOYEE' as CopilotUserRole,
+    default: () => 'EMPLOYEE',
   }),
   userName: Annotation<string>({
     reducer: (_current, update) => update,
@@ -89,9 +85,40 @@ Action tool guidelines:
 - Show what you're about to do (employee name, action, values) and ask "Shall I proceed?"
 - Only execute the action after the user explicitly confirms
 - After executing an action, clearly report what was done
-- If an action is denied due to insufficient role permissions, explain what role is required`;
+- If an action is denied due to insufficient role permissions, explain what role is required
 
-const ROLE_PROMPTS: Record<CopilotUserRole, string> = {
+Rule management guidelines:
+- You can analyze, create, modify, and delete compensation rules via chat
+- When analyzing rules, use analyze_rule_set to fetch rules and explain them in plain English
+- When creating rules from instructions like "5% merit for rating 4+", translate to structured conditions and actions
+- When comparing rule sets, use compare_rule_sets and summarize differences
+- For any write operation (create, modify, delete), ALWAYS confirm with the user first
+- Rule write operations require ADMIN or HR_MANAGER role
+
+Chart visualization guidelines:
+- When presenting performance analytics, compensation analytics, or any data that would benefit from visualization, output a chart block
+- Use the query_performance_analytics tool for performance-related data queries
+- After receiving chart-ready data from tools, render it as a chart block using this EXACT format:
+
+\`\`\`chart
+{"type":"bar","title":"Chart Title","xKey":"fieldName","yKeys":["value1","value2"],"data":[{"fieldName":"A","value1":10},{"fieldName":"B","value1":20}]}
+\`\`\`
+
+- Supported chart types: "bar", "line", "pie", "scatter", "area", "radar"
+- Use "scatter" for correlation data (e.g., performance vs salary, experience vs compensation)
+- Use "area" for time-series or trend data where you want to emphasize volume (e.g., headcount over time, budget utilization trends)
+- Use "radar" for multi-dimensional comparisons (e.g., competency scores, skill assessments, balanced scorecards). Radar charts use xKey for the axis labels (e.g., "skill") and yKeys for each series
+- For pie charts, use "nameKey" instead of "xKey", and "valueKey" instead of "yKeys"
+- The JSON must be valid and on a SINGLE line inside the chart block
+- Always include a brief text explanation before or after the chart
+- When the tool response includes chartType, title, xKey, and yKeys fields, use those values directly in your chart block
+- You can also create charts from any tabular data when it would aid understanding
+- For pie charts format: {"type":"pie","title":"...","nameKey":"category","valueKey":"value","data":[...]}
+- Keep chart data concise — summarize if there are more than 20 data points`;
+
+// Maps known role categories to copilot prompts.
+// Dynamic Compport role IDs fall through to the default EMPLOYEE prompt.
+const ROLE_PROMPTS: Record<string, string> = {
   PLATFORM_ADMIN: `
 You are speaking with a Platform Administrator. They have full system access across all tenants.
 - They can view all compensation data, rules, cycles, payroll, and analytics
@@ -142,7 +169,9 @@ You are speaking with an Employee. Their view is limited to their own data.
 
 function buildSystemPrompt(role: CopilotUserRole, userName: string): string {
   const greeting = userName ? `\nThe user's name is ${userName}.` : '';
-  return `${BASE_PROMPT}${greeting}\n${ROLE_PROMPTS[role]}`;
+  // For dynamic Compport role IDs (e.g., "1.00"), fall back to EMPLOYEE prompt
+  const rolePrompt = ROLE_PROMPTS[role] ?? ROLE_PROMPTS['EMPLOYEE'];
+  return `${BASE_PROMPT}${greeting}\n${rolePrompt}`;
 }
 
 export interface CopilotGraphInput {

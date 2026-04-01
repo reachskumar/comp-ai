@@ -101,10 +101,49 @@ describe('TenantGuard — suspension enforcement', () => {
 describe('PlatformAdminService', () => {
   let service: PlatformAdminService;
   let db: ReturnType<typeof createMockDatabaseService>;
+  const mockCredentialVault = {
+    encrypt: vi.fn(() => ({ encrypted: 'enc', iv: 'iv', tag: 'tag' })),
+    decrypt: vi.fn(() => ({})),
+    maskCredentials: vi.fn(() => ({})),
+  };
+
+  const mockTenantRegistry = {
+    discoverTenants: vi.fn(() => Promise.resolve([])),
+  };
+  const mockCloudSql = {
+    connect: vi.fn(() => Promise.resolve()),
+    disconnect: vi.fn(() => Promise.resolve()),
+    executeQuery: vi.fn(() => Promise.resolve([])),
+  };
+  const mockInboundSyncService = {
+    syncRolesAndPermissions: vi.fn(() =>
+      Promise.resolve({
+        roles: { synced: 0, errors: 0 },
+        pages: { synced: 0, errors: 0 },
+        permissions: { synced: 0, errors: 0 },
+        users: { synced: 0, linked: 0, errors: 0 },
+        durationMs: 0,
+      }),
+    ),
+  };
 
   beforeEach(() => {
     db = createMockDatabaseService();
-    service = new (PlatformAdminService as any)(db);
+    const configService = createMockConfigService({
+      COMPPORT_CLOUDSQL_HOST: '10.0.0.1',
+      COMPPORT_CLOUDSQL_PORT: '3306',
+      COMPPORT_CLOUDSQL_USER: 'reader',
+      COMPPORT_CLOUDSQL_PASSWORD: 'secret',
+      INTEGRATION_ENCRYPTION_KEY: 'a'.repeat(32),
+    });
+    service = new (PlatformAdminService as any)(
+      db,
+      mockCredentialVault,
+      configService,
+      mockTenantRegistry,
+      mockCloudSql,
+      mockInboundSyncService,
+    );
   });
 
   describe('listTenants', () => {
@@ -205,9 +244,17 @@ describe('PlatformAdminService', () => {
       expect(result.tenant.id).toBe('t-new');
       expect(result.adminUser.email).toBe('admin@sb.com');
       expect(result.connector.id).toBe('c-new');
+      expect(result.queryReady).toBe(true);
       expect(db.client.tenant.create).toHaveBeenCalledOnce();
       expect(db.client.user.create).toHaveBeenCalledOnce();
       expect(db.client.integrationConnector.create).toHaveBeenCalledOnce();
+
+      // Verify connector type is COMPPORT_CLOUDSQL (not HRIS)
+      const connectorData = db.client.integrationConnector.create.mock.calls[0][0].data;
+      expect(connectorData.connectorType).toBe('COMPPORT_CLOUDSQL');
+      // Verify credentials were encrypted
+      expect(mockCredentialVault.encrypt).toHaveBeenCalledOnce();
+      expect(connectorData.encryptedCredentials).toBe('enc');
     });
 
     it('should reject duplicate Compport schema', async () => {
@@ -224,19 +271,27 @@ describe('PlatformAdminService', () => {
   describe('getStats', () => {
     it('should return platform statistics', async () => {
       db.client.tenant.count
-        .mockResolvedValueOnce(10) // total
-        .mockResolvedValueOnce(8); // active
-      db.client.user.count.mockResolvedValue(50);
-      db.client.employee.count.mockResolvedValue(5000);
+        .mockResolvedValueOnce(2) // total
+        .mockResolvedValueOnce(1); // active
+      // getStats now iterates through tenants for RLS-scoped counts
+      db.client.tenant.findMany.mockResolvedValue([{ id: 't1' }, { id: 't2' }]);
+      db.client.user.count
+        .mockResolvedValueOnce(10) // t1 users
+        .mockResolvedValueOnce(40); // t2 users
+      db.client.employee.count
+        .mockResolvedValueOnce(1000) // t1 employees
+        .mockResolvedValueOnce(4000); // t2 employees
 
       const result = await service.getStats();
       expect(result).toEqual({
-        totalTenants: 10,
-        activeTenants: 8,
-        suspendedTenants: 2,
+        totalTenants: 2,
+        activeTenants: 1,
+        suspendedTenants: 1,
         totalUsers: 50,
         totalEmployees: 5000,
       });
+      // Verify forTenant was called for each tenant
+      expect(db.forTenant).toHaveBeenCalledTimes(2);
     });
   });
 });

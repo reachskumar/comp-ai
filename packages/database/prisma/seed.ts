@@ -1,7 +1,6 @@
 import 'dotenv/config';
 import {
   PrismaClient,
-  UserRole,
   CycleType,
   CycleStatus,
   RecommendationType,
@@ -91,7 +90,7 @@ async function main() {
       tenantId: tenant.id,
       email: 'admin@acme.com',
       name: 'Alice Admin',
-      role: UserRole.ADMIN,
+      role: 'ADMIN',
       passwordHash: adminPasswordHash,
     },
   });
@@ -105,7 +104,7 @@ async function main() {
       tenantId: tenant.id,
       email: 'demo@compport.com',
       name: 'Demo User',
-      role: UserRole.ADMIN,
+      role: 'ADMIN',
       passwordHash: demoPasswordHash,
     },
   });

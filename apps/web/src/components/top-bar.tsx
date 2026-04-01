@@ -12,6 +12,8 @@ import {
   ChevronRight,
   CheckCheck,
   ExternalLink,
+  MessageSquareText,
+  PanelRightClose,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth-store';
 import { useThemeStore } from '@/stores/theme-store';
@@ -37,6 +39,8 @@ import { cn } from '@/lib/utils';
 
 interface TopBarProps {
   onToggleMobileSidebar: () => void;
+  onToggleCopilotPanel?: () => void;
+  copilotPanelOpen?: boolean;
 }
 
 function Breadcrumbs() {
@@ -100,10 +104,15 @@ function NotificationBell() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" aria-label="Notifications" className="relative">
-          <Bell className="h-4.5 w-4.5" aria-hidden="true" />
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="Notifications"
+          className="relative h-9 w-9 rounded-lg"
+        >
+          <Bell className="h-4 w-4" aria-hidden="true" />
           {unreadCount > 0 && (
-            <Badge className="absolute -top-0.5 -right-0.5 h-4 min-w-4 px-1 text-[10px] leading-none flex items-center justify-center">
+            <Badge className="absolute -top-0.5 -right-0.5 h-4 min-w-4 px-1 text-[10px] leading-none flex items-center justify-center bg-primary text-primary-foreground border-2 border-background">
               {unreadCount > 99 ? '99+' : unreadCount}
             </Badge>
           )}
@@ -177,7 +186,11 @@ function NotificationBell() {
   );
 }
 
-export function TopBar({ onToggleMobileSidebar }: TopBarProps) {
+export function TopBar({
+  onToggleMobileSidebar,
+  onToggleCopilotPanel,
+  copilotPanelOpen,
+}: TopBarProps) {
   const { user, tenant, logout } = useAuthStore();
   const { theme, toggleTheme } = useThemeStore();
   const pathname = usePathname();
@@ -194,7 +207,7 @@ export function TopBar({ onToggleMobileSidebar }: TopBarProps) {
   const isRootPath = pathname.split('/').filter(Boolean).length <= 1;
 
   return (
-    <header className="flex h-14 items-center justify-between border-b bg-background/80 backdrop-blur-sm px-4 lg:px-6">
+    <header className="flex h-14 items-center justify-between border-b border-border/60 bg-background/90 backdrop-blur-md px-4 lg:px-6 sticky top-0 z-30">
       <div className="flex items-center gap-4">
         <Button
           variant="ghost"
@@ -224,9 +237,27 @@ export function TopBar({ onToggleMobileSidebar }: TopBarProps) {
             type="search"
             placeholder="Search..."
             aria-label="Search"
-            className="w-56 pl-9 h-8 bg-muted/50 border-0 focus-visible:ring-1 focus-visible:ring-primary/30"
+            className="w-56 pl-9 h-8 bg-muted/40 border border-border/40 rounded-lg text-sm focus-visible:ring-1 focus-visible:ring-primary/30 focus-visible:border-primary/30"
           />
         </div>
+
+        {/* Copilot toggle */}
+        {onToggleCopilotPanel && (
+          <Button
+            variant={copilotPanelOpen ? 'secondary' : 'ghost'}
+            size="icon"
+            onClick={onToggleCopilotPanel}
+            aria-label="Toggle AI Copilot (⌘J)"
+            title="AI Copilot (⌘J)"
+            className="hidden lg:inline-flex"
+          >
+            {copilotPanelOpen ? (
+              <PanelRightClose className="h-4.5 w-4.5" aria-hidden="true" />
+            ) : (
+              <MessageSquareText className="h-4.5 w-4.5" aria-hidden="true" />
+            )}
+          </Button>
+        )}
 
         {/* Notifications */}
         <NotificationBell />
@@ -243,9 +274,9 @@ export function TopBar({ onToggleMobileSidebar }: TopBarProps) {
         {/* User menu */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" className="h-8 gap-2 px-2" aria-label="User menu">
-              <Avatar className="h-7 w-7">
-                <AvatarFallback className="text-xs bg-primary/10 text-primary font-medium">
+            <Button variant="ghost" className="h-9 gap-2 px-2 rounded-lg" aria-label="User menu">
+              <Avatar className="h-7 w-7 ring-2 ring-primary/10">
+                <AvatarFallback className="text-xs bg-gradient-to-br from-primary/20 to-primary/10 text-primary font-semibold">
                   {initials}
                 </AvatarFallback>
               </Avatar>

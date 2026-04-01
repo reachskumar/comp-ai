@@ -4,7 +4,6 @@ import { ConfigService } from '@nestjs/config';
 import * as crypto from 'crypto';
 import { CompportBridgeConfig } from '../config/compport-bridge.config';
 import { DatabaseService } from '../../../database';
-import { UserRole } from '@compensation/database';
 
 interface CompportTokenPayload {
   sub: string;
@@ -194,19 +193,9 @@ export class CompportSessionService {
     tenantId: string;
     wasCreated: boolean;
   }> {
-    // Auto-provision user
-    const mapRole = (phpRole: string): UserRole => {
-      const roleMap: Record<string, UserRole> = {
-        admin: UserRole.ADMIN,
-        manager: UserRole.MANAGER,
-        hr: UserRole.HR_MANAGER,
-        hr_manager: UserRole.HR_MANAGER,
-        analyst: UserRole.ANALYST,
-        viewer: UserRole.EMPLOYEE,
-        employee: UserRole.EMPLOYEE,
-      };
-      return roleMap[phpRole.toLowerCase()] ?? UserRole.EMPLOYEE;
-    };
+    // Role is now stored as the Compport role ID string directly — no mapping needed.
+    // The role will be set properly during sync; for auto-provisioned users, use the
+    // role string from the Compport JWT payload as-is.
 
     return this.db.forTenant(payload.tenant_id, async (tx) => {
       // Find existing user by email within the tenant
@@ -229,7 +218,7 @@ export class CompportSessionService {
         data: {
           email: payload.email,
           name: payload.name || payload.email.split('@')[0] || 'Compport User',
-          role: mapRole(payload.role),
+          role: payload.role,
           tenantId: payload.tenant_id,
           passwordHash: '', // No password — SSO only
         },

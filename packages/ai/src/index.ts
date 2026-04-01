@@ -209,3 +209,17 @@ export {
   type BudgetOptimizerInput,
   type BudgetOptimizerOutput,
 } from './graphs/budget-optimizer-graph.js';
+
+// Rule Management tools
+export {
+  createRuleManagementTools,
+  type RuleManagementDbAdapter,
+} from './tools/rule-management-tools.js';
+
+// Rule Analysis graph
+export {
+  buildRuleAnalysisGraph,
+  invokeRuleAnalysisGraph,
+  type RuleAnalysisInput,
+  type RuleAnalysisOutput,
+} from './graphs/rule-analysis-graph.js';

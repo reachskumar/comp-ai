@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { DatabaseService } from '../../database';
+import { MarketDataAgeingService } from '../benchmarking/services/market-data-ageing.service';
 import {
   buildSimulationGraph,
   streamGraphToSSE,
@@ -10,12 +11,17 @@ import {
 import { HumanMessage } from '@langchain/core/messages';
 import { evaluateRules } from '@compensation/shared';
 import type { EmployeeData, RuleSet, Rule } from '@compensation/shared';
+import { DataScopeService, type DataScope } from '../../common';
 
 @Injectable()
 export class SimulationService implements SimulationDbAdapter {
   private readonly logger = new Logger(SimulationService.name);
 
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly marketDataAgeing: MarketDataAgeingService,
+    private readonly dataScopeService: DataScopeService,
+  ) {}
 
   // ─── Graph Invocation ──────────────────────────────────────
 
@@ -23,6 +29,7 @@ export class SimulationService implements SimulationDbAdapter {
     tenantId: string,
     userId: string,
     prompt: string,
+    role?: string,
   ): Promise<{
     id: string;
     response: string;
@@ -40,9 +47,14 @@ export class SimulationService implements SimulationDbAdapter {
     );
 
     try {
+      // Resolve data scope and build scoped adapter
+      const dbAdapter = role
+        ? await this.buildScopedAdapter(tenantId, userId, role)
+        : (this as SimulationDbAdapter);
+
       const result = await invokeSimulationGraph(
         { tenantId, userId, message: prompt, conversationId: `sim-${scenario.id}` },
-        this,
+        dbAdapter,
       );
 
       // Update scenario with results
@@ -82,10 +94,14 @@ export class SimulationService implements SimulationDbAdapter {
     tenantId: string,
     userId: string,
     prompt: string,
+    role?: string,
   ): AsyncGenerator<SSEEvent> {
     this.logger.log(`Simulation stream: tenant=${tenantId} user=${userId}`);
 
-    const { graph } = await buildSimulationGraph(this, tenantId);
+    const dbAdapter = role
+      ? await this.buildScopedAdapter(tenantId, userId, role)
+      : (this as SimulationDbAdapter);
+    const { graph } = await buildSimulationGraph(dbAdapter, tenantId);
 
     const threadId = `simulation-${tenantId}-${userId}-${Date.now()}`;
     const config = { configurable: { thread_id: threadId } };
@@ -111,13 +127,14 @@ export class SimulationService implements SimulationDbAdapter {
     userId: string,
     promptA: string,
     promptB: string,
+    role?: string,
   ): Promise<{
     scenarioA: { id: string; response: string };
     scenarioB: { id: string; response: string };
   }> {
     const [resultA, resultB] = await Promise.all([
-      this.runSimulation(tenantId, userId, promptA),
-      this.runSimulation(tenantId, userId, promptB),
+      this.runSimulation(tenantId, userId, promptA, role),
+      this.runSimulation(tenantId, userId, promptB, role),
     ]);
 
     return {
@@ -374,18 +391,84 @@ export class SimulationService implements SimulationDbAdapter {
   }
 
   async getMarketData(
-    _tenantId: string,
+    tenantId: string,
     params: {
       department?: string;
       level?: string;
       location?: string;
     },
   ): Promise<unknown> {
-    // Market benchmarks — placeholder data; in production this would query
-    // an external market-data provider or an internal benchmarks table.
     const label =
       [params.department, params.level, params.location].filter(Boolean).join(' / ') || 'All Roles';
 
+    // Try to get real blended market data from salary bands
+    if (params.department && params.level) {
+      try {
+        const blended = await this.marketDataAgeing.getBlendedMarketData(
+          tenantId,
+          params.department,
+          params.level,
+          params.location,
+        );
+
+        if (blended) {
+          return {
+            label,
+            benchmarks: {
+              p10: blended.p10,
+              p25: blended.p25,
+              p50: blended.p50,
+              p75: blended.p75,
+              p90: blended.p90,
+            },
+            source: blended.sources.map((s) => s.sourceName).join(', '),
+            sourceCount: blended.sources.length,
+            asOfDate: new Date().toISOString().split('T')[0],
+            note:
+              blended.sources.length > 1
+                ? `Blended from ${blended.sources.length} sources with ageing adjustment`
+                : 'Single source with ageing adjustment',
+          };
+        }
+      } catch (error) {
+        this.logger.warn(`Failed to get blended market data: ${(error as Error).message}`);
+      }
+    }
+
+    // Fallback: try to find any matching salary band directly
+    try {
+      const where: Record<string, unknown> = { tenantId };
+      if (params.department) where['jobFamily'] = params.department;
+      if (params.level) where['level'] = params.level;
+      if (params.location) where['location'] = params.location;
+
+      const band = await this.db.forTenant(tenantId, (tx) =>
+        tx.salaryBand.findFirst({
+          where: where as never,
+          orderBy: { effectiveDate: 'desc' },
+        }),
+      );
+
+      if (band) {
+        return {
+          label,
+          benchmarks: {
+            p10: Number(band.p10),
+            p25: Number(band.p25),
+            p50: Number(band.p50),
+            p75: Number(band.p75),
+            p90: Number(band.p90),
+          },
+          source: band.source || 'Salary Band',
+          asOfDate: band.effectiveDate.toISOString().split('T')[0],
+          note: 'From salary band data',
+        };
+      }
+    } catch (error) {
+      this.logger.warn(`Failed to query salary bands: ${(error as Error).message}`);
+    }
+
+    // Final fallback: placeholder
     return {
       label,
       benchmarks: {
@@ -396,7 +479,75 @@ export class SimulationService implements SimulationDbAdapter {
       },
       source: 'Internal Benchmark (placeholder)',
       asOfDate: new Date().toISOString().split('T')[0],
-      note: 'Market data is illustrative. Connect a market-data provider for live benchmarks.',
+      note: 'No market data available. Upload survey data from Mercer, WTW, or other providers.',
+    };
+  }
+
+  // ─── Data Scope Adapter ─────────────────────────────────
+
+  /**
+   * Build a scoped SimulationDbAdapter that applies data-scope
+   * filtering to employee queries. Each invocation gets its own closure.
+   */
+  private async buildScopedAdapter(
+    tenantId: string,
+    userId: string,
+    role: string,
+  ): Promise<SimulationDbAdapter> {
+    const scope = await this.dataScopeService.resolveScope(tenantId, userId, role);
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const self = this;
+
+    return {
+      // Delegate non-employee methods
+      runRulesSimulation: self.runRulesSimulation.bind(self),
+      calculateBudgetImpact: self.calculateBudgetImpact.bind(self),
+      getMarketData: self.getMarketData.bind(self),
+
+      // Override employee query with scope
+      async queryEmployeesForScenario(tid, filters) {
+        const where: Record<string, unknown> = { ...scope.employeeFilter };
+        if (filters.department) where['department'] = filters.department;
+        if (filters.level) where['level'] = filters.level;
+        if (filters.location) where['location'] = filters.location;
+        if (filters.minSalary != null || filters.maxSalary != null) {
+          const salary: Record<string, unknown> = {};
+          if (filters.minSalary != null) salary['gte'] = filters.minSalary;
+          if (filters.maxSalary != null) salary['lte'] = filters.maxSalary;
+          where['baseSalary'] = salary;
+        }
+
+        const employees = await self.db.forTenant(tid, (tx) =>
+          tx.employee.findMany({
+            where: where as never,
+            take: filters.limit ?? 500,
+            select: {
+              id: true,
+              employeeCode: true,
+              firstName: true,
+              lastName: true,
+              department: true,
+              level: true,
+              location: true,
+              baseSalary: true,
+              totalComp: true,
+              currency: true,
+              hireDate: true,
+              metadata: true,
+            },
+          }),
+        );
+
+        if (filters.performanceRating != null) {
+          return employees.filter((e) => {
+            const meta = (e.metadata ?? {}) as Record<string, unknown>;
+            const rating = Number(meta['performanceRating'] ?? 0);
+            return rating >= (filters.performanceRating ?? 0);
+          });
+        }
+
+        return employees;
+      },
     };
   }
 }

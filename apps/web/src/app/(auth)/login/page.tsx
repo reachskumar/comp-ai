@@ -118,25 +118,33 @@ function LoginPageInner() {
   };
 
   return (
-    <Card className="border-0 shadow-xl bg-card/80 backdrop-blur-sm">
-      <CardHeader className="text-center pb-2">
-        <div className="flex justify-center mb-4">
+    <Card className="border border-border/50 shadow-2xl bg-card/90 backdrop-blur-md rounded-xl">
+      <CardHeader className="text-center pb-2 pt-8">
+        <div className="flex justify-center mb-6">
           {tenantBranding?.logoUrl ? (
             <Image
               src={tenantBranding.logoUrl}
               alt={tenantBranding.name}
-              width={140}
-              height={38}
+              width={180}
+              height={48}
               priority
+              className="h-12 w-auto"
             />
           ) : (
-            <Image src="/compport-logo.svg" alt="CompportIQ" width={140} height={38} priority />
+            <Image
+              src="/compport-logo.svg"
+              alt="CompportIQ"
+              width={180}
+              height={48}
+              priority
+              className="h-12 w-auto"
+            />
           )}
         </div>
-        <CardTitle className="text-2xl font-bold">
+        <CardTitle className="text-2xl font-bold tracking-tight">
           {tenantBranding ? `Welcome to ${tenantBranding.name}` : 'Welcome back'}
         </CardTitle>
-        <CardDescription>
+        <CardDescription className="text-base">
           {tenantBranding
             ? `Sign in to your ${tenantBranding.name} compensation platform`
             : 'Sign in to your CompportIQ account'}
@@ -205,8 +213,12 @@ function LoginPageInner() {
             )}
           </div>
         </CardContent>
-        <CardFooter className="flex flex-col gap-4">
-          <Button type="submit" className="w-full h-10 font-medium" disabled={isSubmitting}>
+        <CardFooter className="flex flex-col gap-4 pb-8">
+          <Button
+            type="submit"
+            className="w-full h-11 font-semibold text-base rounded-lg shadow-sm shadow-primary/25 hover:shadow-md hover:shadow-primary/30 transition-all"
+            disabled={isSubmitting}
+          >
             {isSubmitting ? 'Signing in...' : 'Sign In'}
           </Button>
 

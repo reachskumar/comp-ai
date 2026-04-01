@@ -9,7 +9,7 @@
  *   ADMIN_PASSWORD — defaults to ChangeMe123!@#
  */
 import 'dotenv/config';
-import { PrismaClient, UserRole } from '../src/generated/prisma/client.ts';
+import { PrismaClient } from '../src/generated/prisma/client.ts';
 import { PrismaPg } from '@prisma/adapter-pg';
 import pg from 'pg';
 import * as bcrypt from 'bcryptjs';
@@ -55,7 +55,7 @@ async function main() {
       tenantId: tenant.id,
       email: ADMIN_EMAIL,
       name: 'Platform Admin',
-      role: UserRole.PLATFORM_ADMIN,
+      role: 'PLATFORM_ADMIN',
       passwordHash,
     },
   });

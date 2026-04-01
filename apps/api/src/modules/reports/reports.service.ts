@@ -8,6 +8,7 @@ import {
 } from '@compensation/ai';
 import { HumanMessage } from '@langchain/core/messages';
 import { Prisma } from '@compensation/database';
+import * as ExcelJS from 'exceljs';
 
 /** Allowed models for report queries — whitelist for security */
 const ALLOWED_MODELS = [
@@ -114,16 +115,56 @@ export class ReportsService implements ReportBuilderDbAdapter {
 
   // ─── Export ────────────────────────────────────────────────
 
-  async exportReport(tenantId: string, id: string, format: string) {
+  async exportReport(tenantId: string, id: string, format: string): Promise<string | Buffer> {
     const report = await this.getReport(tenantId, id);
     const results = report.results as unknown[];
 
     if (format === 'csv') {
       return this.toCsv(results);
     }
-    // PDF and Excel would require additional libraries
-    // For now, return JSON for other formats
+    if (format === 'excel' || format === 'xlsx') {
+      return this.toExcel(results, report.title ?? 'Report');
+    }
     return JSON.stringify(results, null, 2);
+  }
+
+  private async toExcel(data: unknown[], title: string): Promise<Buffer> {
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'CompportIQ';
+    workbook.created = new Date();
+
+    const sheet = workbook.addWorksheet(title.slice(0, 31)); // Excel max sheet name = 31 chars
+    const rows = data as Record<string, unknown>[];
+    if (rows.length === 0) {
+      sheet.addRow(['No data']);
+      return Buffer.from(await workbook.xlsx.writeBuffer());
+    }
+
+    const headers = Object.keys(rows[0] ?? {});
+    // Add header row with bold styling
+    const headerRow = sheet.addRow(headers);
+    headerRow.font = { bold: true };
+    headerRow.eachCell((cell) => {
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
+      cell.border = { bottom: { style: 'thin' } };
+    });
+
+    // Add data rows
+    for (const row of rows) {
+      sheet.addRow(headers.map((h) => row[h] ?? ''));
+    }
+
+    // Auto-fit columns
+    for (const col of sheet.columns) {
+      let maxLen = 10;
+      col.eachCell?.({ includeEmpty: true }, (cell) => {
+        const len = String(cell.value ?? '').length;
+        if (len > maxLen) maxLen = Math.min(len, 50);
+      });
+      col.width = maxLen + 2;
+    }
+
+    return Buffer.from(await workbook.xlsx.writeBuffer());
   }
 
   private toCsv(data: unknown[]): string {

@@ -1,4 +1,4 @@
-import { IsOptional, IsString, IsInt, Min } from 'class-validator';
+import { IsOptional, IsString, IsInt, Min, IsDateString } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
@@ -31,5 +31,14 @@ export class AuditLogQueryDto {
   @IsOptional()
   @IsString()
   entityType?: string;
-}
 
+  @ApiPropertyOptional({ description: 'Filter logs from this date (ISO 8601)' })
+  @IsOptional()
+  @IsDateString()
+  dateFrom?: string;
+
+  @ApiPropertyOptional({ description: 'Filter logs until this date (ISO 8601)' })
+  @IsOptional()
+  @IsDateString()
+  dateTo?: string;
+}

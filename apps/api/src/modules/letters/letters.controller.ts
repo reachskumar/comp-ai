@@ -8,13 +8,15 @@ import {
   Query,
   UseGuards,
   Request,
+  Res,
   Logger,
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
+import { FastifyReply } from 'fastify';
 import { JwtAuthGuard } from '../../auth';
-import { TenantGuard } from '../../common';
+import { TenantGuard, PermissionGuard, RequirePermission } from '../../common';
 import { LettersService } from './letters.service';
 import { GenerateLetterDto } from './dto/generate-letter.dto';
 import { GenerateBatchLetterDto } from './dto/generate-batch-letter.dto';
@@ -27,7 +29,8 @@ interface AuthRequest {
 
 @ApiTags('letters')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
+@RequirePermission('Letters', 'view')
 @Controller('letters')
 export class LettersController {
   private readonly logger = new Logger(LettersController.name);
@@ -37,67 +40,55 @@ export class LettersController {
   @Post('generate')
   @ApiOperation({ summary: 'Generate a compensation letter for an employee' })
   @HttpCode(HttpStatus.CREATED)
-  async generate(
-    @Body() dto: GenerateLetterDto,
-    @Request() req: AuthRequest,
-  ) {
+  async generate(@Body() dto: GenerateLetterDto, @Request() req: AuthRequest) {
     const { tenantId, userId } = req.user;
-    this.logger.log(`Generate letter: type=${dto.letterType} employee=${dto.employeeId} user=${userId}`);
+    this.logger.log(
+      `Generate letter: type=${dto.letterType} employee=${dto.employeeId} user=${userId}`,
+    );
     return this.lettersService.generateLetter(tenantId, userId, dto);
   }
 
   @Post('generate-batch')
   @ApiOperation({ summary: 'Generate compensation letters for multiple employees' })
   @HttpCode(HttpStatus.CREATED)
-  async generateBatch(
-    @Body() dto: GenerateBatchLetterDto,
-    @Request() req: AuthRequest,
-  ) {
+  async generateBatch(@Body() dto: GenerateBatchLetterDto, @Request() req: AuthRequest) {
     const { tenantId, userId } = req.user;
-    this.logger.log(`Batch generate: type=${dto.letterType} count=${dto.employeeIds.length} user=${userId}`);
+    this.logger.log(
+      `Batch generate: type=${dto.letterType} count=${dto.employeeIds.length} user=${userId}`,
+    );
     return this.lettersService.generateBatch(tenantId, userId, dto);
   }
 
   @Get()
   @ApiOperation({ summary: 'List generated compensation letters' })
-  async list(
-    @Query() dto: ListLettersDto,
-    @Request() req: AuthRequest,
-  ) {
+  async list(@Query() dto: ListLettersDto, @Request() req: AuthRequest) {
     const { tenantId } = req.user;
     return this.lettersService.listLetters(tenantId, dto);
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'Get a specific compensation letter' })
-  async getById(
-    @Param('id') id: string,
-    @Request() req: AuthRequest,
-  ) {
+  async getById(@Param('id') id: string, @Request() req: AuthRequest) {
     const { tenantId } = req.user;
     return this.lettersService.getLetterById(tenantId, id);
   }
 
   @Get(':id/pdf')
-  @ApiOperation({ summary: 'Get letter data for PDF generation' })
-  async getPdf(
-    @Param('id') id: string,
-    @Request() req: AuthRequest,
-  ) {
+  @ApiOperation({ summary: 'Download letter as PDF' })
+  async getPdf(@Param('id') id: string, @Request() req: AuthRequest, @Res() reply: FastifyReply) {
     const { tenantId } = req.user;
-    return this.lettersService.getLetterPdf(tenantId, id);
+    const pdfBuffer = await this.lettersService.getLetterPdf(tenantId, id);
+    void reply
+      .header('Content-Type', 'application/pdf')
+      .header('Content-Disposition', `attachment; filename="letter-${id}.pdf"`)
+      .send(pdfBuffer);
   }
 
   @Put(':id')
   @ApiOperation({ summary: 'Update a compensation letter (edit before sending)' })
-  async update(
-    @Param('id') id: string,
-    @Body() dto: UpdateLetterDto,
-    @Request() req: AuthRequest,
-  ) {
+  async update(@Param('id') id: string, @Body() dto: UpdateLetterDto, @Request() req: AuthRequest) {
     const { tenantId } = req.user;
     this.logger.log(`Update letter: id=${id} user=${req.user.userId}`);
     return this.lettersService.updateLetter(tenantId, id, dto);
   }
 }
-

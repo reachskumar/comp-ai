@@ -14,15 +14,18 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth, ApiConsumes } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiBearerAuth, ApiConsumes, ApiQuery } from '@nestjs/swagger';
 import { FastifyRequest } from 'fastify';
 import { JwtAuthGuard } from '../../auth';
-import { TenantGuard } from '../../common';
+import { TenantGuard, PermissionGuard, RequirePermission } from '../../common';
 import { PolicyConverterService } from './services/policy-converter.service';
 import { RuleSetCrudService, RuleCrudService } from './services/rules-crud.service';
 import { SimulatorService } from './services/simulator.service';
 import { TestGeneratorService } from './services/test-generator.service';
 import { TestRunnerService } from './services/test-runner.service';
+import { RuleGeneratorService } from './services/rule-generator.service';
+import { LlmRuleGeneratorService } from './services/llm-rule-generator.service';
+import { RuleUploadService } from './services/rule-upload.service';
 import {
   ConvertPolicyDto,
   UpdateConversionCountsDto,
@@ -32,6 +35,10 @@ import {
   UpdateRuleDto,
   RuleSetQueryDto,
   SimulationParamsDto,
+  GenerateRulesDto,
+  LlmAnalyzeDto,
+  LlmGenerateDto,
+  ApproveRuleUploadDto,
 } from './dto';
 
 interface AuthRequest {
@@ -44,7 +51,7 @@ interface AuthenticatedFastifyRequest extends FastifyRequest {
 
 @ApiTags('rules')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
 @Controller('rules')
 export class RulesController {
   constructor(
@@ -54,11 +61,15 @@ export class RulesController {
     private readonly simulatorService: SimulatorService,
     private readonly testGeneratorService: TestGeneratorService,
     private readonly testRunnerService: TestRunnerService,
+    private readonly ruleGenerator: RuleGeneratorService,
+    private readonly llmRuleGenerator: LlmRuleGeneratorService,
+    private readonly ruleUploadService: RuleUploadService,
   ) {}
 
   // ─── Policy Conversion ─────────────────────────────────────────
 
   @Post('convert-policy')
+  @RequirePermission('Rules', 'insert')
   @ApiOperation({ summary: 'Convert a natural language policy document into structured rules' })
   async convertPolicy(@Body() dto: ConvertPolicyDto, @Request() req: AuthRequest) {
     return this.policyConverter.convertPolicy(
@@ -71,7 +82,10 @@ export class RulesController {
   }
 
   @Post('convert-policy/upload')
-  @ApiOperation({ summary: 'Upload a PDF or TXT file and convert to structured rules' })
+  @RequirePermission('Rules', 'insert')
+  @ApiOperation({
+    summary: 'Upload a PDF, TXT, CSV, or Excel file and convert to structured rules',
+  })
   @ApiConsumes('multipart/form-data')
   @HttpCode(HttpStatus.OK)
   async convertPolicyUpload(@Req() req: AuthenticatedFastifyRequest) {
@@ -93,12 +107,19 @@ export class RulesController {
     const fileName = data.filename;
     const mimeType = data.mimetype;
 
-    // Only allow PDF and text files
-    const allowedTypes = ['application/pdf', 'text/plain'];
-    const allowedExts = ['.pdf', '.txt'];
+    // Allow PDF, text, CSV, and Excel files
+    const allowedTypes = [
+      'application/pdf',
+      'text/plain',
+      'text/csv',
+      'text/tab-separated-values',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.ms-excel',
+    ];
+    const allowedExts = ['.pdf', '.txt', '.csv', '.tsv', '.xlsx', '.xls'];
     const ext = fileName.toLowerCase().slice(fileName.lastIndexOf('.'));
     if (!allowedTypes.includes(mimeType) && !allowedExts.includes(ext)) {
-      throw new BadRequestException('Only PDF and TXT files are supported.');
+      throw new BadRequestException('Unsupported file type. Use PDF, TXT, CSV, or Excel (.xlsx).');
     }
 
     const policyText = await this.policyConverter.extractText(fileBuffer, fileName, mimeType);
@@ -126,16 +147,14 @@ export class RulesController {
 
   @Patch('conversions/:id/counts')
   @ApiOperation({ summary: 'Update accepted/rejected counts for a conversion' })
-  async updateConversionCounts(
-    @Param('id') id: string,
-    @Body() dto: UpdateConversionCountsDto,
-  ) {
+  async updateConversionCounts(@Param('id') id: string, @Body() dto: UpdateConversionCountsDto) {
     return this.policyConverter.updateConversionCounts(id, dto.accepted, dto.rejected);
   }
 
   // ─── Rule Set CRUD ────────────────────────────────────────────
 
   @Post('rule-sets')
+  @RequirePermission('Rules', 'insert')
   @ApiOperation({ summary: 'Create a new rule set' })
   async createRuleSet(@Body() dto: CreateRuleSetDto, @Request() req: AuthRequest) {
     return this.ruleSetCrud.createRuleSet(req.user.tenantId, dto);
@@ -158,6 +177,7 @@ export class RulesController {
   }
 
   @Patch('rule-sets/:id')
+  @RequirePermission('Rules', 'update')
   @ApiOperation({ summary: 'Update a rule set' })
   async updateRuleSet(
     @Param('id') id: string,
@@ -168,6 +188,7 @@ export class RulesController {
   }
 
   @Delete('rule-sets/:id')
+  @RequirePermission('Rules', 'delete')
   @ApiOperation({ summary: 'Delete a rule set' })
   async deleteRuleSet(@Param('id') id: string, @Request() req: AuthRequest) {
     return this.ruleSetCrud.delete(req.user.tenantId, id);
@@ -176,6 +197,7 @@ export class RulesController {
   // ─── Rule CRUD ────────────────────────────────────────────────
 
   @Post('rule-sets/:ruleSetId/rules')
+  @RequirePermission('Rules', 'insert')
   @ApiOperation({ summary: 'Add a rule to a rule set' })
   async addRule(
     @Param('ruleSetId') ruleSetId: string,
@@ -186,6 +208,7 @@ export class RulesController {
   }
 
   @Patch('rule-sets/:ruleSetId/rules/:ruleId')
+  @RequirePermission('Rules', 'update')
   @ApiOperation({ summary: 'Update a rule' })
   async updateRule(
     @Param('ruleSetId') ruleSetId: string,
@@ -197,6 +220,7 @@ export class RulesController {
   }
 
   @Delete('rule-sets/:ruleSetId/rules/:ruleId')
+  @RequirePermission('Rules', 'delete')
   @ApiOperation({ summary: 'Delete a rule from a rule set' })
   async deleteRule(
     @Param('ruleSetId') ruleSetId: string,
@@ -237,10 +261,7 @@ export class RulesController {
 
   @Post('rule-sets/:ruleSetId/generate-tests')
   @ApiOperation({ summary: 'Auto-generate test cases for a rule set' })
-  async generateTests(
-    @Param('ruleSetId') ruleSetId: string,
-    @Request() req: AuthRequest,
-  ) {
+  async generateTests(@Param('ruleSetId') ruleSetId: string, @Request() req: AuthRequest) {
     const testCases = await this.testGeneratorService.generateTestCases(
       req.user.tenantId,
       ruleSetId,
@@ -262,11 +283,126 @@ export class RulesController {
 
   @Post('rule-sets/:ruleSetId/test-cases/run')
   @ApiOperation({ summary: 'Execute all test cases for a rule set' })
-  async runTestCases(
-    @Param('ruleSetId') ruleSetId: string,
-    @Request() req: AuthRequest,
-  ) {
+  async runTestCases(@Param('ruleSetId') ruleSetId: string, @Request() req: AuthRequest) {
     return this.testRunnerService.runTestCases(req.user.tenantId, ruleSetId);
   }
-}
 
+  // ─── AI Rule Generation ──────────────────────────────────────
+
+  @Post('rule-sets/:ruleSetId/generate')
+  @RequirePermission('Rules', 'insert')
+  @ApiOperation({ summary: 'Clone a rule set and apply AI-based adjustments for a new cycle' })
+  async generateRules(
+    @Param('ruleSetId') ruleSetId: string,
+    @Body() dto: GenerateRulesDto,
+    @Request() req: AuthRequest,
+  ) {
+    return this.ruleGenerator.generateFromSource(req.user.tenantId, {
+      sourceRuleSetId: ruleSetId,
+      ...dto,
+    });
+  }
+
+  // ─── LLM Rule Analysis & Generation ──────────────────────
+
+  @Post('rule-sets/:ruleSetId/analyze')
+  @ApiOperation({
+    summary: 'Analyse a rule set using AI — returns plain English explanation',
+  })
+  async analyzeRuleSet(
+    @Param('ruleSetId') ruleSetId: string,
+    @Body() dto: LlmAnalyzeDto,
+    @Request() req: AuthRequest,
+  ) {
+    if (dto.compareWithId) {
+      const analysis = await this.llmRuleGenerator.compareRuleSets(
+        req.user.tenantId,
+        req.user.userId,
+        ruleSetId,
+        dto.compareWithId,
+        req.user.role,
+      );
+      return { analysis };
+    }
+    const analysis = await this.llmRuleGenerator.analyzeRuleSet(
+      req.user.tenantId,
+      req.user.userId,
+      ruleSetId,
+      req.user.role,
+    );
+    return { analysis };
+  }
+
+  @Post('generate-from-instruction')
+  @RequirePermission('Rules', 'insert')
+  @ApiOperation({
+    summary: 'Generate compensation rules from a natural language instruction using AI',
+  })
+  async generateFromInstruction(@Body() dto: LlmGenerateDto, @Request() req: AuthRequest) {
+    const result = await this.llmRuleGenerator.generateFromInstruction(
+      req.user.tenantId,
+      req.user.userId,
+      dto.instruction,
+      req.user.role,
+    );
+    return { result };
+  }
+
+  // ─── Rule Upload (CSV / Excel) ───────────────────────────
+
+  @Post('upload')
+  @RequirePermission('Rules', 'insert')
+  @ApiOperation({ summary: 'Upload a CSV or Excel file containing compensation rules' })
+  @ApiConsumes('multipart/form-data')
+  @ApiQuery({
+    name: 'ai',
+    required: false,
+    type: Boolean,
+    description: 'Enable AI-powered column mapping suggestions',
+  })
+  @HttpCode(HttpStatus.OK)
+  async uploadRules(@Req() req: AuthenticatedFastifyRequest, @Query('ai') ai?: string) {
+    const data = await req.file();
+    if (!data) {
+      throw new BadRequestException('No file uploaded. Send a multipart form with a "file" field.');
+    }
+
+    const chunks: Buffer[] = [];
+    for await (const chunk of data.file) {
+      chunks.push(chunk as Buffer);
+    }
+    const fileBuffer = Buffer.concat(chunks);
+
+    if (fileBuffer.length === 0) {
+      throw new BadRequestException('Uploaded file is empty.');
+    }
+
+    const allowedExts = ['.csv', '.tsv', '.txt', '.xlsx', '.xls'];
+    const ext = data.filename.toLowerCase().slice(data.filename.lastIndexOf('.'));
+    if (!allowedExts.includes(ext)) {
+      throw new BadRequestException(`Unsupported file type: ${ext}. Use CSV or Excel (.xlsx).`);
+    }
+
+    const aiMapping = ai === 'true' || ai === '1';
+
+    return this.ruleUploadService.parseUpload(
+      req.user.tenantId,
+      req.user.userId,
+      data.filename,
+      fileBuffer,
+      aiMapping,
+    );
+  }
+
+  @Post('upload/:uploadId/approve')
+  @RequirePermission('Rules', 'insert')
+  @ApiOperation({ summary: 'Approve a previewed rule upload and persist as a new RuleSet' })
+  @HttpCode(HttpStatus.CREATED)
+  async approveUpload(
+    @Param('uploadId') uploadId: string,
+    @Body() dto: ApproveRuleUploadDto,
+    @Request() req: AuthRequest,
+  ) {
+    return this.ruleUploadService.approveUpload(req.user.tenantId, uploadId, dto.ruleSetName);
+  }
+}

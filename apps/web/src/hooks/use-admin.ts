@@ -119,6 +119,13 @@ export function useAdminRemoveTenantUser() {
   });
 }
 
+export function useCompportTenants() {
+  return useQuery({
+    queryKey: ['compport-tenants'],
+    queryFn: () => apiClient.adminListCompportTenants(),
+  });
+}
+
 export function useAdminOnboard() {
   const qc = useQueryClient();
   return useMutation({
@@ -128,10 +135,53 @@ export function useAdminOnboard() {
       subdomain?: string;
       adminEmail?: string;
       adminName?: string;
+      adminPassword?: string;
+      adminRole?: string;
+      enabledFeatures?: string[];
     }) => apiClient.adminOnboard(data),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['admin-tenants'] });
       void qc.invalidateQueries({ queryKey: ['admin-stats'] });
     },
+  });
+}
+
+// ─── Bridge Query Hooks ──────────────────────────────────
+
+export function useBridgeDiscoveryTables(schemaName: string | null) {
+  return useQuery({
+    queryKey: ['bridge-discovery-tables', schemaName],
+    queryFn: () => apiClient.bridgeDiscoveryTables(schemaName!),
+    enabled: !!schemaName,
+  });
+}
+
+export function useBridgeQueryTable(
+  schemaName: string | null,
+  tableName: string | null,
+  params?: { limit?: number; offset?: number },
+) {
+  return useQuery({
+    queryKey: ['bridge-query', schemaName, tableName, params],
+    queryFn: () => apiClient.bridgeQueryTable(schemaName!, tableName!, params),
+    enabled: !!schemaName && !!tableName,
+  });
+}
+
+export function useMyDataTables() {
+  return useQuery({
+    queryKey: ['my-data-tables'],
+    queryFn: () => apiClient.bridgeMyDataTables(),
+  });
+}
+
+export function useMyDataQuery(
+  tableName: string | null,
+  params?: { limit?: number; offset?: number },
+) {
+  return useQuery({
+    queryKey: ['my-data-query', tableName, params],
+    queryFn: () => apiClient.bridgeMyDataQuery(tableName!, params),
+    enabled: !!tableName,
   });
 }

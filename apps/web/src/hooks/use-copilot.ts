@@ -1,9 +1,28 @@
 'use client';
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { getCsrfToken } from '@/lib/csrf';
 
 const API_BASE_URL = process.env['NEXT_PUBLIC_API_URL'] || 'http://localhost:4000';
+
+// ─── Persistence Keys ─────────────────────────────────────
+const STORAGE_KEY_CONV_ID = 'copilot:activeConversationId';
+const STORAGE_KEY_PANEL_OPEN = 'copilot:panelOpen';
+const STORAGE_KEY_PANEL_WIDTH = 'copilot:panelWidth';
+
+function getStoredConversationId(): string | null {
+  if (typeof window === 'undefined') return null;
+  return localStorage.getItem(STORAGE_KEY_CONV_ID);
+}
+
+function storeConversationId(id: string | null) {
+  if (typeof window === 'undefined') return;
+  if (id) {
+    localStorage.setItem(STORAGE_KEY_CONV_ID, id);
+  } else {
+    localStorage.removeItem(STORAGE_KEY_CONV_ID);
+  }
+}
 
 // ─── Types ───────────────────────────────────────────────
 
@@ -44,6 +63,7 @@ interface SSEData {
   message?: string;
   graphName?: string;
   runId?: string | null;
+  conversationId?: string;
   result?: Record<string, unknown>;
   timestamp?: number;
   [key: string]: unknown;
@@ -51,14 +71,57 @@ interface SSEData {
 
 // ─── Hook ────────────────────────────────────────────────
 
-export function useCopilot() {
+export function useCopilot(options?: { autoRestore?: boolean }) {
+  const { autoRestore = true } = options ?? {};
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [activeNode, setActiveNode] = useState<string | null>(null);
   const [activeTool, setActiveTool] = useState<string | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [isRestoring, setIsRestoring] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const restoredRef = useRef(false);
+
+  // Auto-restore last conversation on mount
+  useEffect(() => {
+    if (!autoRestore || restoredRef.current) return;
+    restoredRef.current = true;
+
+    const storedId = getStoredConversationId();
+    if (!storedId) return;
+
+    setIsRestoring(true);
+    const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
+    fetch(`${API_BASE_URL}/api/v1/copilot/conversations/${storedId}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+      .then(async (res) => {
+        if (!res.ok) {
+          storeConversationId(null);
+          return;
+        }
+        const conv = (await res.json()) as {
+          id: string;
+          messages: Array<{ id: string; role: string; content: string; createdAt: string }>;
+        };
+        setConversationId(conv.id);
+        setMessages(
+          conv.messages.map((m) => ({
+            id: m.id,
+            role: m.role as 'user' | 'assistant',
+            content: m.content,
+            timestamp: new Date(m.createdAt).getTime(),
+          })),
+        );
+      })
+      .catch(() => {
+        storeConversationId(null);
+      })
+      .finally(() => {
+        setIsRestoring(false);
+      });
+  }, [autoRestore]);
 
   const sendMessage = useCallback(
     async (message: string) => {
@@ -167,10 +230,14 @@ export function useCopilot() {
 
   const handleSSEEvent = useCallback((eventType: string, data: SSEData, assistantId: string) => {
     switch (eventType) {
-      case 'graph:start':
-        if (data.runId && typeof data.runId === 'string') {
-          setConversationId(data.runId);
+      case 'conversation:id':
+        if (data.conversationId && typeof data.conversationId === 'string') {
+          setConversationId(data.conversationId);
+          storeConversationId(data.conversationId);
         }
+        break;
+      case 'graph:start':
+        // graph:start no longer carries the conversation ID — handled by conversation:id event
         break;
       case 'node:start':
         setActiveNode((data.node as string) ?? null);
@@ -247,6 +314,7 @@ export function useCopilot() {
   const clearChat = useCallback(() => {
     setMessages([]);
     setConversationId(null);
+    storeConversationId(null);
     setError(null);
   }, []);
 
@@ -261,6 +329,7 @@ export function useCopilot() {
       messages: Array<{ id: string; role: string; content: string; createdAt: string }>;
     };
     setConversationId(conv.id);
+    storeConversationId(conv.id);
     setMessages(
       conv.messages.map((m) => ({
         id: m.id,
@@ -274,6 +343,7 @@ export function useCopilot() {
   return {
     messages,
     isStreaming,
+    isRestoring,
     activeNode,
     activeTool,
     conversationId,

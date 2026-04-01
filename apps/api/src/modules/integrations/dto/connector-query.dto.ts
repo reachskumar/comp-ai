@@ -19,10 +19,10 @@ export class ConnectorQueryDto {
 
   @ApiPropertyOptional({
     description: 'Filter by connector type',
-    enum: ['HRIS', 'PAYROLL', 'BENEFITS', 'SSO', 'CUSTOM'],
+    enum: ['HRIS', 'PAYROLL', 'BENEFITS', 'SSO', 'CUSTOM', 'COMPPORT_CLOUDSQL'],
   })
   @IsOptional()
-  @IsEnum(['HRIS', 'PAYROLL', 'BENEFITS', 'SSO', 'CUSTOM'])
+  @IsEnum(['HRIS', 'PAYROLL', 'BENEFITS', 'SSO', 'CUSTOM', 'COMPPORT_CLOUDSQL'])
   connectorType?: string;
 
   @ApiPropertyOptional({
@@ -57,4 +57,3 @@ export class SyncLogQueryDto {
   @IsEnum(['CREATE', 'UPDATE', 'DELETE', 'SKIP', 'ERROR'])
   action?: string;
 }
-

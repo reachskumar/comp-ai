@@ -1,15 +1,15 @@
-"use client";
+'use client';
 
-import * as React from "react";
-import { useRouter } from "next/navigation";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiClient } from "@/lib/api-client";
-import { useToast } from "@/components/ui/toast";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import * as React from 'react';
+import { useRouter } from 'next/navigation';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { apiClient } from '@/lib/api-client';
+import { useToast } from '@/components/ui/toast';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Table,
   TableBody,
@@ -17,23 +17,33 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@/components/ui/table";
+} from '@/components/ui/table';
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
   DialogFooter,
-} from "@/components/ui/dialog";
+} from '@/components/ui/dialog';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Textarea } from "@/components/ui/textarea";
-import { BookOpen, Plus, MoreHorizontal, Copy, Archive, Upload, FileText } from "lucide-react";
+} from '@/components/ui/dropdown-menu';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Textarea } from '@/components/ui/textarea';
+import {
+  BookOpen,
+  Plus,
+  MoreHorizontal,
+  Copy,
+  Archive,
+  Upload,
+  FileText,
+  Sparkles,
+} from 'lucide-react';
+import { AiRuleWizard } from '@/components/ai-rule-wizard';
 
 interface RuleSetSummary {
   id: string;
@@ -56,14 +66,14 @@ interface RuleSetsResponse {
 
 const statusVariant = (status: string) => {
   switch (status) {
-    case "active":
-      return "default" as const;
-    case "draft":
-      return "secondary" as const;
-    case "archived":
-      return "outline" as const;
+    case 'active':
+      return 'default' as const;
+    case 'draft':
+      return 'secondary' as const;
+    case 'archived':
+      return 'outline' as const;
     default:
-      return "secondary" as const;
+      return 'secondary' as const;
   }
 };
 
@@ -72,73 +82,75 @@ export default function RuleSetsPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [createOpen, setCreateOpen] = React.useState(false);
-  const [newName, setNewName] = React.useState("");
-  const [newDescription, setNewDescription] = React.useState("");
+  const [newName, setNewName] = React.useState('');
+  const [newDescription, setNewDescription] = React.useState('');
   const [importOpen, setImportOpen] = React.useState(false);
   const [importFile, setImportFile] = React.useState<File | null>(null);
-  const [importText, setImportText] = React.useState("");
+  const [importText, setImportText] = React.useState('');
   const [dragActive, setDragActive] = React.useState(false);
+  const [aiWizardOpen, setAiWizardOpen] = React.useState(false);
+  const [aiWizardSource, setAiWizardSource] = React.useState<string | undefined>();
 
   const { data, isLoading } = useQuery<RuleSetsResponse>({
-    queryKey: ["rule-sets"],
-    queryFn: () => apiClient.fetch<RuleSetsResponse>("/api/v1/rules/rule-sets?page=1&limit=50"),
+    queryKey: ['rule-sets'],
+    queryFn: () => apiClient.fetch<RuleSetsResponse>('/api/v1/rules/rule-sets?page=1&limit=50'),
   });
 
   const createMutation = useMutation({
     mutationFn: (body: { name: string; description?: string }) =>
-      apiClient.fetch("/api/v1/rules/rule-sets", {
-        method: "POST",
+      apiClient.fetch('/api/v1/rules/rule-sets', {
+        method: 'POST',
         body: JSON.stringify(body),
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["rule-sets"] });
-      toast({ title: "Rule set created", description: "Your new rule set is ready." });
+      queryClient.invalidateQueries({ queryKey: ['rule-sets'] });
+      toast({ title: 'Rule set created', description: 'Your new rule set is ready.' });
       setCreateOpen(false);
-      setNewName("");
-      setNewDescription("");
+      setNewName('');
+      setNewDescription('');
     },
     onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
     },
   });
 
   const cloneMutation = useMutation({
     mutationFn: (id: string) =>
-      apiClient.fetch(`/api/v1/rules/rule-sets/${id}`, { method: "POST" }),
+      apiClient.fetch(`/api/v1/rules/rule-sets/${id}`, { method: 'POST' }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["rule-sets"] });
-      toast({ title: "Rule set cloned" });
+      queryClient.invalidateQueries({ queryKey: ['rule-sets'] });
+      toast({ title: 'Rule set cloned' });
     },
     onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
     },
   });
 
   const archiveMutation = useMutation({
     mutationFn: (id: string) =>
       apiClient.fetch(`/api/v1/rules/rule-sets/${id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ status: "archived" }),
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'archived' }),
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["rule-sets"] });
-      toast({ title: "Rule set archived" });
+      queryClient.invalidateQueries({ queryKey: ['rule-sets'] });
+      toast({ title: 'Rule set archived' });
     },
     onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
     },
   });
 
   const importMutation = useMutation({
     mutationFn: async (payload: { file?: File; text?: string }) => {
       if (payload.file) {
-        const token = typeof window !== "undefined" ? localStorage.getItem("accessToken") : null;
+        const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
         const formData = new FormData();
-        formData.append("file", payload.file);
+        formData.append('file', payload.file);
         const res = await fetch(
-          `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000"}/api/v1/rules/convert-policy/upload`,
+          `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000'}/api/v1/rules/convert-policy/upload`,
           {
-            method: "POST",
+            method: 'POST',
             headers: token ? { Authorization: `Bearer ${token}` } : {},
             body: formData,
           },
@@ -149,19 +161,22 @@ export default function RuleSetsPage() {
         }
         return res.json();
       }
-      return apiClient.fetch("/api/v1/rules/convert-policy", {
-        method: "POST",
+      return apiClient.fetch('/api/v1/rules/convert-policy', {
+        method: 'POST',
         body: JSON.stringify({ text: payload.text }),
       });
     },
     onSuccess: () => {
-      toast({ title: "Policy converted", description: "Rules extracted successfully. Open a rule set to review." });
+      toast({
+        title: 'Policy converted',
+        description: 'Rules extracted successfully. Open a rule set to review.',
+      });
       setImportOpen(false);
       setImportFile(null);
-      setImportText("");
+      setImportText('');
     },
     onError: (err: Error) => {
-      toast({ title: "Import failed", description: err.message, variant: "destructive" });
+      toast({ title: 'Import failed', description: err.message, variant: 'destructive' });
     },
   });
 
@@ -178,15 +193,12 @@ export default function RuleSetsPage() {
     }
   };
 
-  const handleImportDrop = React.useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
-      setDragActive(false);
-      const file = e.dataTransfer.files[0];
-      if (file) setImportFile(file);
-    },
-    [],
-  );
+  const handleImportDrop = React.useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setDragActive(false);
+    const file = e.dataTransfer.files[0];
+    if (file) setImportFile(file);
+  }, []);
 
   const ruleSets = data?.data ?? [];
 
@@ -198,6 +210,16 @@ export default function RuleSetsPage() {
           <p className="text-muted-foreground">Manage compensation rules and policies.</p>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={() => {
+              setAiWizardSource(undefined);
+              setAiWizardOpen(true);
+            }}
+          >
+            <Sparkles className="mr-2 h-4 w-4" />
+            AI Generate
+          </Button>
           <Button variant="outline" onClick={() => setImportOpen(true)}>
             <Upload className="mr-2 h-4 w-4" />
             Import Policy
@@ -227,7 +249,9 @@ export default function RuleSetsPage() {
             <div className="flex flex-col items-center justify-center py-12 text-center">
               <BookOpen className="h-12 w-12 text-muted-foreground mb-4" />
               <p className="text-lg font-medium">No rule sets yet</p>
-              <p className="text-sm text-muted-foreground mb-4">Create your first rule set to get started.</p>
+              <p className="text-sm text-muted-foreground mb-4">
+                Create your first rule set to get started.
+              </p>
               <Button onClick={() => setCreateOpen(true)}>
                 <Plus className="mr-2 h-4 w-4" />
                 Create Rule Set
@@ -258,16 +282,12 @@ export default function RuleSetsPage() {
                     </TableCell>
                     <TableCell>v{rs.version}</TableCell>
                     <TableCell>
-                      {rs.effectiveDate
-                        ? new Date(rs.effectiveDate).toLocaleDateString()
-                        : "—"}
+                      {rs.effectiveDate ? new Date(rs.effectiveDate).toLocaleDateString() : '—'}
                     </TableCell>
                     <TableCell>{rs.ruleCount}</TableCell>
                     <TableCell>
                       <DropdownMenu>
-                        <DropdownMenuTrigger
-                          onClick={(e: React.MouseEvent) => e.stopPropagation()}
-                        >
+                        <DropdownMenuTrigger onClick={(e: React.MouseEvent) => e.stopPropagation()}>
                           <MoreHorizontal className="h-4 w-4" />
                         </DropdownMenuTrigger>
                         <DropdownMenuContent>
@@ -279,6 +299,16 @@ export default function RuleSetsPage() {
                           >
                             <Copy className="mr-2 h-4 w-4" />
                             Clone
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={(e: React.MouseEvent) => {
+                              e.stopPropagation();
+                              setAiWizardSource(rs.id);
+                              setAiWizardOpen(true);
+                            }}
+                          >
+                            <Sparkles className="mr-2 h-4 w-4" />
+                            AI Generate New Version
                           </DropdownMenuItem>
                           <DropdownMenuItem
                             onClick={(e: React.MouseEvent) => {
@@ -331,7 +361,7 @@ export default function RuleSetsPage() {
               Cancel
             </Button>
             <Button onClick={handleCreate} disabled={!newName.trim() || createMutation.isPending}>
-              {createMutation.isPending ? "Creating..." : "Create"}
+              {createMutation.isPending ? 'Creating...' : 'Create'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -346,9 +376,12 @@ export default function RuleSetsPage() {
           <div className="space-y-4 py-4">
             <div
               className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
-                dragActive ? "border-primary bg-primary/5" : "border-muted-foreground/25"
+                dragActive ? 'border-primary bg-primary/5' : 'border-muted-foreground/25'
               }`}
-              onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragActive(true);
+              }}
               onDragLeave={() => setDragActive(false)}
               onDrop={handleImportDrop}
             >
@@ -364,14 +397,14 @@ export default function RuleSetsPage() {
                 <>
                   <Upload className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
                   <p className="text-sm text-muted-foreground mb-2">
-                    Drag &amp; drop a PDF or TXT file here
+                    Drag &amp; drop a PDF, TXT, CSV, or Excel file here
                   </p>
                   <label className="cursor-pointer">
                     <span className="text-sm text-primary underline">or browse files</span>
                     <input
                       type="file"
                       className="hidden"
-                      accept=".pdf,.txt,application/pdf,text/plain"
+                      accept=".pdf,.txt,.csv,.tsv,.xlsx,.xls,application/pdf,text/plain,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                       onChange={(e) => {
                         const file = e.target.files?.[0];
                         if (file) setImportFile(file);
@@ -400,19 +433,32 @@ export default function RuleSetsPage() {
             />
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => { setImportOpen(false); setImportFile(null); setImportText(""); }}>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setImportOpen(false);
+                setImportFile(null);
+                setImportText('');
+              }}
+            >
               Cancel
             </Button>
             <Button
               onClick={handleImport}
               disabled={(!importFile && importText.trim().length < 10) || importMutation.isPending}
             >
-              {importMutation.isPending ? "Converting..." : "Convert to Rules"}
+              {importMutation.isPending ? 'Converting...' : 'Convert to Rules'}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* AI Rule Wizard */}
+      <AiRuleWizard
+        open={aiWizardOpen}
+        onOpenChange={setAiWizardOpen}
+        sourceRuleSetId={aiWizardSource}
+      />
     </div>
   );
 }
-

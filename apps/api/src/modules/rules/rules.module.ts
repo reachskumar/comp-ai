@@ -5,6 +5,9 @@ import { RuleSetCrudService, RuleCrudService } from './services/rules-crud.servi
 import { SimulatorService } from './services/simulator.service';
 import { TestGeneratorService } from './services/test-generator.service';
 import { TestRunnerService } from './services/test-runner.service';
+import { RuleGeneratorService } from './services/rule-generator.service';
+import { LlmRuleGeneratorService } from './services/llm-rule-generator.service';
+import { RuleUploadService } from './services/rule-upload.service';
 
 @Module({
   controllers: [RulesController],
@@ -15,6 +18,9 @@ import { TestRunnerService } from './services/test-runner.service';
     SimulatorService,
     TestGeneratorService,
     TestRunnerService,
+    RuleGeneratorService,
+    LlmRuleGeneratorService,
+    RuleUploadService,
   ],
   exports: [
     PolicyConverterService,
@@ -23,7 +29,9 @@ import { TestRunnerService } from './services/test-runner.service';
     SimulatorService,
     TestGeneratorService,
     TestRunnerService,
+    RuleGeneratorService,
+    LlmRuleGeneratorService,
+    RuleUploadService,
   ],
 })
 export class RulesModule {}
-

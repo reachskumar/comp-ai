@@ -24,6 +24,7 @@ Thumbs.db
 .env
 .env.local
 .env.*.local
+keys/
 
 # Logs
 *.log
@@ -42,3 +43,4 @@ infra/terraform/.terraform.lock.hcl
 *.tfstate
 *.tfstate.backup
 *.tfplan
+tfplan

@@ -1,21 +1,130 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { DatabaseService } from '../../database';
 import {
   buildCopilotGraph,
   streamGraphToSSE,
   type CopilotDbAdapter,
   type CopilotUserContext,
-  type CopilotUserRole,
   type SSEEvent,
+  type RuleManagementDbAdapter,
 } from '@compensation/ai';
-import { HumanMessage } from '@langchain/core/messages';
+import { HumanMessage, AIMessage, type BaseMessage } from '@langchain/core/messages';
 import { Prisma } from '@compensation/database';
+import { DataScopeService, type DataScope } from '../../common';
 
 @Injectable()
 export class CopilotService implements CopilotDbAdapter {
   private readonly logger = new Logger(CopilotService.name);
 
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly dataScopeService: DataScopeService,
+  ) {}
+
+  // ─── Rule Management Adapter (for Copilot rule tools) ───────
+
+  get ruleManagement(): RuleManagementDbAdapter {
+    const db = this.db;
+    return {
+      async getRuleSet(tenantId: string, ruleSetId: string) {
+        return db.forTenant(tenantId, (tx) =>
+          tx.ruleSet.findFirst({
+            where: { id: ruleSetId, tenantId },
+            include: { rules: { orderBy: { priority: 'asc' } } },
+          }),
+        );
+      },
+      async listRuleSets(tenantId: string, filters) {
+        const where: Record<string, unknown> = { tenantId };
+        if (filters.status) where['status'] = filters.status;
+        if (filters.search) where['name'] = { contains: filters.search, mode: 'insensitive' };
+        return db.forTenant(tenantId, (tx) =>
+          tx.ruleSet.findMany({
+            where: where as never,
+            take: filters.limit ?? 20,
+            orderBy: { updatedAt: 'desc' },
+            include: { _count: { select: { rules: true } } },
+          }),
+        );
+      },
+      async createRuleSet(tenantId: string, data) {
+        return db.forTenant(tenantId, (tx) =>
+          tx.ruleSet.create({
+            data: {
+              tenantId,
+              name: data.name,
+              description: data.description,
+              effectiveDate: data.effectiveDate ? new Date(data.effectiveDate) : undefined,
+              rules: data.rules?.length
+                ? {
+                    create: data.rules.map((r) => ({
+                      name: r.name,
+                      ruleType: r.ruleType as never,
+                      priority: r.priority ?? 0,
+                      conditions: (r.conditions ?? {}) as never,
+                      actions: (r.actions ?? {}) as never,
+                      metadata: (r.metadata ?? {}) as never,
+                      enabled: r.enabled ?? true,
+                    })),
+                  }
+                : undefined,
+            },
+            include: { rules: true },
+          }),
+        );
+      },
+      async addRule(tenantId: string, ruleSetId: string, data) {
+        const rs = await db.forTenant(tenantId, (tx) =>
+          tx.ruleSet.findFirst({ where: { id: ruleSetId, tenantId } }),
+        );
+        if (!rs) throw new NotFoundException(`RuleSet ${ruleSetId} not found`);
+        return db.forTenant(tenantId, (tx) =>
+          (tx as any).rule.create({
+            data: {
+              ruleSetId,
+              name: data.name,
+              ruleType: data.ruleType as never,
+              priority: data.priority ?? 0,
+              conditions: (data.conditions ?? {}) as never,
+              actions: (data.actions ?? {}) as never,
+              metadata: (data.metadata ?? {}) as never,
+              enabled: data.enabled ?? true,
+            },
+          }),
+        );
+      },
+      async updateRule(tenantId: string, ruleSetId: string, ruleId: string, data) {
+        const rs = await db.forTenant(tenantId, (tx) =>
+          tx.ruleSet.findFirst({ where: { id: ruleSetId, tenantId } }),
+        );
+        if (!rs) throw new NotFoundException(`RuleSet ${ruleSetId} not found`);
+        return db.forTenant(tenantId, (tx) =>
+          (tx as any).rule.update({ where: { id: ruleId }, data }),
+        );
+      },
+      async deleteRule(tenantId: string, ruleSetId: string, ruleId: string) {
+        const rs = await db.forTenant(tenantId, (tx) =>
+          tx.ruleSet.findFirst({ where: { id: ruleSetId, tenantId } }),
+        );
+        if (!rs) throw new NotFoundException(`RuleSet ${ruleSetId} not found`);
+        return db.forTenant(tenantId, (tx) => (tx as any).rule.delete({ where: { id: ruleId } }));
+      },
+      async generateFromSource(tenantId: string, params) {
+        const source = await db.forTenant(tenantId, (tx) =>
+          tx.ruleSet.findFirst({
+            where: { id: params.sourceRuleSetId, tenantId },
+            include: { rules: { orderBy: { priority: 'asc' } } },
+          }),
+        );
+        if (!source)
+          throw new NotFoundException(`Source rule set ${params.sourceRuleSetId} not found`);
+        return {
+          source,
+          message: 'Use the deterministic generate endpoint for factor-based generation',
+        };
+      },
+    };
+  }
 
   // ─── Graph Invocation ──────────────────────────────────────
 
@@ -31,17 +140,51 @@ export class CopilotService implements CopilotDbAdapter {
       `Copilot chat: tenant=${tenantId} user=${userId} role=${role} conv=${conversationId ?? 'new'}`,
     );
 
-    const { graph } = await buildCopilotGraph(this, tenantId, userContext, { userId });
+    // ── Step 1: Save user message & resolve conversation ID ──
+    const { conversationId: dbConvId } = await this.saveMessage(
+      tenantId,
+      userId,
+      conversationId,
+      'user',
+      message,
+    );
 
-    const config = conversationId
-      ? { configurable: { thread_id: conversationId } }
-      : { configurable: { thread_id: `copilot-${tenantId}-${userId}-${Date.now()}` } };
+    // Emit the DB conversation ID so the frontend can track it
+    yield {
+      event: 'conversation:id' as SSEEvent['event'],
+      data: { conversationId: dbConvId, timestamp: Date.now() },
+    };
+
+    // ── Step 2: Load prior messages for conversation context ──
+    const historyMessages: BaseMessage[] = [];
+    if (conversationId) {
+      const conv = await this.getConversation(tenantId, userId, conversationId);
+      if (conv?.messages) {
+        // Exclude the user message we just saved (last message) to avoid duplication
+        const priorMessages = conv.messages.slice(0, -1);
+        for (const m of priorMessages) {
+          if (m.role === 'user') {
+            historyMessages.push(new HumanMessage(m.content));
+          } else if (m.role === 'assistant') {
+            historyMessages.push(new AIMessage(m.content));
+          }
+        }
+      }
+    }
+
+    // ── Step 3: Resolve data scope & build graph with scoped adapter ──
+    const scope = await this.dataScopeService.resolveScope(tenantId, userId, role);
+    const scopedDb = this.buildScopedAdapter(scope);
+    const { graph } = await buildCopilotGraph(scopedDb, tenantId, userContext, { userId });
+
+    const threadId = dbConvId; // Use DB conversation ID as LangGraph thread_id
+    const config = { configurable: { thread_id: threadId } };
 
     const stream = graph.streamEvents(
       {
         tenantId,
         userId,
-        messages: [new HumanMessage(message)],
+        messages: [...historyMessages, new HumanMessage(message)],
         metadata: {},
         userRole: role,
         userName: userContext?.name ?? '',
@@ -49,10 +192,28 @@ export class CopilotService implements CopilotDbAdapter {
       { ...config, version: 'v2' },
     );
 
-    yield* streamGraphToSSE(stream, {
+    // ── Step 4: Stream SSE events and collect assistant response ──
+    let assistantContent = '';
+
+    for await (const sseEvent of streamGraphToSSE(stream, {
       graphName: 'copilot-graph',
-      runId: config.configurable.thread_id,
-    });
+      runId: threadId,
+    })) {
+      // Collect assistant text chunks for persistence
+      if (sseEvent.event === 'message:chunk' && sseEvent.data.content) {
+        assistantContent += sseEvent.data.content as string;
+      }
+      yield sseEvent;
+    }
+
+    // ── Step 5: Save assistant response to DB ──
+    if (assistantContent) {
+      try {
+        await this.saveMessage(tenantId, userId, dbConvId, 'assistant', assistantContent);
+      } catch (err) {
+        this.logger.error('Failed to save assistant message', err);
+      }
+    }
   }
 
   // ─── Conversation Persistence (Task 5) ─────────────────────
@@ -161,6 +322,7 @@ export class CopilotService implements CopilotDbAdapter {
       minSalary?: number;
       maxSalary?: number;
       search?: string;
+      managerId?: string;
       limit?: number;
     },
   ): Promise<unknown[]> {
@@ -168,6 +330,7 @@ export class CopilotService implements CopilotDbAdapter {
     if (filters.department) where.department = filters.department;
     if (filters.level) where.level = filters.level;
     if (filters.location) where.location = filters.location;
+    if (filters.managerId) where.managerId = filters.managerId;
     if (filters.minSalary || filters.maxSalary) {
       where.baseSalary = {};
       if (filters.minSalary) where.baseSalary.gte = filters.minSalary;
@@ -197,6 +360,22 @@ export class CopilotService implements CopilotDbAdapter {
           totalComp: true,
           currency: true,
           hireDate: true,
+          managerId: true,
+          gender: true,
+          jobFamily: true,
+          performanceRating: true,
+          compaRatio: true,
+          terminationDate: true,
+          isPeopleManager: true,
+          metadata: true,
+          manager: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              employeeCode: true,
+            },
+          },
         },
       }),
     );
@@ -361,6 +540,112 @@ export class CopilotService implements CopilotDbAdapter {
             _avg: { baseSalary: true },
             _count: true,
           });
+        }
+        case 'comp_ratio': {
+          // Fetch employees with salary data
+          const employees = await tx.employee.findMany({
+            where: baseWhere,
+            select: {
+              id: true,
+              baseSalary: true,
+              department: true,
+              level: true,
+              location: true,
+              jobFamily: true,
+              currency: true,
+            },
+          });
+
+          if (employees.length === 0) {
+            return { avgCompaRatio: null, count: 0, byGroup: [] };
+          }
+
+          // Fetch all relevant salary bands
+          const bands = await tx.salaryBand.findMany({
+            where: { tenantId },
+            select: {
+              jobFamily: true,
+              level: true,
+              location: true,
+              currency: true,
+              p50: true,
+            },
+          });
+
+          // Calculate compa-ratio for each employee
+          const employeesWithCompaRatio = employees
+            .map((emp) => {
+              // Find matching salary band
+              const band = bands.find(
+                (b) =>
+                  (b.jobFamily === emp.jobFamily || !b.jobFamily) &&
+                  (b.level === emp.level || !b.level) &&
+                  (b.location === emp.location || !b.location) &&
+                  b.currency === emp.currency,
+              );
+
+              if (!band || !band.p50 || Number(band.p50) === 0) {
+                return null; // Skip employees without matching bands
+              }
+
+              const compaRatio = Number(emp.baseSalary) / Number(band.p50);
+              return {
+                ...emp,
+                compaRatio,
+                bandP50: Number(band.p50),
+              };
+            })
+            .filter((e) => e !== null);
+
+          if (employeesWithCompaRatio.length === 0) {
+            return {
+              avgCompaRatio: null,
+              count: 0,
+              message: 'No employees matched to salary bands',
+            };
+          }
+
+          // Calculate overall average
+          const totalCompaRatio = employeesWithCompaRatio.reduce((sum, e) => sum + e.compaRatio, 0);
+          const avgCompaRatio = totalCompaRatio / employeesWithCompaRatio.length;
+
+          // Group by if requested
+          if (filters.groupBy) {
+            const groupField = filters.groupBy as 'department' | 'level' | 'location';
+            if (['department', 'level', 'location'].includes(groupField)) {
+              const grouped = new Map<string, { sum: number; count: number }>();
+
+              for (const emp of employeesWithCompaRatio) {
+                const key = emp[groupField] || 'Unknown';
+                const existing = grouped.get(key) || { sum: 0, count: 0 };
+                grouped.set(key, {
+                  sum: existing.sum + emp.compaRatio,
+                  count: existing.count + 1,
+                });
+              }
+
+              const byGroup = Array.from(grouped.entries()).map(([key, value]) => ({
+                [groupField]: key,
+                avgCompaRatio: Math.round((value.sum / value.count) * 10000) / 10000,
+                count: value.count,
+              }));
+
+              return {
+                overall: {
+                  avgCompaRatio: Math.round(avgCompaRatio * 10000) / 10000,
+                  count: employeesWithCompaRatio.length,
+                },
+                byGroup,
+              };
+            }
+          }
+
+          return {
+            avgCompaRatio: Math.round(avgCompaRatio * 10000) / 10000,
+            count: employeesWithCompaRatio.length,
+            totalEmployees: employees.length,
+            matchedToBands: employeesWithCompaRatio.length,
+          };
         }
         default:
           return { error: `Unknown metric: ${filters.metric}` };
@@ -555,6 +840,147 @@ export class CopilotService implements CopilotDbAdapter {
     });
   }
 
+  // ─── Performance Analytics (Copilot Charts) ────────────────
+
+  async queryPerformanceAnalytics(
+    tenantId: string,
+    filters: {
+      metric: string;
+      department?: string;
+      groupBy?: string;
+    },
+  ): Promise<unknown> {
+    const baseWhere: Prisma.EmployeeWhereInput = {
+      tenantId,
+      performanceRating: { not: null },
+    };
+    if (filters.department) baseWhere.department = filters.department;
+
+    return this.db.forTenant(tenantId, async (tx) => {
+      switch (filters.metric) {
+        case 'rating_distribution': {
+          const employees = await tx.employee.findMany({
+            where: baseWhere,
+            select: { performanceRating: true },
+          });
+          const buckets = new Map<string, number>();
+          for (const emp of employees) {
+            const rating = Number(emp.performanceRating);
+            const key = rating.toFixed(1);
+            buckets.set(key, (buckets.get(key) ?? 0) + 1);
+          }
+          const chartData = Array.from(buckets.entries())
+            .map(([rating, count]) => ({ rating, count }))
+            .sort((a, b) => Number(a.rating) - Number(b.rating));
+          return {
+            chartType: 'bar',
+            title: 'Performance Rating Distribution',
+            xKey: 'rating',
+            yKeys: ['count'],
+            data: chartData,
+          };
+        }
+
+        case 'avg_rating_by_department': {
+          const grouped = await tx.employee.groupBy({
+            by: ['department'],
+            where: baseWhere,
+            _avg: { performanceRating: true },
+            _count: true,
+          });
+          const chartData = grouped
+            .map((g) => ({
+              department: g.department,
+              avgRating: g._avg.performanceRating
+                ? Math.round(Number(g._avg.performanceRating) * 100) / 100
+                : 0,
+              count: g._count,
+            }))
+            .sort((a, b) => b.avgRating - a.avgRating);
+          return {
+            chartType: 'bar',
+            title: 'Average Performance Rating by Department',
+            xKey: 'department',
+            yKeys: ['avgRating'],
+            data: chartData,
+          };
+        }
+
+        case 'avg_rating_by_level': {
+          const grouped = await tx.employee.groupBy({
+            by: ['level'],
+            where: baseWhere,
+            _avg: { performanceRating: true },
+            _count: true,
+          });
+          const chartData = grouped
+            .map((g) => ({
+              level: g.level,
+              avgRating: g._avg.performanceRating
+                ? Math.round(Number(g._avg.performanceRating) * 100) / 100
+                : 0,
+              count: g._count,
+            }))
+            .sort((a, b) => b.avgRating - a.avgRating);
+          return {
+            chartType: 'bar',
+            title: 'Average Performance Rating by Level',
+            xKey: 'level',
+            yKeys: ['avgRating'],
+            data: chartData,
+          };
+        }
+
+        case 'performance_vs_salary': {
+          const employees = await tx.employee.findMany({
+            where: baseWhere,
+            select: {
+              performanceRating: true,
+              baseSalary: true,
+              department: true,
+              level: true,
+            },
+            take: 500,
+          });
+          const chartData = employees.map((emp) => ({
+            rating: Number(emp.performanceRating),
+            salary: Number(emp.baseSalary),
+            department: emp.department,
+            level: emp.level,
+          }));
+          return {
+            chartType: 'bar',
+            title: 'Performance Rating vs Base Salary',
+            xKey: 'rating',
+            yKeys: ['salary'],
+            data: chartData,
+          };
+        }
+
+        case 'rating_summary': {
+          const result = await tx.employee.aggregate({
+            where: baseWhere,
+            _avg: { performanceRating: true },
+            _min: { performanceRating: true },
+            _max: { performanceRating: true },
+            _count: true,
+          });
+          return {
+            avgRating: result._avg.performanceRating
+              ? Math.round(Number(result._avg.performanceRating) * 100) / 100
+              : null,
+            minRating: result._min.performanceRating ? Number(result._min.performanceRating) : null,
+            maxRating: result._max.performanceRating ? Number(result._max.performanceRating) : null,
+            totalEmployees: result._count,
+          };
+        }
+
+        default:
+          return { error: `Unknown performance metric: ${filters.metric}` };
+      }
+    });
+  }
+
   // ─── Action Tools (Task 4) ───────────────────────────────
 
   async approveRecommendation(
@@ -740,5 +1166,94 @@ export class CopilotService implements CopilotDbAdapter {
         },
       };
     });
+  }
+
+  // ─── Data Scope Adapter ─────────────────────────────────
+
+  /**
+   * Build a scoped CopilotDbAdapter that wraps `this` but applies
+   * data-scope filtering to employee queries. This is request-safe
+   * because each streamChat invocation gets its own closure.
+   */
+  private buildScopedAdapter(scope: DataScope): CopilotDbAdapter {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const self = this;
+    return {
+      // Delegate all non-employee methods to `this`
+      queryCompensation: self.queryCompensation.bind(self),
+      queryRules: self.queryRules.bind(self),
+      queryCycles: self.queryCycles.bind(self),
+      queryPayroll: self.queryPayroll.bind(self),
+      queryAnalytics: self.queryAnalytics.bind(self),
+      queryBenefits: self.queryBenefits.bind(self),
+      queryEquity: self.queryEquity.bind(self),
+      querySalaryBands: self.querySalaryBands.bind(self),
+      queryNotifications: self.queryNotifications.bind(self),
+      queryTeam: self.queryTeam.bind(self),
+      queryPerformanceAnalytics: self.queryPerformanceAnalytics.bind(self),
+      approveRecommendation: self.approveRecommendation.bind(self),
+      rejectRecommendation: self.rejectRecommendation.bind(self),
+      requestLetter: self.requestLetter.bind(self),
+      get ruleManagement() {
+        return self.ruleManagement;
+      },
+
+      // Override queryEmployees with scope filter
+      async queryEmployees(tenantId, filters) {
+        const where: Prisma.EmployeeWhereInput = { ...scope.employeeFilter };
+        if (filters.department) where.department = filters.department;
+        if (filters.level) where.level = filters.level;
+        if (filters.location) where.location = filters.location;
+        if (filters.managerId) where.managerId = filters.managerId;
+        if (filters.minSalary || filters.maxSalary) {
+          where.baseSalary = {};
+          if (filters.minSalary) where.baseSalary.gte = filters.minSalary;
+          if (filters.maxSalary) where.baseSalary.lte = filters.maxSalary;
+        }
+        if (filters.search) {
+          where.OR = [
+            { firstName: { contains: filters.search, mode: 'insensitive' } },
+            { lastName: { contains: filters.search, mode: 'insensitive' } },
+            { employeeCode: { contains: filters.search, mode: 'insensitive' } },
+          ];
+        }
+
+        return self.db.forTenant(tenantId, (tx) =>
+          tx.employee.findMany({
+            where,
+            take: filters.limit ?? 50,
+            select: {
+              id: true,
+              employeeCode: true,
+              firstName: true,
+              lastName: true,
+              department: true,
+              level: true,
+              location: true,
+              baseSalary: true,
+              totalComp: true,
+              currency: true,
+              hireDate: true,
+              managerId: true,
+              gender: true,
+              jobFamily: true,
+              performanceRating: true,
+              compaRatio: true,
+              terminationDate: true,
+              isPeopleManager: true,
+              metadata: true,
+              manager: {
+                select: {
+                  id: true,
+                  firstName: true,
+                  lastName: true,
+                  employeeCode: true,
+                },
+              },
+            },
+          }),
+        );
+      },
+    };
   }
 }

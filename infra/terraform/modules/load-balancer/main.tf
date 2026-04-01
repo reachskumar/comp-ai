@@ -3,18 +3,71 @@ resource "google_compute_global_address" "main" {
   name = "${var.name_prefix}-lb-ip"
 }
 
-# ─── Managed SSL Certificate ────────────────────────────────
-resource "google_compute_managed_ssl_certificate" "main" {
-  name = "${var.name_prefix}-ssl"
+# ─── Certificate Manager (wildcard SSL via DNS authorization) ─
 
-  managed {
-    domains = [var.domain_name]
-  }
+# DNS Authorization — proves domain ownership via a CNAME record
+resource "google_certificate_manager_dns_authorization" "main" {
+  name        = "${var.name_prefix}-dns-auth"
+  domain      = var.domain_name
+  description = "DNS authorization for ${var.domain_name} wildcard certificate"
+
+  provider = google-beta
 }
 
-# NOTE: Wildcard SSL certificates are not supported by Google-managed SSL certs.
-# For tenant subdomains (*.compportiq.ai), use Certificate Manager with DNS authorization instead.
-# This is a follow-up task — for now, only the root domain is covered.
+# Auto-create the ACME challenge CNAME in Cloud DNS
+resource "google_dns_record_set" "cert_validation" {
+  name         = google_certificate_manager_dns_authorization.main.dns_resource_record[0].name
+  managed_zone = var.dns_zone_name
+  type         = google_certificate_manager_dns_authorization.main.dns_resource_record[0].type
+  ttl          = 300
+  rrdatas      = [google_certificate_manager_dns_authorization.main.dns_resource_record[0].data]
+}
+
+# Certificate covering root + wildcard
+resource "google_certificate_manager_certificate" "main" {
+  name        = "${var.name_prefix}-wildcard-cert"
+  description = "Wildcard certificate for ${var.domain_name}"
+
+  managed {
+    domains = [
+      var.domain_name,
+      "*.${var.domain_name}",
+    ]
+    dns_authorizations = [
+      google_certificate_manager_dns_authorization.main.id,
+    ]
+  }
+
+  provider = google-beta
+}
+
+# Certificate Map — container for cert map entries
+resource "google_certificate_manager_certificate_map" "main" {
+  name        = "${var.name_prefix}-cert-map"
+  description = "Certificate map for ${var.domain_name}"
+
+  provider = google-beta
+}
+
+# Map entry: root domain
+resource "google_certificate_manager_certificate_map_entry" "root" {
+  name         = "${var.name_prefix}-root-entry"
+  map          = google_certificate_manager_certificate_map.main.name
+  hostname     = var.domain_name
+  certificates = [google_certificate_manager_certificate.main.id]
+
+  provider = google-beta
+}
+
+# Map entry: wildcard
+resource "google_certificate_manager_certificate_map_entry" "wildcard" {
+  name         = "${var.name_prefix}-wildcard-entry"
+  map          = google_certificate_manager_certificate_map.main.name
+  hostname     = "*.${var.domain_name}"
+  certificates = [google_certificate_manager_certificate.main.id]
+
+  provider = google-beta
+}
 
 # ─── Serverless NEGs (Cloud Run backends) ────────────────────
 resource "google_compute_region_network_endpoint_group" "api" {
@@ -92,9 +145,11 @@ resource "google_compute_url_map" "main" {
 
 # ─── HTTPS Target Proxy ─────────────────────────────────────
 resource "google_compute_target_https_proxy" "main" {
-  name             = "${var.name_prefix}-https-proxy"
-  url_map          = google_compute_url_map.main.id
-  ssl_certificates = [google_compute_managed_ssl_certificate.main.id]
+  name            = "${var.name_prefix}-https-proxy"
+  url_map         = google_compute_url_map.main.id
+  certificate_map = "//certificatemanager.googleapis.com/${google_certificate_manager_certificate_map.main.id}"
+
+  provider = google-beta
 }
 
 # ─── HTTPS Forwarding Rule ──────────────────────────────────

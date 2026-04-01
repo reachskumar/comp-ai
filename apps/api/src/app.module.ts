@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { AuditInterceptor } from './common/interceptors/audit.interceptor';
 import { CsrfGuard } from './common/guards/csrf.guard';
 import { LoggerModule } from 'nestjs-pino';
 import { randomUUID } from 'crypto';
@@ -38,6 +39,7 @@ import { EmployeePortalModule } from './modules/employee-portal';
 import { JobArchitectureModule } from './modules/job-architecture';
 import { CsrfModule } from './csrf';
 import { PlatformAdminModule } from './modules/platform-admin';
+import { NudgeModule } from './modules/nudges';
 
 const isProduction = process.env['NODE_ENV'] === 'production';
 
@@ -124,6 +126,7 @@ const isProduction = process.env['NODE_ENV'] === 'production';
     JobArchitectureModule,
     CsrfModule,
     PlatformAdminModule,
+    NudgeModule,
   ],
   providers: [
     {
@@ -135,6 +138,10 @@ const isProduction = process.env['NODE_ENV'] === 'production';
       useClass: CsrfGuard,
     },
     ShutdownService,
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: AuditInterceptor,
+    },
   ],
 })
 export class AppModule {}

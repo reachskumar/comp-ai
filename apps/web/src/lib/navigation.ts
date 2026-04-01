@@ -63,6 +63,8 @@ export interface NavGroup {
   items: NavItem[];
   /** Visual label shown next to the group title */
   badge?: string;
+  /** Feature key for gating — if set, group only shows when this feature is enabled for the tenant */
+  featureKey?: string;
 }
 
 export const mainNavItems: NavItem[] = [
@@ -77,6 +79,7 @@ export const navGroups: NavGroup[] = [
     title: 'AI Features',
     icon: Sparkles,
     badge: 'AI',
+    featureKey: 'ai_features',
     items: [
       { title: 'Rules Copilot', href: '/dashboard/rules/rule-sets', icon: Cpu },
       { title: 'Simulator', href: '/dashboard/rules/simulator', icon: FlaskConical },
@@ -96,14 +99,17 @@ export const navGroups: NavGroup[] = [
   {
     title: 'Data Hygiene',
     icon: Database,
+    featureKey: 'data_hygiene',
     items: [
       { title: 'Import Files', href: '/dashboard/data-hygiene/import', icon: Upload },
       { title: 'Import History', href: '/dashboard/data-hygiene/history', icon: History },
+      { title: 'Data Explorer', href: '/dashboard/data/explorer', icon: DatabaseBackup },
     ],
   },
   {
     title: 'Comp Cycles',
     icon: RefreshCw,
+    featureKey: 'comp_cycles',
     items: [
       { title: 'Active Cycles', href: '/dashboard/comp-cycles/active', icon: ListChecks },
       { title: 'Recommendations', href: '/dashboard/comp-cycles/recommendations', icon: BarChart3 },
@@ -115,6 +121,7 @@ export const navGroups: NavGroup[] = [
   {
     title: 'Payroll Guard',
     icon: Shield,
+    featureKey: 'payroll_guard',
     items: [
       { title: 'Payroll Runs', href: '/dashboard/payroll/runs', icon: Play },
       { title: 'Anomalies', href: '/dashboard/payroll/anomalies', icon: AlertTriangle },
@@ -125,6 +132,7 @@ export const navGroups: NavGroup[] = [
   {
     title: 'Benefits',
     icon: Heart,
+    featureKey: 'benefits',
     items: [
       { title: 'Health & Insurance', href: '/dashboard/benefits/health', icon: HeartPulse },
       { title: 'Retirement Plans', href: '/dashboard/benefits/retirement', icon: Landmark },
@@ -139,18 +147,21 @@ export const navGroups: NavGroup[] = [
   {
     title: 'Organization',
     icon: Network,
+    featureKey: 'organization',
     items: [{ title: 'Job Architecture', href: '/dashboard/job-architecture', icon: Layers }],
   },
   // ── Equity ─────────────────────────────────────────────
   {
     title: 'Equity Plans',
     icon: Briefcase,
+    featureKey: 'equity_plans',
     items: [{ title: 'Overview', href: '/dashboard/equity', icon: PieChart }],
   },
   // ── Analytics ────────────────────────────────────────────
   {
     title: 'Analytics',
     icon: PieChart,
+    featureKey: 'analytics',
     items: [
       { title: 'Total Rewards', href: '/dashboard/analytics/total-rewards', icon: BarChart3 },
       { title: 'Simulations', href: '/dashboard/analytics/simulations', icon: Zap },
@@ -161,6 +172,7 @@ export const navGroups: NavGroup[] = [
   {
     title: 'Integrations',
     icon: Plug,
+    featureKey: 'integrations',
     items: [
       { title: 'Connected Apps', href: '/dashboard/integrations/apps', icon: AppWindow },
       { title: 'Sync Status', href: '/dashboard/integrations/sync', icon: RefreshCcw },
@@ -180,6 +192,7 @@ export const platformAdminGroup: NavGroup = {
   items: [
     { title: 'Customers', href: '/dashboard/admin/customers', icon: Building2 },
     { title: 'Onboarding', href: '/dashboard/admin/onboarding', icon: Upload },
+    { title: 'Data Explorer', href: '/dashboard/admin/data-explorer', icon: DatabaseBackup },
     { title: 'Platform Stats', href: '/dashboard/admin/stats', icon: PieChart },
   ],
 };

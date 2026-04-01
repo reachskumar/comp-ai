@@ -12,11 +12,10 @@ import {
   Request,
   Logger,
   NotFoundException,
-  ForbiddenException,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth';
-import { TenantGuard } from '../../common';
+import { TenantGuard, PermissionGuard, RequirePermission } from '../../common';
 import { TotalRewardsService } from './total-rewards.service';
 import { PayEquityService } from './pay-equity.service';
 import { SimulationService } from './simulation.service';
@@ -40,7 +39,7 @@ interface AuthRequest {
 
 @ApiTags('analytics')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
 @Controller('analytics')
 export class AnalyticsController {
   private readonly logger = new Logger(AnalyticsController.name);
@@ -59,7 +58,7 @@ export class AnalyticsController {
   @ApiOperation({ summary: 'Get HR dashboard stats: headcount, salary distribution, etc.' })
   async getHrDashboard(@Request() req: AuthRequest) {
     this.logger.log(`HR Dashboard request: user=${req.user.userId}`);
-    return this.hrDashboardService.getDashboard(req.user.tenantId);
+    return this.hrDashboardService.getDashboard(req.user.tenantId, req.user.userId, req.user.role);
   }
 
   @Get('total-rewards')
@@ -137,7 +136,12 @@ export class AnalyticsController {
   @ApiOperation({ summary: 'Run a compensation simulation from a natural language prompt' })
   async runSimulation(@Body() dto: RunSimulationDto, @Request() req: AuthRequest) {
     this.logger.log(`Simulation: user=${req.user.userId} prompt="${dto.prompt.slice(0, 80)}"`);
-    return this.simulationService.runSimulation(req.user.tenantId, req.user.userId, dto.prompt);
+    return this.simulationService.runSimulation(
+      req.user.tenantId,
+      req.user.userId,
+      dto.prompt,
+      req.user.role,
+    );
   }
 
   @Post('simulate/stream')
@@ -167,6 +171,7 @@ export class AnalyticsController {
         req.user.tenantId,
         req.user.userId,
         dto.prompt,
+        req.user.role,
       )) {
         reply.raw.write(formatSSE(event));
       }
@@ -195,6 +200,7 @@ export class AnalyticsController {
       req.user.userId,
       dto.promptA,
       dto.promptB,
+      req.user.role,
     );
   }
 
@@ -207,15 +213,11 @@ export class AnalyticsController {
   /* ─── EDGE Pay Equity Endpoints ──────────────────────────── */
 
   @Post('pay-equity/edge/analyze')
+  @RequirePermission('Analytics/Reports', 'insert')
   @ApiOperation({
     summary: 'Run EDGE-compliant pay equity analysis (Standard or Customized)',
   })
   async runEdgeAnalysis(@Body() dto: RunEdgeAnalysisDto, @Request() req: AuthRequest) {
-    const allowedRoles = ['ADMIN', 'HR_MANAGER', 'ANALYST', 'PLATFORM_ADMIN'];
-    if (!allowedRoles.includes(req.user.role)) {
-      throw new ForbiddenException('Only ADMIN, HR_MANAGER, or ANALYST can run EDGE analyses');
-    }
-
     this.logger.log(
       `EDGE analysis: user=${req.user.userId} type=${dto.analysisType} name="${dto.name}"`,
     );
@@ -299,17 +301,13 @@ export class AnalyticsController {
   }
 
   @Post('pay-equity/edge/analyze/stream')
+  @RequirePermission('Analytics/Reports', 'insert')
   @ApiOperation({ summary: 'Run EDGE analysis with real-time SSE progress streaming' })
   async runEdgeAnalysisStream(
     @Body() dto: RunEdgeAnalysisDto,
     @Request() req: AuthRequest,
     @Res() reply: FastifyReply,
   ) {
-    const allowedRoles = ['ADMIN', 'HR_MANAGER', 'ANALYST', 'PLATFORM_ADMIN'];
-    if (!allowedRoles.includes(req.user.role)) {
-      throw new ForbiddenException('Only ADMIN, HR_MANAGER, or ANALYST can run EDGE analyses');
-    }
-
     const edgeOrigin = reply.request.headers.origin;
     void reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -435,16 +433,13 @@ export class AnalyticsController {
   }
 
   @Get('pay-equity/edge/reports')
+  @RequirePermission('Analytics/Reports', 'view')
   @ApiOperation({ summary: 'List EDGE pay equity reports for the current tenant' })
   async listEdgeReports(
     @Query('limit') limit: string | undefined,
     @Query('offset') offset: string | undefined,
     @Request() req: AuthRequest,
   ) {
-    const allowedRoles = ['ADMIN', 'HR_MANAGER', 'ANALYST', 'PLATFORM_ADMIN'];
-    if (!allowedRoles.includes(req.user.role)) {
-      throw new ForbiddenException('Only ADMIN, HR_MANAGER, or ANALYST can view EDGE reports');
-    }
     return this.edgeService.listReports(req.user.tenantId, {
       limit: limit ? parseInt(limit, 10) : undefined,
       offset: offset ? parseInt(offset, 10) : undefined,
@@ -452,40 +447,31 @@ export class AnalyticsController {
   }
 
   @Get('pay-equity/edge/reports/:id')
+  @RequirePermission('Analytics/Reports', 'view')
   @ApiOperation({ summary: 'Get a single EDGE pay equity report with dimension breakdowns' })
   async getEdgeReport(@Param('id') id: string, @Request() req: AuthRequest) {
-    const allowedRoles = ['ADMIN', 'HR_MANAGER', 'ANALYST', 'PLATFORM_ADMIN'];
-    if (!allowedRoles.includes(req.user.role)) {
-      throw new ForbiddenException('Only ADMIN, HR_MANAGER, or ANALYST can view EDGE reports');
-    }
     const report = await this.edgeService.getReport(req.user.tenantId, id);
     if (!report) throw new NotFoundException(`EDGE report ${id} not found`);
     return report;
   }
 
   @Patch('pay-equity/edge/reports/:id')
+  @RequirePermission('Analytics/Reports', 'update')
   @ApiOperation({ summary: 'Rename an EDGE pay equity report' })
   async updateEdgeReport(
     @Param('id') id: string,
     @Body() body: { name: string },
     @Request() req: AuthRequest,
   ) {
-    const allowedRoles = ['ADMIN', 'HR_MANAGER', 'ANALYST', 'PLATFORM_ADMIN'];
-    if (!allowedRoles.includes(req.user.role)) {
-      throw new ForbiddenException('Only ADMIN, HR_MANAGER, or ANALYST can edit EDGE reports');
-    }
     const report = await this.edgeService.updateReport(req.user.tenantId, id, { name: body.name });
     if (!report) throw new NotFoundException(`EDGE report ${id} not found`);
     return report;
   }
 
   @Delete('pay-equity/edge/reports/:id')
+  @RequirePermission('Analytics/Reports', 'delete')
   @ApiOperation({ summary: 'Delete an EDGE pay equity report and its dimension breakdowns' })
   async deleteEdgeReport(@Param('id') id: string, @Request() req: AuthRequest) {
-    const allowedRoles = ['ADMIN', 'HR_MANAGER', 'ANALYST', 'PLATFORM_ADMIN'];
-    if (!allowedRoles.includes(req.user.role)) {
-      throw new ForbiddenException('Only ADMIN, HR_MANAGER, or ANALYST can delete EDGE reports');
-    }
     const deleted = await this.edgeService.deleteReport(req.user.tenantId, id);
     if (!deleted) throw new NotFoundException(`EDGE report ${id} not found`);
     return { success: true };

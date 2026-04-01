@@ -9,6 +9,10 @@
 import { z } from 'zod';
 import { createDomainTool } from '../tools.js';
 import type { StructuredToolInterface } from '@langchain/core/tools';
+import {
+  createRuleManagementTools,
+  type RuleManagementDbAdapter,
+} from './rule-management-tools.js';
 
 /**
  * Database query interface — injected at tool creation time.
@@ -155,6 +159,19 @@ export interface CopilotDbAdapter {
       effectiveDate?: string;
     },
   ): Promise<unknown>;
+
+  queryPerformanceAnalytics(
+    tenantId: string,
+    filters: {
+      metric: string;
+      department?: string;
+      groupBy?: string;
+    },
+  ): Promise<unknown>;
+
+  // ─── Optional Rule Management Adapter ──────────────────────
+  /** If provided, rule management tools will be added to the copilot. */
+  ruleManagement?: RuleManagementDbAdapter;
 }
 
 /** Roles allowed to execute write actions through the copilot. */
@@ -180,7 +197,7 @@ export function createCopilotTools(
   const queryEmployees = createDomainTool({
     name: 'query_employees',
     description:
-      'Search and filter employees by department, level, location, or salary range. Returns employee records with name, department, level, location, and salary.',
+      'Search and filter employees by department, level, location, salary range, or manager. Returns employee records with name, department, level, location, salary, and manager details.',
     schema: z.object({
       department: z.string().optional().describe('Filter by department name'),
       level: z.string().optional().describe('Filter by job level'),
@@ -188,6 +205,7 @@ export function createCopilotTools(
       minSalary: z.number().optional().describe('Minimum base salary'),
       maxSalary: z.number().optional().describe('Maximum base salary'),
       search: z.string().optional().describe('Search by name or employee code'),
+      managerId: z.string().optional().describe('Filter by manager ID to find direct reports'),
       limit: z.number().optional().default(50).describe('Max results to return'),
     }),
     func: async (input) => db.queryEmployees(tenantId, input),
@@ -356,6 +374,25 @@ export function createCopilotTools(
     func: async (input) => db.queryTeam(tenantId, input),
   });
 
+  const queryPerformanceAnalytics = createDomainTool({
+    name: 'query_performance_analytics',
+    description:
+      'Get performance analytics data for visualization. Returns structured chart-ready data for performance rating distribution, average rating by department/level, performance vs salary correlation, and rating trends. Use this when the user asks about performance data, ratings, or wants to see performance charts.',
+    schema: z.object({
+      metric: z
+        .string()
+        .describe(
+          'The performance metric to compute: "rating_distribution" (count of employees per rating), "avg_rating_by_department" (average performance rating grouped by department), "avg_rating_by_level" (average rating grouped by level), "performance_vs_salary" (scatter data: rating vs base salary), "rating_summary" (overall stats: avg, min, max, count)',
+        ),
+      department: z.string().optional().describe('Filter to a specific department'),
+      groupBy: z
+        .string()
+        .optional()
+        .describe('Additional grouping: "department", "level", "location"'),
+    }),
+    func: async (input) => db.queryPerformanceAnalytics(tenantId, input),
+  });
+
   // ─── Action Tools (require userId) ────────────────────────
 
   const approveRecommendation = createDomainTool({
@@ -423,7 +460,7 @@ export function createCopilotTools(
     },
   });
 
-  return [
+  const tools: StructuredToolInterface[] = [
     queryEmployees,
     queryCompensation,
     queryRules,
@@ -435,8 +472,17 @@ export function createCopilotTools(
     querySalaryBands,
     queryNotifications,
     queryTeam,
+    queryPerformanceAnalytics,
     approveRecommendation,
     rejectRecommendation,
     requestLetter,
-  ] as StructuredToolInterface[];
+  ];
+
+  // Optionally add rule management tools (Task 4: Copilot Rule Management)
+  if (db.ruleManagement) {
+    const ruleTools = createRuleManagementTools(tenantId, db.ruleManagement, userId, userRole);
+    tools.push(...ruleTools);
+  }
+
+  return tools;
 }

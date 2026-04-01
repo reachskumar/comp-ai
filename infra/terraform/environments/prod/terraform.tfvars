@@ -4,8 +4,7 @@ environment = "prod"
 gcp_project = "compportiq"
 gcp_region  = "asia-south1"
 gcp_zone    = "asia-south1-a"
-# domain_name = "compportiq.ai"  # Uncomment when domain is ready
-domain_name = ""
+domain_name = "compportiq.ai"
 
 # ─── Cloud SQL ────────────────────────────────────────────────
 cloudsql_tier      = "db-custom-2-8192"

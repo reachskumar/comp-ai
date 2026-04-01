@@ -25,6 +25,15 @@ export class PlatformAdminController {
 
   constructor(private readonly service: PlatformAdminService) {}
 
+  // ─── Compport Tenant Discovery ───────────────────────────
+  // NOTE: Must be above tenants/:id to avoid route parameter capture
+
+  @Get('compport-tenants')
+  @ApiOperation({ summary: 'List available Compport tenants from Cloud SQL' })
+  listCompportTenants() {
+    return this.service.listCompportTenants();
+  }
+
   // ─── Tenant CRUD ──────────────────────────────────────────
 
   @Get('tenants')
@@ -99,11 +108,86 @@ export class PlatformAdminController {
     return this.service.onboardFromCompport(dto);
   }
 
+  // ─── Tenant Overview & Roles ────────────────────────────
+
+  @Get('tenants/:id/overview')
+  @ApiOperation({ summary: 'Full tenant overview: counts, role distribution, sync status' })
+  getTenantOverview(@Param('id') id: string) {
+    return this.service.getTenantOverview(id);
+  }
+
+  @Get('tenants/:id/sync-status')
+  @ApiOperation({ summary: 'Recent sync jobs for a tenant' })
+  getTenantSyncStatus(@Param('id') id: string, @Query('limit') limit?: string) {
+    return this.service.getTenantSyncStatus(id, limit ? parseInt(limit, 10) : 10);
+  }
+
+  @Get('tenants/:id/roles')
+  @ApiOperation({ summary: 'List synced Compport roles with user counts' })
+  getTenantRoles(@Param('id') id: string) {
+    return this.service.getTenantRoles(id);
+  }
+
+  @Get('tenants/:id/permissions')
+  @ApiOperation({ summary: 'Full role→page permission matrix for a tenant' })
+  getTenantPermissions(@Param('id') id: string) {
+    return this.service.getTenantPermissions(id);
+  }
+
   // ─── Stats ───────────────────────────────────────────────
 
   @Get('stats')
   @ApiOperation({ summary: 'Platform-wide statistics' })
   getStats() {
     return this.service.getStats();
+  }
+
+  // ─── Audit Logs ─────────────────────────────────────────
+
+  @Get('audit-logs')
+  @ApiOperation({ summary: 'List audit logs across all tenants (paginated, filterable)' })
+  listAuditLogs(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('tenantId') tenantId?: string,
+    @Query('userId') userId?: string,
+    @Query('action') action?: string,
+    @Query('entityType') entityType?: string,
+    @Query('dateFrom') dateFrom?: string,
+    @Query('dateTo') dateTo?: string,
+  ) {
+    return this.service.listAuditLogs({
+      page: page ? parseInt(page, 10) : undefined,
+      limit: limit ? parseInt(limit, 10) : undefined,
+      tenantId,
+      userId,
+      action,
+      entityType,
+      dateFrom,
+      dateTo,
+    });
+  }
+
+  @Get('tenants/:id/audit-logs')
+  @ApiOperation({ summary: 'List audit logs for a specific tenant' })
+  getTenantAuditLogs(
+    @Param('id') id: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('userId') userId?: string,
+    @Query('action') action?: string,
+    @Query('entityType') entityType?: string,
+    @Query('dateFrom') dateFrom?: string,
+    @Query('dateTo') dateTo?: string,
+  ) {
+    return this.service.getTenantAuditLogs(id, {
+      page: page ? parseInt(page, 10) : undefined,
+      limit: limit ? parseInt(limit, 10) : undefined,
+      userId,
+      action,
+      entityType,
+      dateFrom,
+      dateTo,
+    });
   }
 }

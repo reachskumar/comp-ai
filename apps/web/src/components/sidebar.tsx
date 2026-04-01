@@ -82,24 +82,30 @@ function NavGroupSection({ group, collapsed }: { group: NavGroup; collapsed?: bo
         <div
           role="group"
           aria-label={`${group.title} links`}
-          className="ml-4 mt-1 space-y-0.5 border-l border-sidebar-border pl-3"
+          className="ml-4 mt-1 space-y-0.5 border-l-2 border-sidebar-border pl-3"
         >
-          {group.items.map((item) => (
-            <Link
-              key={item.href}
-              href={item.href}
-              aria-label={item.title}
-              className={cn(
-                'flex items-center gap-3 rounded-lg px-3 py-1.5 text-sm transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
-                pathname === item.href || pathname.startsWith(item.href + '/')
-                  ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium'
-                  : 'text-sidebar-foreground',
-              )}
-            >
-              <item.icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-              {item.title}
-            </Link>
-          ))}
+          {group.items.map((item) => {
+            const itemActive = pathname === item.href || pathname.startsWith(item.href + '/');
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                aria-label={item.title}
+                className={cn(
+                  'flex items-center gap-3 rounded-lg px-3 py-1.5 text-sm transition-all duration-150 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+                  itemActive
+                    ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium'
+                    : 'text-sidebar-foreground/80',
+                )}
+              >
+                <item.icon
+                  className={cn('h-3.5 w-3.5 shrink-0', itemActive && 'text-primary')}
+                  aria-hidden="true"
+                />
+                {item.title}
+              </Link>
+            );
+          })}
         </div>
       </div>
     </div>
@@ -109,7 +115,19 @@ function NavGroupSection({ group, collapsed }: { group: NavGroup; collapsed?: bo
 export function Sidebar({ collapsed = false, onToggleCollapse }: SidebarProps) {
   const pathname = usePathname();
   const user = useAuthStore((s) => s.user);
+  const tenant = useAuthStore((s) => s.tenant);
   const isPlatformAdmin = user?.role === 'PLATFORM_ADMIN';
+
+  // Filter nav groups based on tenant's enabled features
+  // Platform admins always see everything; legacy tenants (no enabledFeatures) also see everything
+  const enabledFeatures = (tenant?.settings as Record<string, unknown> | undefined)
+    ?.enabledFeatures as string[] | undefined;
+  const filteredNavGroups =
+    isPlatformAdmin || !enabledFeatures || enabledFeatures.length === 0
+      ? navGroups
+      : navGroups.filter(
+          (group) => !group.featureKey || enabledFeatures.includes(group.featureKey),
+        );
 
   return (
     <div
@@ -119,10 +137,15 @@ export function Sidebar({ collapsed = false, onToggleCollapse }: SidebarProps) {
       )}
     >
       {/* Logo header */}
-      <div className="flex h-14 items-center border-b px-3">
+      <div
+        className={cn(
+          'flex h-16 items-center border-b border-sidebar-border',
+          collapsed ? 'justify-center px-2' : 'px-4',
+        )}
+      >
         <Link
           href="/dashboard"
-          className="flex items-center gap-2.5 font-semibold text-sidebar-foreground overflow-hidden"
+          className="flex items-center gap-2.5 font-semibold text-foreground overflow-hidden"
           aria-label="Compport home"
         >
           {collapsed ? (
@@ -131,15 +154,15 @@ export function Sidebar({ collapsed = false, onToggleCollapse }: SidebarProps) {
               alt="Compport"
               width={28}
               height={34}
-              className="shrink-0 mx-auto"
+              className="shrink-0"
               priority
             />
           ) : (
             <Image
               src="/compport-logo.svg"
               alt="Compport"
-              width={120}
-              height={32}
+              width={130}
+              height={35}
               className="shrink-0"
               priority
             />
@@ -149,20 +172,24 @@ export function Sidebar({ collapsed = false, onToggleCollapse }: SidebarProps) {
 
       <ScrollArea className={cn('flex-1 py-3', collapsed ? 'px-1.5' : 'px-3')}>
         <nav aria-label="Main navigation" className="space-y-1">
-          {mainNavItems.map((item) =>
-            collapsed ? (
+          {mainNavItems.map((item) => {
+            const active = pathname === item.href;
+            return collapsed ? (
               <Link
                 key={item.href}
                 href={item.href}
                 aria-label={item.title}
                 className={cn(
-                  'flex h-9 w-9 items-center justify-center rounded-lg transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground mx-auto',
-                  pathname === item.href
+                  'flex h-9 w-9 items-center justify-center rounded-lg transition-all duration-150 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground mx-auto',
+                  active
                     ? 'bg-sidebar-accent text-sidebar-accent-foreground'
                     : 'text-sidebar-foreground',
                 )}
               >
-                <item.icon className="h-4 w-4 shrink-0" aria-hidden="true" />
+                <item.icon
+                  className={cn('h-4 w-4 shrink-0', active && 'text-primary')}
+                  aria-hidden="true"
+                />
               </Link>
             ) : (
               <Link
@@ -170,21 +197,24 @@ export function Sidebar({ collapsed = false, onToggleCollapse }: SidebarProps) {
                 href={item.href}
                 aria-label={item.title}
                 className={cn(
-                  'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
-                  pathname === item.href
+                  'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+                  active
                     ? 'bg-sidebar-accent text-sidebar-accent-foreground'
                     : 'text-sidebar-foreground',
                 )}
               >
-                <item.icon className="h-4 w-4 shrink-0" aria-hidden="true" />
+                <item.icon
+                  className={cn('h-4 w-4 shrink-0', active && 'text-primary')}
+                  aria-hidden="true"
+                />
                 {item.title}
               </Link>
-            ),
-          )}
+            );
+          })}
 
           <Separator className="my-3" />
 
-          {navGroups.map((group) => (
+          {filteredNavGroups.map((group) => (
             <NavGroupSection key={group.title} group={group} collapsed={collapsed} />
           ))}
 

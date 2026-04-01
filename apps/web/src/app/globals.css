@@ -1,34 +1,34 @@
-@import "tailwindcss";
+@import 'tailwindcss';
 
 @custom-variant dark (&:is(.dark *));
 
-@theme inline {
-  /* Compport brand colors — primary green #2FA84F */
+@theme {
+  /* Compport brand colors — primary indigo/violet #6366f1 */
   --color-background: hsl(0 0% 100%);
-  --color-foreground: hsl(220 14% 10%);
+  --color-foreground: hsl(224 14% 10%);
   --color-card: hsl(0 0% 100%);
-  --color-card-foreground: hsl(220 14% 10%);
+  --color-card-foreground: hsl(224 14% 10%);
   --color-popover: hsl(0 0% 100%);
-  --color-popover-foreground: hsl(220 14% 10%);
-  --color-primary: hsl(140 57% 42%);
+  --color-popover-foreground: hsl(224 14% 10%);
+  --color-primary: hsl(239 84% 67%);
   --color-primary-foreground: hsl(0 0% 100%);
-  --color-secondary: hsl(140 20% 96%);
-  --color-secondary-foreground: hsl(140 57% 30%);
+  --color-secondary: hsl(240 20% 96%);
+  --color-secondary-foreground: hsl(239 50% 40%);
   --color-muted: hsl(220 14% 96%);
   --color-muted-foreground: hsl(220 9% 46%);
-  --color-accent: hsl(140 60% 95%);
-  --color-accent-foreground: hsl(140 57% 30%);
+  --color-accent: hsl(240 60% 96%);
+  --color-accent-foreground: hsl(239 50% 40%);
   --color-destructive: hsl(0 84% 60%);
   --color-destructive-foreground: hsl(0 0% 100%);
   --color-border: hsl(220 13% 91%);
   --color-input: hsl(220 13% 91%);
-  --color-ring: hsl(140 57% 42%);
-  --color-sidebar: hsl(220 20% 98%);
-  --color-sidebar-foreground: hsl(220 14% 35%);
+  --color-ring: hsl(239 84% 67%);
+  --color-sidebar: hsl(230 25% 98%);
+  --color-sidebar-foreground: hsl(224 14% 35%);
   --color-sidebar-border: hsl(220 13% 91%);
-  --color-sidebar-accent: hsl(140 60% 95%);
-  --color-sidebar-accent-foreground: hsl(140 57% 30%);
-  --color-sidebar-ring: hsl(140 57% 42%);
+  --color-sidebar-accent: hsl(240 60% 96%);
+  --color-sidebar-accent-foreground: hsl(239 84% 55%);
+  --color-sidebar-ring: hsl(239 84% 67%);
   --color-success: hsl(140 57% 42%);
   --color-success-foreground: hsl(0 0% 100%);
   --color-warning: hsl(38 92% 50%);
@@ -42,31 +42,31 @@
 }
 
 .dark {
-  --color-background: hsl(220 16% 6%);
+  --color-background: hsl(224 20% 6%);
   --color-foreground: hsl(0 0% 96%);
-  --color-card: hsl(220 16% 8%);
+  --color-card: hsl(224 20% 8%);
   --color-card-foreground: hsl(0 0% 96%);
-  --color-popover: hsl(220 16% 8%);
+  --color-popover: hsl(224 20% 8%);
   --color-popover-foreground: hsl(0 0% 96%);
-  --color-primary: hsl(140 57% 48%);
+  --color-primary: hsl(239 84% 72%);
   --color-primary-foreground: hsl(0 0% 100%);
-  --color-secondary: hsl(220 14% 14%);
+  --color-secondary: hsl(224 14% 14%);
   --color-secondary-foreground: hsl(0 0% 90%);
-  --color-muted: hsl(220 14% 14%);
+  --color-muted: hsl(224 14% 14%);
   --color-muted-foreground: hsl(220 9% 60%);
-  --color-accent: hsl(140 30% 14%);
-  --color-accent-foreground: hsl(140 57% 70%);
+  --color-accent: hsl(240 30% 16%);
+  --color-accent-foreground: hsl(239 84% 80%);
   --color-destructive: hsl(0 63% 31%);
   --color-destructive-foreground: hsl(0 0% 96%);
-  --color-border: hsl(220 14% 16%);
-  --color-input: hsl(220 14% 16%);
-  --color-ring: hsl(140 57% 48%);
-  --color-sidebar: hsl(220 16% 7%);
+  --color-border: hsl(224 14% 16%);
+  --color-input: hsl(224 14% 16%);
+  --color-ring: hsl(239 84% 72%);
+  --color-sidebar: hsl(224 20% 7%);
   --color-sidebar-foreground: hsl(220 9% 75%);
-  --color-sidebar-border: hsl(220 14% 14%);
-  --color-sidebar-accent: hsl(140 30% 12%);
-  --color-sidebar-accent-foreground: hsl(140 57% 70%);
-  --color-sidebar-ring: hsl(140 57% 48%);
+  --color-sidebar-border: hsl(224 14% 14%);
+  --color-sidebar-accent: hsl(240 30% 14%);
+  --color-sidebar-accent-foreground: hsl(239 84% 80%);
+  --color-sidebar-ring: hsl(239 84% 72%);
   --color-success: hsl(140 57% 48%);
   --color-success-foreground: hsl(0 0% 100%);
   --color-warning: hsl(38 92% 50%);
@@ -81,7 +81,8 @@
   }
   body {
     @apply bg-background text-foreground;
-    font-feature-settings: "rlig" 1, "calt" 1;
+    font-feature-settings:
+      'rlig' 1,
+      'calt' 1;
   }
 }
-

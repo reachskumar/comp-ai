@@ -35,7 +35,19 @@ export interface MarketDataSource {
   id: string;
   tenantId: string;
   name: string;
-  provider: 'MANUAL' | 'SURVEY' | 'API';
+  provider:
+    | 'MANUAL'
+    | 'SURVEY'
+    | 'API'
+    | 'RADFORD'
+    | 'MERCER'
+    | 'WTW'
+    | 'AON'
+    | 'KORN_FERRY'
+    | 'PAYSCALE'
+    | 'SALARY_COM'
+    | 'COMP_ANALYST'
+    | 'CUSTOM';
   config: Record<string, unknown>;
   lastSyncAt: string | null;
   status: 'ACTIVE' | 'INACTIVE' | 'ERROR';
