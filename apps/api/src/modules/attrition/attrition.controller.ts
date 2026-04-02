@@ -1,7 +1,7 @@
 import { Controller, Get, Post, Query, Param, UseGuards, Request, Logger } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth';
-import { TenantGuard } from '../../common';
+import { TenantGuard, PermissionGuard, RequirePermission } from '../../common';
 import { AttritionService } from './attrition.service';
 import { AttritionScoresQueryDto } from './dto';
 
@@ -11,7 +11,8 @@ interface AuthRequest {
 
 @ApiTags('attrition')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
+@RequirePermission('Attrition', 'view')
 @Controller('attrition')
 export class AttritionController {
   private readonly logger = new Logger(AttritionController.name);

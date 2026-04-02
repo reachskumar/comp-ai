@@ -129,11 +129,53 @@ export function resolveModelConfig(config: AIConfig, graphType?: string): ModelC
   };
 }
 
+/** Default timeout in milliseconds (60 seconds) */
+const DEFAULT_TIMEOUT_MS = 60_000;
+
+/** Default number of retries on transient failures */
+const DEFAULT_MAX_RETRIES = 2;
+
+/**
+ * Callback handler that logs token usage after each LLM call.
+ * Helps track cost and detect runaway prompts.
+ */
+function createUsageLoggingCallbacks(graphType?: string) {
+  return [
+    {
+      handleLLMEnd(output: {
+        llmOutput?: {
+          tokenUsage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number };
+        };
+      }) {
+        const usage = output?.llmOutput?.tokenUsage;
+        if (usage) {
+          console.log(
+            `[ai:usage] graph=${graphType ?? 'unknown'} prompt=${usage.promptTokens ?? 0} completion=${usage.completionTokens ?? 0} total=${usage.totalTokens ?? 0}`,
+          );
+        }
+      },
+    },
+  ];
+}
+
 /**
  * Create a ChatOpenAI or AzureChatOpenAI instance based on the AI config.
  * This is the single point of model creation — all graphs should use this.
+ *
+ * Includes:
+ * - 60 second timeout (configurable via AI_TIMEOUT_MS env var)
+ * - 2 retries on transient failures (configurable via AI_MAX_RETRIES env var)
+ * - Token usage logging via callbacks
  */
-export async function createChatModel(aiConfig: AIConfig, modelConfig: ModelConfig) {
+export async function createChatModel(
+  aiConfig: AIConfig,
+  modelConfig: ModelConfig,
+  graphType?: string,
+) {
+  const timeout = parseInt(process.env['AI_TIMEOUT_MS'] ?? '', 10) || DEFAULT_TIMEOUT_MS;
+  const maxRetries = parseInt(process.env['AI_MAX_RETRIES'] ?? '', 10) || DEFAULT_MAX_RETRIES;
+  const callbacks = createUsageLoggingCallbacks(graphType);
+
   if (aiConfig.provider === 'azure' && aiConfig.azure) {
     const { AzureChatOpenAI } = await import('@langchain/openai');
     return new AzureChatOpenAI({
@@ -143,6 +185,9 @@ export async function createChatModel(aiConfig: AIConfig, modelConfig: ModelConf
       azureOpenAIEndpoint: aiConfig.azure.endpoint,
       temperature: modelConfig.temperature,
       maxTokens: modelConfig.maxTokens,
+      timeout,
+      maxRetries,
+      callbacks,
     });
   }
 
@@ -152,5 +197,8 @@ export async function createChatModel(aiConfig: AIConfig, modelConfig: ModelConf
     modelName: modelConfig.model,
     temperature: modelConfig.temperature,
     maxTokens: modelConfig.maxTokens,
+    timeout,
+    maxRetries,
+    callbacks,
   });
 }

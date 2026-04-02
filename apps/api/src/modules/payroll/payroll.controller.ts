@@ -15,7 +15,7 @@ import {
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { FastifyRequest, FastifyReply } from 'fastify';
 import { JwtAuthGuard } from '../../auth';
-import { TenantGuard } from '../../common';
+import { TenantGuard, PermissionGuard, RequirePermission } from '../../common';
 import { ReconciliationService } from './services/reconciliation.service';
 import { AnomalyDetectorService } from './services/anomaly-detector.service';
 import { AnomalyExplainerService } from './services/anomaly-explainer.service';
@@ -30,7 +30,8 @@ interface AuthenticatedRequest extends FastifyRequest {
 
 @ApiTags('payroll')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
+@RequirePermission('Payroll', 'view')
 @Controller('payroll')
 export class PayrollController {
   constructor(
@@ -44,10 +45,7 @@ export class PayrollController {
   @Post()
   @ApiOperation({ summary: 'Create a payroll run and import line items' })
   @HttpCode(HttpStatus.CREATED)
-  async createPayrollRun(
-    @Body() dto: CreatePayrollDto,
-    @Req() req: AuthenticatedRequest,
-  ) {
+  async createPayrollRun(@Body() dto: CreatePayrollDto, @Req() req: AuthenticatedRequest) {
     return this.reconciliation.createPayrollRun(req.user.tenantId, dto);
   }
 
@@ -55,10 +53,7 @@ export class PayrollController {
 
   @Get()
   @ApiOperation({ summary: 'List payroll runs (paginated)' })
-  async listPayrollRuns(
-    @Query() query: PayrollQueryDto,
-    @Req() req: AuthenticatedRequest,
-  ) {
+  async listPayrollRuns(@Query() query: PayrollQueryDto, @Req() req: AuthenticatedRequest) {
     return this.reconciliation.listRuns(req.user.tenantId, query);
   }
 
@@ -67,10 +62,7 @@ export class PayrollController {
   @Post(':id/check')
   @ApiOperation({ summary: 'Run pre-payroll reconciliation check' })
   @HttpCode(HttpStatus.OK)
-  async runCheck(
-    @Param('id') id: string,
-    @Req() req: AuthenticatedRequest,
-  ) {
+  async runCheck(@Param('id') id: string, @Req() req: AuthenticatedRequest) {
     return this.reconciliation.runCheck(id, req.user.tenantId);
   }
 
@@ -78,10 +70,7 @@ export class PayrollController {
 
   @Get(':id/report')
   @ApiOperation({ summary: 'Get reconciliation report for a payroll run' })
-  async getReport(
-    @Param('id') id: string,
-    @Req() req: AuthenticatedRequest,
-  ) {
+  async getReport(@Param('id') id: string, @Req() req: AuthenticatedRequest) {
     return this.reconciliation.getReport(id, req.user.tenantId);
   }
 
@@ -145,11 +134,7 @@ export class PayrollController {
     @Param('anomalyId') anomalyId: string,
     @Req() req: AuthenticatedRequest,
   ) {
-    return this.anomalyExplainer.explainAnomaly(
-      anomalyId,
-      req.user.tenantId,
-      req.user.userId,
-    );
+    return this.anomalyExplainer.explainAnomaly(anomalyId, req.user.tenantId, req.user.userId);
   }
 
   @Get(':id/anomalies/:anomalyId/explanation')
@@ -170,11 +155,7 @@ export class PayrollController {
     @Body() body: { anomalyIds: string[] },
     @Req() req: AuthenticatedRequest,
   ) {
-    return this.anomalyExplainer.explainBatch(
-      body.anomalyIds,
-      req.user.tenantId,
-      req.user.userId,
-    );
+    return this.anomalyExplainer.explainBatch(body.anomalyIds, req.user.tenantId, req.user.userId);
   }
 
   // ─── Legacy: Direct Anomaly Detection ──────────────────────
@@ -182,11 +163,7 @@ export class PayrollController {
   @Post(':runId/detect-anomalies')
   @ApiOperation({ summary: 'Run anomaly detection on a payroll run (legacy)' })
   @HttpCode(HttpStatus.OK)
-  async detectAnomalies(
-    @Param('runId') runId: string,
-    @Req() req: AuthenticatedRequest,
-  ) {
+  async detectAnomalies(@Param('runId') runId: string, @Req() req: AuthenticatedRequest) {
     return this.anomalyDetector.detectAnomalies(runId, req.user.tenantId);
   }
 }
-

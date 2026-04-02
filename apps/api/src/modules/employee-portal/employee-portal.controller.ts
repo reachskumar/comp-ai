@@ -1,7 +1,7 @@
 import { Controller, Get, UseGuards, Request, Logger, NotFoundException } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth';
-import { TenantGuard } from '../../common';
+import { TenantGuard, PermissionGuard, RequirePermission } from '../../common';
 import { EmployeePortalService } from './employee-portal.service';
 
 interface AuthRequest {
@@ -10,7 +10,8 @@ interface AuthRequest {
 
 @ApiTags('employee-portal')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
+@RequirePermission('Employee Portal', 'view')
 @Controller('employee-portal')
 export class EmployeePortalController {
   private readonly logger = new Logger(EmployeePortalController.name);

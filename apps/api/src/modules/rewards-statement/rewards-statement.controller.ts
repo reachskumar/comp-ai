@@ -12,7 +12,7 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth';
-import { TenantGuard } from '../../common';
+import { TenantGuard, PermissionGuard, RequirePermission } from '../../common';
 import { RewardsStatementService } from './rewards-statement.service';
 import { GenerateStatementDto, BulkGenerateDto, StatementQueryDto } from './dto';
 import { FastifyReply } from 'fastify';
@@ -24,7 +24,8 @@ interface AuthRequest {
 
 @ApiTags('rewards-statements')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
+@RequirePermission('Rewards Statement', 'view')
 @Controller('rewards-statements')
 export class RewardsStatementController {
   private readonly logger = new Logger(RewardsStatementController.name);

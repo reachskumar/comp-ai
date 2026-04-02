@@ -13,7 +13,7 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth';
-import { TenantGuard } from '../../common';
+import { TenantGuard, PermissionGuard, RequirePermission } from '../../common';
 import { CycleService } from './cycle.service';
 import { BudgetOptimizerService } from './services/budget-optimizer.service';
 import {
@@ -36,7 +36,8 @@ interface AuthRequest {
 
 @ApiTags('cycles')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
+@RequirePermission('Compensation Cycles', 'view')
 @Controller('cycles')
 export class CycleController {
   constructor(

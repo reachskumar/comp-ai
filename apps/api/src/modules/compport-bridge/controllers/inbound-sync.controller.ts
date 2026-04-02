@@ -14,7 +14,7 @@ import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { JwtAuthGuard } from '../../../auth';
-import { TenantGuard } from '../../../common';
+import { TenantGuard, PermissionGuard, RequirePermission } from '../../../common';
 import { InboundSyncService } from '../services/inbound-sync.service';
 import { SchemaDiscoveryService } from '../services/schema-discovery.service';
 import { TenantRegistryService } from '../services/tenant-registry.service';
@@ -40,7 +40,8 @@ interface AuthRequest {
  */
 @ApiTags('compport-inbound-sync')
 @Controller('compport-bridge')
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
+@RequirePermission('Inbound Sync', 'view')
 @ApiBearerAuth()
 export class InboundSyncController {
   private readonly logger = new Logger(InboundSyncController.name);

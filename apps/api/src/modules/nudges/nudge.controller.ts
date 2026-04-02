@@ -1,7 +1,7 @@
 import { Controller, Get, UseGuards, Request } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth';
-import { TenantGuard } from '../../common';
+import { TenantGuard, PermissionGuard, RequirePermission } from '../../common';
 import { NudgeService } from './nudge.service';
 
 interface AuthRequest {
@@ -10,7 +10,8 @@ interface AuthRequest {
 
 @ApiTags('nudges')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
+@RequirePermission('Nudges', 'view')
 @Controller('nudges')
 export class NudgeController {
   constructor(private readonly nudgeService: NudgeService) {}

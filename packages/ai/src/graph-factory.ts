@@ -113,7 +113,7 @@ export async function createAgentGraph<SD extends StateDefinition>(
   };
 
   // Create model (OpenAI or Azure OpenAI based on config)
-  const model = (await createChatModel(aiConfig, modelConfig)) as ChatOpenAI;
+  const model = (await createChatModel(aiConfig, modelConfig, definition.graphType)) as ChatOpenAI;
 
   // Bind tools if provided
   const boundModel = definition.tools?.length ? model.bindTools(definition.tools) : model;
