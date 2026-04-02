@@ -54,7 +54,7 @@ export class PlatformAdminService {
       ];
     }
 
-    const [data, total] = await Promise.all([
+    const [tenants, total] = await Promise.all([
       this.db.client.tenant.findMany({
         where,
         skip,
@@ -73,11 +73,26 @@ export class PlatformAdminService {
           compportSchema: true,
           createdAt: true,
           updatedAt: true,
-          _count: { select: { users: true, employees: true } },
         },
       }),
       this.db.client.tenant.count({ where }),
     ]);
+
+    // Query counts per tenant via forTenant() so RLS context is set
+    const data = await Promise.all(
+      tenants.map(async (t) => {
+        const _count = await this.db
+          .forTenant(t.id, (tx) =>
+            Promise.all([
+              tx.user.count({ where: { tenantId: t.id } }),
+              tx.employee.count({ where: { tenantId: t.id } }),
+            ]),
+          )
+          .then(([users, employees]) => ({ users, employees }))
+          .catch(() => ({ users: 0, employees: 0 }));
+        return { ...t, _count };
+      }),
+    );
 
     return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
@@ -85,12 +100,31 @@ export class PlatformAdminService {
   async getTenant(id: string) {
     const tenant = await this.db.client.tenant.findUnique({
       where: { id },
-      include: {
-        _count: { select: { users: true, employees: true, compCycles: true, importJobs: true } },
-      },
     });
     if (!tenant) throw new NotFoundException(`Tenant ${id} not found`);
-    return tenant;
+
+    // Query counts via forTenant() so RLS context is properly set
+    const _count = await this.db
+      .forTenant(id, (tx) =>
+        Promise.all([
+          tx.user.count({ where: { tenantId: id } }),
+          tx.employee.count({ where: { tenantId: id } }),
+          tx.compCycle.count({ where: { tenantId: id } }),
+          tx.importJob.count({ where: { tenantId: id } }),
+        ]),
+      )
+      .then(([users, employees, compCycles, importJobs]) => ({
+        users,
+        employees,
+        compCycles,
+        importJobs,
+      }))
+      .catch((err) => {
+        this.logger.warn(`Failed to get counts for tenant ${id}: ${err}`);
+        return { users: 0, employees: 0, compCycles: 0, importJobs: 0 };
+      });
+
+    return { ...tenant, _count };
   }
 
   async createTenant(dto: CreateTenantDto) {
