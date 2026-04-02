@@ -1,4 +1,10 @@
-import { Injectable, Logger, NotFoundException, ConflictException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  ConflictException,
+  BadRequestException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcryptjs';
 import { DatabaseService } from '../../database';
@@ -667,6 +673,54 @@ export class PlatformAdminService {
       roles: Array.from(byRole.values()),
       totalPermissions: permissions.length,
     };
+  }
+
+  /**
+   * Re-sync roles, pages, and permissions for a tenant from Compport Cloud SQL.
+   * This is useful after changing the schema mapping or when roles/permissions
+   * need to be refreshed.
+   */
+  async syncTenantRoles(tenantId: string) {
+    const tenant = await this.getTenant(tenantId);
+
+    if (!tenant.compportSchema) {
+      throw new BadRequestException(
+        `Tenant "${tenant.name}" has no Compport schema configured. Cannot sync roles.`,
+      );
+    }
+
+    // Connect to Cloud SQL
+    const mysqlConfig = this.getMySqlConfig();
+    try {
+      await this.cloudSql.connect({
+        host: mysqlConfig.host!,
+        port: mysqlConfig.port ?? 3306,
+        user: mysqlConfig.user!,
+        password: mysqlConfig.password!,
+        database: tenant.compportSchema,
+      });
+
+      // Sync roles, pages, permissions, and users
+      const result = await this.inboundSyncService.syncRolesAndPermissions(
+        tenantId,
+        tenant.compportSchema,
+      );
+
+      this.logger.log(
+        `Re-sync roles for ${tenant.name}: roles=${result.roles.synced}, ` +
+          `pages=${result.pages.synced}, permissions=${result.permissions.synced}, ` +
+          `users=${result.users.synced}`,
+      );
+
+      return {
+        tenantId,
+        tenantName: tenant.name,
+        compportSchema: tenant.compportSchema,
+        result,
+      };
+    } finally {
+      await this.cloudSql.disconnect();
+    }
   }
 
   // ─── Platform Stats ──────────────────────────────────────
