@@ -1,7 +1,19 @@
 'use client';
 
 import { useState, useMemo, useRef, useEffect } from 'react';
-import { Upload, Loader2, CheckCircle2, Search, X, ChevronDown } from 'lucide-react';
+import {
+  Upload,
+  Loader2,
+  CheckCircle2,
+  Search,
+  X,
+  ChevronDown,
+  Users,
+  Shield,
+  FileText,
+  Key,
+  Briefcase,
+} from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -37,7 +49,17 @@ export default function AdminOnboardingPage() {
     adminRole: 'ADMIN',
   });
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [onboarded, setOnboarded] = useState<string[]>([]);
+  interface OnboardResult {
+    companyName: string;
+    roleSyncResult?: {
+      roles: { synced: number; errors: number };
+      pages: { synced: number; errors: number };
+      permissions: { synced: number; errors: number };
+      users: { synced: number; linked: number; errors: number };
+    } | null;
+    employeeCount?: number | null;
+  }
+  const [onboarded, setOnboarded] = useState<OnboardResult[]>([]);
   const [enabledFeatures, setEnabledFeatures] = useState<string[]>(ALL_FEATURES.map((f) => f.key));
 
   // Searchable dropdown state
@@ -90,8 +112,15 @@ export default function AdminOnboardingPage() {
       return;
     }
     try {
-      await onboard.mutateAsync({ ...form, enabledFeatures });
-      setOnboarded((prev) => [...prev, form.companyName]);
+      const result = await onboard.mutateAsync({ ...form, enabledFeatures });
+      setOnboarded((prev) => [
+        ...prev,
+        {
+          companyName: form.companyName,
+          roleSyncResult: result.roleSyncResult as OnboardResult['roleSyncResult'],
+          employeeCount: result.employeeCount as number | null | undefined,
+        },
+      ]);
       toast({ title: `Onboarded: ${form.companyName}` });
       setForm({
         companyName: '',
@@ -384,11 +413,60 @@ export default function AdminOnboardingPage() {
           <CardHeader>
             <CardTitle>Recently Onboarded</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-2">
-            {onboarded.map((name) => (
-              <div key={name} className="flex items-center gap-2 py-2">
-                <CheckCircle2 className="h-4 w-4 text-green-500" />
-                <span>{name}</span>
+          <CardContent className="space-y-4">
+            {onboarded.map((entry) => (
+              <div key={entry.companyName} className="rounded-lg border p-4 space-y-3">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="h-5 w-5 text-green-500" />
+                  <span className="font-semibold text-lg">{entry.companyName}</span>
+                </div>
+                {entry.roleSyncResult && (
+                  <div className="grid grid-cols-5 gap-3">
+                    {(
+                      [
+                        [
+                          'Roles',
+                          entry.roleSyncResult.roles.synced,
+                          entry.roleSyncResult.roles.errors,
+                          Shield,
+                        ],
+                        [
+                          'Pages',
+                          entry.roleSyncResult.pages.synced,
+                          entry.roleSyncResult.pages.errors,
+                          FileText,
+                        ],
+                        [
+                          'Permissions',
+                          entry.roleSyncResult.permissions.synced,
+                          entry.roleSyncResult.permissions.errors,
+                          Key,
+                        ],
+                        [
+                          'Users',
+                          entry.roleSyncResult.users.synced,
+                          entry.roleSyncResult.users.errors,
+                          Users,
+                        ],
+                        ['Employees', entry.employeeCount ?? 0, 0, Briefcase],
+                      ] as const
+                    ).map(([label, count, errors, Icon]) => (
+                      <div key={label} className="rounded-md border bg-muted/30 p-3 text-center">
+                        <Icon className="h-4 w-4 mx-auto mb-1 text-muted-foreground" />
+                        <p className="text-xl font-bold">{count}</p>
+                        <p className="text-xs text-muted-foreground">{label}</p>
+                        {errors > 0 && (
+                          <p className="text-xs text-destructive mt-0.5">{errors} errors</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {!entry.roleSyncResult && (
+                  <p className="text-sm text-muted-foreground">
+                    Sync will run on the next scheduled cycle.
+                  </p>
+                )}
               </div>
             ))}
           </CardContent>

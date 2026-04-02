@@ -35,6 +35,22 @@ export function useAdminStats() {
   });
 }
 
+export function useAdminTenantOverview(tenantId: string | null) {
+  return useQuery({
+    queryKey: ['admin-tenant-overview', tenantId],
+    queryFn: () => apiClient.adminGetTenantOverview(tenantId!),
+    enabled: !!tenantId,
+  });
+}
+
+export function useAdminTenantRoles(tenantId: string | null) {
+  return useQuery({
+    queryKey: ['admin-tenant-roles', tenantId],
+    queryFn: () => apiClient.adminGetTenantRoles(tenantId!),
+    enabled: !!tenantId,
+  });
+}
+
 // ─── Mutation Hooks ───────────────────────────────────────
 
 export function useAdminCreateTenant() {

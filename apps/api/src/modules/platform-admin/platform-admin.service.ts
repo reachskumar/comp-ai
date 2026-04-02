@@ -397,6 +397,7 @@ export class PlatformAdminService {
 
     // Immediately sync roles & permissions so tenant is usable from day one
     let roleSyncResult = null;
+    let employeeCount: number | null = null;
     if (queryReady) {
       try {
         // Cloud SQL connection is already available via getMySqlConfig
@@ -418,6 +419,20 @@ export class PlatformAdminService {
             `pages=${roleSyncResult.pages.synced}, permissions=${roleSyncResult.permissions.synced}, ` +
             `users=${roleSyncResult.users.synced}`,
         );
+
+        // Quick employee count from Cloud SQL (login_user is the employee data table)
+        try {
+          const countResult = await this.cloudSql.executeQuery<{ total: number }>(
+            dto.compportSchema,
+            'SELECT COUNT(*) AS total FROM `login_user`',
+          );
+          employeeCount = countResult[0]?.total ?? null;
+          this.logger.log(`Employee count for ${dto.companyName}: ${employeeCount}`);
+        } catch (err) {
+          this.logger.warn(
+            `Failed to count employees for ${dto.companyName}: ${(err as Error).message}`,
+          );
+        }
       } catch (err) {
         this.logger.warn(
           `Initial role sync failed for ${dto.companyName}: ${(err as Error).message}. ` +
@@ -434,6 +449,7 @@ export class PlatformAdminService {
       connector: { id: connector.id, name: connector.name },
       queryReady,
       roleSyncResult,
+      employeeCount,
     };
   }
 
