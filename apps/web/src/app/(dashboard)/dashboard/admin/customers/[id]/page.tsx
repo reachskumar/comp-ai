@@ -15,6 +15,10 @@ import {
   Shield,
   FileText,
   Key,
+  Check,
+  X as XIcon,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -29,6 +33,7 @@ import {
   useAdminTenantUsers,
   useAdminTenantOverview,
   useAdminTenantRoles,
+  useAdminTenantPermissions,
   useAdminUpdateTenant,
   useAdminSuspendTenant,
   useAdminActivateTenant,
@@ -44,6 +49,7 @@ export default function AdminCustomerDetailPage() {
   const { data: usersData } = useAdminTenantUsers(id);
   const { data: overview } = useAdminTenantOverview(id);
   const { data: tenantRoles } = useAdminTenantRoles(id);
+  const { data: permissionsData, isLoading: permissionsLoading } = useAdminTenantPermissions(id);
   const updateTenant = useAdminUpdateTenant();
   const suspendTenant = useAdminSuspendTenant();
   const activateTenant = useAdminActivateTenant();
@@ -210,6 +216,8 @@ export default function AdminCustomerDetailPage() {
         isAdding={createUser.isPending}
       />
 
+      <RolePermissionsCard permissionsData={permissionsData} isLoading={permissionsLoading} />
+
       <Card className="border-destructive/50">
         <CardHeader>
           <CardTitle className="text-destructive">Danger Zone</CardTitle>
@@ -362,6 +370,136 @@ function CustomerUsersCard({
             Add User
           </Button>
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function RolePermissionsCard({
+  permissionsData,
+  isLoading,
+}: {
+  permissionsData?: {
+    roles: Array<{
+      compportRoleId: string;
+      roleName: string;
+      pages: Array<{
+        pageName: string;
+        canView: boolean;
+        canInsert: boolean;
+        canUpdate: boolean;
+        canDelete: boolean;
+      }>;
+    }>;
+    totalPermissions: number;
+  };
+  isLoading: boolean;
+}) {
+  const [expandedRoles, setExpandedRoles] = useState<Set<string>>(new Set());
+
+  const toggleRole = (roleId: string) => {
+    setExpandedRoles((prev) => {
+      const next = new Set(prev);
+      if (next.has(roleId)) {
+        next.delete(roleId);
+      } else {
+        next.add(roleId);
+      }
+      return next;
+    });
+  };
+
+  const PermBadge = ({ allowed }: { allowed: boolean }) =>
+    allowed ? (
+      <Check className="h-4 w-4 text-green-600" />
+    ) : (
+      <XIcon className="h-4 w-4 text-muted-foreground/30" />
+    );
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Key className="h-5 w-5" />
+          Role Permissions
+        </CardTitle>
+        <CardDescription>
+          Synced Compport role→page permission matrix
+          {permissionsData && ` (${permissionsData.totalPermissions} permission rules)`}
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <div className="space-y-2">
+            {[1, 2, 3].map((k) => (
+              <Skeleton key={k} className="h-10 w-full" />
+            ))}
+          </div>
+        ) : !permissionsData?.roles?.length ? (
+          <p className="text-sm text-muted-foreground py-4 text-center">
+            No permissions synced yet. Permissions will be available after a sync runs.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {permissionsData.roles.map((role) => {
+              const isExpanded = expandedRoles.has(role.compportRoleId);
+              return (
+                <div key={role.compportRoleId} className="rounded-lg border">
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-muted/50 transition-colors"
+                    onClick={() => toggleRole(role.compportRoleId)}
+                  >
+                    {isExpanded ? (
+                      <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                    ) : (
+                      <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                    )}
+                    <Shield className="h-4 w-4 text-primary" />
+                    <span className="font-medium flex-1">{role.roleName}</span>
+                    <Badge variant="secondary" className="text-xs">
+                      {role.pages.length} pages
+                    </Badge>
+                  </button>
+                  {isExpanded && (
+                    <div className="border-t px-4 pb-3">
+                      <table className="w-full text-sm mt-2">
+                        <thead>
+                          <tr className="text-xs text-muted-foreground border-b">
+                            <th className="text-left py-2 font-medium">Page</th>
+                            <th className="text-center py-2 font-medium w-16">View</th>
+                            <th className="text-center py-2 font-medium w-16">Insert</th>
+                            <th className="text-center py-2 font-medium w-16">Update</th>
+                            <th className="text-center py-2 font-medium w-16">Delete</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {role.pages.map((page) => (
+                            <tr key={page.pageName} className="border-b last:border-0">
+                              <td className="py-2 text-left">{page.pageName}</td>
+                              <td className="py-2 text-center">
+                                <PermBadge allowed={page.canView} />
+                              </td>
+                              <td className="py-2 text-center">
+                                <PermBadge allowed={page.canInsert} />
+                              </td>
+                              <td className="py-2 text-center">
+                                <PermBadge allowed={page.canUpdate} />
+                              </td>
+                              <td className="py-2 text-center">
+                                <PermBadge allowed={page.canDelete} />
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </CardContent>
     </Card>
   );
