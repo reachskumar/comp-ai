@@ -27,6 +27,6 @@ CREATE INDEX "refresh_tokens_expiresAt_idx" ON "refresh_tokens"("expiresAt");
 ALTER TABLE "refresh_tokens" ADD CONSTRAINT "refresh_tokens_userId_fkey"
     FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
--- Enable RLS
-SELECT _enable_rls_for_table('refresh_tokens');
+-- Note: refresh_tokens has no tenantId — RLS not applicable.
+-- Token security is handled via userId FK and token rotation.
 
