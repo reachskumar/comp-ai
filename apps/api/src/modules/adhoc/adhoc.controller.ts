@@ -13,7 +13,7 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth';
-import { TenantGuard } from '../../common';
+import { TenantGuard, PermissionGuard, RequirePermission } from '../../common';
 import { AdHocService } from './adhoc.service';
 import { CreateAdHocDto, UpdateAdHocDto, AdHocQueryDto, RejectAdHocDto } from './dto';
 
@@ -23,7 +23,8 @@ interface AuthRequest {
 
 @ApiTags('adhoc')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
+@RequirePermission('Ad Hoc Increases', 'view')
 @Controller('adhoc')
 export class AdHocController {
   constructor(private readonly adhocService: AdHocService) {}

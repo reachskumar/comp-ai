@@ -266,9 +266,11 @@ model User {
   azureAdOid   String?  // Azure AD Object ID for SSO users
   role         String   @default("EMPLOYEE") // Compport role ID (e.g., "1.00") or "PLATFORM_ADMIN"
   employeeId   String?  @unique // Link to synced Employee record (nullable for platform admins)
-  avatarUrl    String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  avatarUrl           String?
+  failedLoginAttempts Int       @default(0)
+  lockedUntil         DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
   tenant              Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   employee            Employee?           @relation(fields: [employeeId], references: [id], onDelete: SetNull)
@@ -281,11 +283,34 @@ model User {
   adHocApproved       AdHocIncrease[]    @relation("AdHocApprover")
   writeBackBatches    WriteBackBatch[]
   copilotConversations CopilotConversation[]
+  refreshTokens        RefreshToken[]
 
   @@unique([tenantId, email])
   @@index([tenantId])
   @@index([employeeId])
   @@map("users")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Refresh Token Rotation (token family pattern)
+// ─────────────────────────────────────────────────────────────
+
+model RefreshToken {
+  id          String   @id @default(cuid())
+  userId      String
+  tokenHash   String   @unique // SHA-256 hash of the JWT
+  familyId    String   // Groups tokens from the same login session
+  revoked     Boolean  @default(false)
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([familyId])
+  @@index([tokenHash])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -422,6 +447,10 @@ model Employee {
   @@index([tenantId, department])
   @@index([managerId])
   @@index([salaryBandId])
+  @@index([tenantId, level])
+  @@index([tenantId, location])
+  @@index([tenantId, jobFamily])
+  @@index([jobLevelId])
   @@map("employees")
 }
 

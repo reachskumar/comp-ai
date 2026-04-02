@@ -13,7 +13,7 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth';
-import { TenantGuard } from '../../common';
+import { TenantGuard, PermissionGuard, RequirePermission } from '../../common';
 import { MeritMatrixService } from './merit-matrix.service';
 import { CreateMeritMatrixDto, UpdateMeritMatrixDto } from './dto';
 
@@ -23,7 +23,8 @@ interface AuthRequest {
 
 @ApiTags('merit-matrix')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
+@RequirePermission('Merit Matrix', 'view')
 @Controller('merit-matrix')
 export class MeritMatrixController {
   constructor(private readonly meritMatrixService: MeritMatrixService) {}

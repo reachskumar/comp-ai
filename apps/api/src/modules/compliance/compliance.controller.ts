@@ -14,7 +14,7 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiParam } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth';
-import { TenantGuard } from '../../common';
+import { TenantGuard, PermissionGuard, RequirePermission } from '../../common';
 import { ComplianceService } from './compliance.service';
 import { RunScanDto, ScanQueryDto } from './dto';
 
@@ -24,7 +24,8 @@ interface AuthRequest {
 
 @ApiTags('compliance')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
+@RequirePermission('Compliance', 'view')
 @Controller('compliance')
 export class ComplianceController {
   private readonly logger = new Logger(ComplianceController.name);
@@ -34,10 +35,7 @@ export class ComplianceController {
   @Post('scan')
   @ApiOperation({ summary: 'Run a new compliance scan' })
   @HttpCode(HttpStatus.CREATED)
-  async runScan(
-    @Body() dto: RunScanDto,
-    @Request() req: AuthRequest,
-  ) {
+  async runScan(@Body() dto: RunScanDto, @Request() req: AuthRequest) {
     const { tenantId, userId } = req.user;
     this.logger.log(`Starting compliance scan: tenant=${tenantId} user=${userId}`);
 
@@ -57,10 +55,7 @@ export class ComplianceController {
 
   @Get('scans')
   @ApiOperation({ summary: 'List past compliance scans' })
-  async listScans(
-    @Query() query: ScanQueryDto,
-    @Request() req: AuthRequest,
-  ) {
+  async listScans(@Query() query: ScanQueryDto, @Request() req: AuthRequest) {
     const { tenantId } = req.user;
     return this.complianceService.listScans(tenantId, {
       status: query.status,
@@ -72,10 +67,7 @@ export class ComplianceController {
   @Get('scans/:id')
   @ApiOperation({ summary: 'Get compliance scan results' })
   @ApiParam({ name: 'id', description: 'Scan ID' })
-  async getScan(
-    @Param('id') id: string,
-    @Request() req: AuthRequest,
-  ) {
+  async getScan(@Param('id') id: string, @Request() req: AuthRequest) {
     const { tenantId } = req.user;
     const scan = await this.complianceService.getScan(id, tenantId);
     if (!scan) {
@@ -98,4 +90,3 @@ export class ComplianceController {
     return this.complianceService.getScoreHistory(tenantId);
   }
 }
-

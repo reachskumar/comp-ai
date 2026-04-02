@@ -19,6 +19,8 @@ export const TEST_ADMIN = {
   tenantId: TEST_TENANT_ID,
   passwordHash: '$2b$12$NeRqfnJgr9/MsR9szoyhQu1JreFPpNxIEeudY8jHC8kFlars7wqhK', // bcrypt of Admin123!@#
   avatarUrl: null,
+  failedLoginAttempts: 0,
+  lockedUntil: null,
   createdAt: new Date(),
   updatedAt: new Date(),
 };
@@ -62,6 +64,7 @@ export function createMockPrismaClient() {
     syncJob: createModelMock(),
     syncLog: createModelMock(),
     fieldMapping: createModelMock(),
+    refreshToken: createModelMock(),
     $connect: vi.fn(),
     $disconnect: vi.fn(),
     $queryRawUnsafe: vi.fn().mockResolvedValue([{ '?column?': 1 }]),

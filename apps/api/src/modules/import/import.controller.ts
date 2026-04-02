@@ -16,7 +16,7 @@ import { ApiTags, ApiOperation, ApiBearerAuth, ApiConsumes } from '@nestjs/swagg
 import { FastifyRequest, FastifyReply } from 'fastify';
 import * as fs from 'fs';
 import { JwtAuthGuard } from '../../auth';
-import { TenantGuard } from '../../common';
+import { TenantGuard, PermissionGuard, RequirePermission } from '../../common';
 import { ImportService } from './import.service';
 import { ImportQueryDto } from './dto/import-query.dto';
 import { ApproveImportDto } from './dto/approve-import.dto';
@@ -27,7 +27,8 @@ interface AuthenticatedRequest extends FastifyRequest {
 
 @ApiTags('imports')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
+@RequirePermission('Import', 'view')
 @Controller('imports')
 export class ImportController {
   constructor(private readonly importService: ImportService) {}
@@ -64,20 +65,14 @@ export class ImportController {
 
   @Get(':id/analyze')
   @ApiOperation({ summary: 'Run or get analysis for an import job' })
-  async analyze(
-    @Param('id') id: string,
-    @Req() req: AuthenticatedRequest,
-  ) {
+  async analyze(@Param('id') id: string, @Req() req: AuthenticatedRequest) {
     return this.importService.getAnalysis(id, req.user.tenantId);
   }
 
   @Post(':id/clean')
   @ApiOperation({ summary: 'Run cleaning pipeline on an import job' })
   @HttpCode(HttpStatus.OK)
-  async clean(
-    @Param('id') id: string,
-    @Req() req: AuthenticatedRequest,
-  ) {
+  async clean(@Param('id') id: string, @Req() req: AuthenticatedRequest) {
     return this.importService.clean(id, req.user.tenantId);
   }
 
@@ -94,19 +89,13 @@ export class ImportController {
 
   @Get()
   @ApiOperation({ summary: 'List import jobs (paginated)' })
-  async list(
-    @Query() query: ImportQueryDto,
-    @Req() req: AuthenticatedRequest,
-  ) {
+  async list(@Query() query: ImportQueryDto, @Req() req: AuthenticatedRequest) {
     return this.importService.list(req.user.tenantId, query);
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'Get import job details with issues' })
-  async getById(
-    @Param('id') id: string,
-    @Req() req: AuthenticatedRequest,
-  ) {
+  async getById(@Param('id') id: string, @Req() req: AuthenticatedRequest) {
     return this.importService.getById(id, req.user.tenantId);
   }
 
@@ -145,19 +134,13 @@ export class ImportController {
   @Post(':id/ai-analyze')
   @ApiOperation({ summary: 'Trigger AI-powered data quality analysis' })
   @HttpCode(HttpStatus.OK)
-  async aiAnalyze(
-    @Param('id') id: string,
-    @Req() req: AuthenticatedRequest,
-  ) {
+  async aiAnalyze(@Param('id') id: string, @Req() req: AuthenticatedRequest) {
     return this.importService.triggerAIAnalysis(id, req.user.tenantId, req.user.userId);
   }
 
   @Get(':id/ai-report')
   @ApiOperation({ summary: 'Get AI quality report for an import job' })
-  async aiReport(
-    @Param('id') id: string,
-    @Req() req: AuthenticatedRequest,
-  ) {
+  async aiReport(@Param('id') id: string, @Req() req: AuthenticatedRequest) {
     return this.importService.getAIReport(id, req.user.tenantId);
   }
 
@@ -175,4 +158,3 @@ export class ImportController {
     return this.importService.applyAIFix(id, req.user.tenantId, body.fixes);
   }
 }
-

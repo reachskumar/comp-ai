@@ -13,7 +13,7 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth';
-import { TenantGuard } from '../../common';
+import { TenantGuard, PermissionGuard, RequirePermission } from '../../common';
 import { ApprovalService } from './services/approval.service';
 import { CalibrationService } from './services/calibration.service';
 import { BulkApprovalDto, NudgeDto, PendingApprovalQueryDto } from './dto';
@@ -29,7 +29,8 @@ interface AuthRequest {
 
 @ApiTags('cycle-approvals')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
+@RequirePermission('Compensation Cycles', 'view')
 @Controller('cycles')
 export class ApprovalController {
   constructor(

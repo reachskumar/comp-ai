@@ -14,7 +14,7 @@ import {
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { FastifyRequest } from 'fastify';
 import { JwtAuthGuard } from '../../../auth';
-import { TenantGuard } from '../../../common';
+import { TenantGuard, PermissionGuard, RequirePermission } from '../../../common';
 import { WebhookService } from '../services/webhook.service';
 import { CreateWebhookDto } from '../dto/create-webhook.dto';
 
@@ -31,36 +31,30 @@ export class WebhookController {
 
   @Post('webhooks')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, TenantGuard)
+  @UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
+  @RequirePermission('Integrations', 'insert')
   @ApiOperation({ summary: 'Register a webhook endpoint' })
   @HttpCode(HttpStatus.CREATED)
-  async create(
-    @Body() dto: CreateWebhookDto,
-    @Req() req: AuthenticatedRequest,
-  ) {
+  async create(@Body() dto: CreateWebhookDto, @Req() req: AuthenticatedRequest) {
     return this.webhookService.create(req.user.tenantId, dto);
   }
 
   @Get('connectors/:connectorId/webhooks')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, TenantGuard)
+  @UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
+  @RequirePermission('Integrations', 'view')
   @ApiOperation({ summary: 'List webhooks for a connector' })
-  async list(
-    @Param('connectorId') connectorId: string,
-    @Req() req: AuthenticatedRequest,
-  ) {
+  async list(@Param('connectorId') connectorId: string, @Req() req: AuthenticatedRequest) {
     return this.webhookService.findByConnector(req.user.tenantId, connectorId);
   }
 
   @Delete('webhooks/:id')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, TenantGuard)
+  @UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
+  @RequirePermission('Integrations', 'delete')
   @ApiOperation({ summary: 'Delete a webhook endpoint' })
   @HttpCode(HttpStatus.OK)
-  async delete(
-    @Param('id') id: string,
-    @Req() req: AuthenticatedRequest,
-  ) {
+  async delete(@Param('id') id: string, @Req() req: AuthenticatedRequest) {
     return this.webhookService.delete(req.user.tenantId, id);
   }
 
@@ -77,4 +71,3 @@ export class WebhookController {
     return this.webhookService.processInbound(connectorId, signature, body);
   }
 }
-

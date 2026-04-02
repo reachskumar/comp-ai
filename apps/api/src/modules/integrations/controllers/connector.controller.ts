@@ -15,7 +15,7 @@ import {
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { FastifyRequest } from 'fastify';
 import { JwtAuthGuard } from '../../../auth';
-import { TenantGuard } from '../../../common';
+import { TenantGuard, PermissionGuard, RequirePermission } from '../../../common';
 import { ConnectorService } from '../services/connector.service';
 import { SyncEngineService } from '../services/sync-engine.service';
 import { CreateConnectorDto } from '../dto/create-connector.dto';
@@ -29,7 +29,8 @@ interface AuthenticatedRequest extends FastifyRequest {
 
 @ApiTags('integrations')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
+@RequirePermission('Integrations', 'view')
 @Controller('integrations/connectors')
 export class ConnectorController {
   constructor(
@@ -40,28 +41,19 @@ export class ConnectorController {
   @Post()
   @ApiOperation({ summary: 'Register a new integration connector' })
   @HttpCode(HttpStatus.CREATED)
-  async create(
-    @Body() dto: CreateConnectorDto,
-    @Req() req: AuthenticatedRequest,
-  ) {
+  async create(@Body() dto: CreateConnectorDto, @Req() req: AuthenticatedRequest) {
     return this.connectorService.create(req.user.tenantId, dto);
   }
 
   @Get()
   @ApiOperation({ summary: 'List integration connectors' })
-  async list(
-    @Query() query: ConnectorQueryDto,
-    @Req() req: AuthenticatedRequest,
-  ) {
+  async list(@Query() query: ConnectorQueryDto, @Req() req: AuthenticatedRequest) {
     return this.connectorService.findAll(req.user.tenantId, query);
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'Get connector details' })
-  async getById(
-    @Param('id') id: string,
-    @Req() req: AuthenticatedRequest,
-  ) {
+  async getById(@Param('id') id: string, @Req() req: AuthenticatedRequest) {
     return this.connectorService.findOne(req.user.tenantId, id);
   }
 
@@ -78,20 +70,14 @@ export class ConnectorController {
   @Delete(':id')
   @ApiOperation({ summary: 'Delete a connector' })
   @HttpCode(HttpStatus.OK)
-  async delete(
-    @Param('id') id: string,
-    @Req() req: AuthenticatedRequest,
-  ) {
+  async delete(@Param('id') id: string, @Req() req: AuthenticatedRequest) {
     return this.connectorService.delete(req.user.tenantId, id);
   }
 
   @Post(':id/health-check')
   @ApiOperation({ summary: 'Run health check on a connector' })
   @HttpCode(HttpStatus.OK)
-  async healthCheck(
-    @Param('id') id: string,
-    @Req() req: AuthenticatedRequest,
-  ) {
+  async healthCheck(@Param('id') id: string, @Req() req: AuthenticatedRequest) {
     return this.connectorService.healthCheck(req.user.tenantId, id);
   }
 
@@ -126,4 +112,3 @@ export class ConnectorController {
     return this.syncEngineService.getSyncLogs(req.user.tenantId, id, query);
   }
 }
-

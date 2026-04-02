@@ -1,13 +1,7 @@
-import {
-  Controller,
-  Get,
-  UseGuards,
-  Request,
-  Logger,
-} from '@nestjs/common';
+import { Controller, Get, UseGuards, Request, Logger } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth';
-import { TenantGuard } from '../../common';
+import { TenantGuard, PermissionGuard, RequirePermission } from '../../common';
 import { DashboardService } from './dashboard.service';
 
 interface AuthRequest {
@@ -16,7 +10,8 @@ interface AuthRequest {
 
 @ApiTags('dashboard')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
+@RequirePermission('Dashboard', 'view')
 @Controller('dashboard')
 export class DashboardController {
   private readonly logger = new Logger(DashboardController.name);
@@ -30,4 +25,3 @@ export class DashboardController {
     return this.dashboardService.getSummary(req.user.tenantId);
   }
 }
-

@@ -18,7 +18,7 @@ import {
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiConsumes } from '@nestjs/swagger';
 import { FastifyReply, FastifyRequest } from 'fastify';
 import { JwtAuthGuard } from '../../auth';
-import { TenantGuard } from '../../common';
+import { TenantGuard, PermissionGuard, RequirePermission } from '../../common';
 import { PolicyRagService } from './policy-rag.service';
 import { AskPolicyDto, PolicyQueryDto } from './dto';
 import { formatSSE } from '@compensation/ai';
@@ -35,7 +35,8 @@ interface AuthenticatedFastifyRequest extends FastifyRequest {
 
 @ApiTags('policies')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
+@RequirePermission('Policy RAG', 'view')
 @Controller('policies')
 export class PolicyRagController {
   private readonly logger = new Logger(PolicyRagController.name);

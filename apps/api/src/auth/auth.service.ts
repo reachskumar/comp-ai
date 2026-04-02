@@ -2,6 +2,7 @@ import { Injectable, UnauthorizedException, ConflictException, Logger } from '@n
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcryptjs';
+import * as crypto from 'crypto';
 import { DatabaseService } from '../database';
 import { RegisterDto, LoginDto } from './dto';
 import { JwtPayload } from './interfaces/jwt-payload.interface';
@@ -60,6 +61,12 @@ export class AuthService {
     };
   }
 
+  /** Maximum failed login attempts before account lockout */
+  private readonly MAX_FAILED_ATTEMPTS = 5;
+
+  /** Lockout duration in minutes */
+  private readonly LOCKOUT_DURATION_MINUTES = 30;
+
   async login(dto: LoginDto) {
     const user = await this.db.client.user.findFirst({
       where: { email: dto.email },
@@ -74,9 +81,43 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
+    // Check if account is locked
+    if (user.lockedUntil && user.lockedUntil > new Date()) {
+      const remainingMinutes = Math.ceil((user.lockedUntil.getTime() - Date.now()) / 60_000);
+      this.logger.warn(
+        `Login blocked — account locked: ${user.email} (${remainingMinutes}m remaining)`,
+      );
+      throw new UnauthorizedException(
+        `Account is locked due to too many failed attempts. Try again in ${remainingMinutes} minute(s).`,
+      );
+    }
+
     const isPasswordValid = await bcrypt.compare(dto.password, user.passwordHash);
     if (!isPasswordValid) {
+      const attempts = (user.failedLoginAttempts ?? 0) + 1;
+      const updateData: { failedLoginAttempts: number; lockedUntil?: Date } = {
+        failedLoginAttempts: attempts,
+      };
+
+      if (attempts >= this.MAX_FAILED_ATTEMPTS) {
+        updateData.lockedUntil = new Date(Date.now() + this.LOCKOUT_DURATION_MINUTES * 60_000);
+        this.logger.warn(`Account locked after ${attempts} failed attempts: ${user.email}`);
+      }
+
+      await this.db.client.user.update({
+        where: { id: user.id },
+        data: updateData,
+      });
+
       throw new UnauthorizedException('Invalid credentials');
+    }
+
+    // Successful login — reset failed attempts counter
+    if (user.failedLoginAttempts > 0 || user.lockedUntil) {
+      await this.db.client.user.update({
+        where: { id: user.id },
+        data: { failedLoginAttempts: 0, lockedUntil: null },
+      });
     }
 
     const tokens = await this.generateTokens(user.id, user.tenantId, user.email, user.role);
@@ -157,24 +198,71 @@ export class AuthService {
     };
   }
 
+  /**
+   * Refresh tokens using token family rotation pattern.
+   *
+   * How it works:
+   * 1. Each login creates a "token family" (a group of refresh tokens from one session).
+   * 2. When a refresh token is used, it is revoked and a new one is issued in the same family.
+   * 3. If a revoked token is reused (indicating theft), ALL tokens in the family are revoked.
+   */
   async refresh(refreshToken: string) {
+    let payload: JwtPayload;
     try {
-      const payload = this.jwtService.verify<JwtPayload>(refreshToken, {
+      payload = this.jwtService.verify<JwtPayload>(refreshToken, {
         secret: this.configService.get<string>('JWT_SECRET'),
       });
-
-      const user = await this.db.client.user.findUnique({
-        where: { id: payload.sub },
-      });
-
-      if (!user) {
-        throw new UnauthorizedException('User not found');
-      }
-
-      return this.generateTokens(user.id, user.tenantId, user.email, user.role);
     } catch {
       throw new UnauthorizedException('Invalid refresh token');
     }
+
+    const tokenHash = this.hashToken(refreshToken);
+
+    // Look up the stored token record
+    const storedToken = await this.db.client.refreshToken.findUnique({
+      where: { tokenHash },
+    });
+
+    if (!storedToken) {
+      // Token not found — could be from before rotation was enabled, or invalid
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+
+    // REUSE DETECTION: If the token was already revoked, someone is replaying it.
+    // Revoke the entire family to protect the user.
+    if (storedToken.revoked) {
+      this.logger.warn(
+        `Refresh token reuse detected for user ${storedToken.userId}, family ${storedToken.familyId}. Revoking entire family.`,
+      );
+      await this.db.client.refreshToken.updateMany({
+        where: { familyId: storedToken.familyId },
+        data: { revoked: true },
+      });
+      throw new UnauthorizedException('Refresh token reuse detected — session invalidated');
+    }
+
+    // Check expiry (belt-and-suspenders with JWT expiry)
+    if (storedToken.expiresAt < new Date()) {
+      throw new UnauthorizedException('Refresh token expired');
+    }
+
+    // Revoke the current token (it's been used)
+    await this.db.client.refreshToken.update({
+      where: { id: storedToken.id },
+      data: { revoked: true },
+    });
+
+    // Fetch user
+    const user = await this.db.client.user.findUnique({
+      where: { id: payload.sub },
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
+
+    // Issue new tokens in the same family
+    return this.generateTokens(user.id, user.tenantId, user.email, user.role, storedToken.familyId);
   }
 
   /**
@@ -218,7 +306,20 @@ export class AuthService {
     };
   }
 
-  private async generateTokens(userId: string, tenantId: string, email: string, role: string) {
+  /**
+   * Generate access + refresh tokens.
+   * Stores the refresh token hash in the database for rotation tracking.
+   *
+   * @param familyId - Reuse the same family for token rotation within a session.
+   *                   Pass undefined to start a new family (login).
+   */
+  private async generateTokens(
+    userId: string,
+    tenantId: string,
+    email: string,
+    role: string,
+    familyId?: string,
+  ) {
     const payload: JwtPayload = { sub: userId, tenantId, email, role };
 
     const [accessToken, refreshToken] = await Promise.all([
@@ -226,6 +327,24 @@ export class AuthService {
       this.jwtService.signAsync(payload, { expiresIn: '7d' }),
     ]);
 
+    // Store refresh token hash for rotation tracking
+    const tokenHash = this.hashToken(refreshToken);
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+
+    await this.db.client.refreshToken.create({
+      data: {
+        userId,
+        tokenHash,
+        familyId: familyId ?? crypto.randomUUID(),
+        expiresAt,
+      },
+    });
+
     return { accessToken, refreshToken };
+  }
+
+  /** SHA-256 hash of a token string — we never store raw tokens. */
+  private hashToken(token: string): string {
+    return crypto.createHash('sha256').update(token).digest('hex');
   }
 }

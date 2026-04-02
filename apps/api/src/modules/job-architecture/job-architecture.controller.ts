@@ -14,7 +14,7 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth';
-import { TenantGuard } from '../../common';
+import { TenantGuard, PermissionGuard, RequirePermission } from '../../common';
 import { JobArchitectureService } from './job-architecture.service';
 import {
   CreateJobFamilyDto,
@@ -35,7 +35,8 @@ interface AuthRequest {
 
 @ApiTags('job-architecture')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
+@RequirePermission('Job Architecture', 'view')
 @Controller('job-architecture')
 export class JobArchitectureController {
   constructor(private readonly service: JobArchitectureService) {}

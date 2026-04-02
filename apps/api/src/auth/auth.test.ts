@@ -80,13 +80,15 @@ describe('AuthService — register', () => {
       id: 'tenant-new',
       name: 'Test Tenant',
       slug: 'test-tenant-123',
-      users: [{
-        id: 'user-new',
-        email: 'new@test.com',
-        name: 'New User',
-        role: 'ADMIN',
-        tenantId: 'tenant-new',
-      }],
+      users: [
+        {
+          id: 'user-new',
+          email: 'new@test.com',
+          name: 'New User',
+          role: 'ADMIN',
+          tenantId: 'tenant-new',
+        },
+      ],
     });
 
     const result = await service.register({
@@ -126,24 +128,71 @@ describe('AuthService — refresh', () => {
   });
 
   it('should refresh tokens with a valid refresh token', async () => {
-    db.client.user.findUnique.mockResolvedValue(TEST_ADMIN);
     const token = generateTestToken();
+    db.client.refreshToken.findUnique.mockResolvedValue({
+      id: 'rt-1',
+      userId: TEST_ADMIN.id,
+      tokenHash: 'mock-hash',
+      familyId: 'family-1',
+      revoked: false,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+    });
+    db.client.refreshToken.update.mockResolvedValue({});
+    db.client.refreshToken.create.mockResolvedValue({});
+    db.client.user.findUnique.mockResolvedValue(TEST_ADMIN);
 
     const result = await service.refresh(token);
 
     expect(result).toHaveProperty('accessToken');
     expect(result).toHaveProperty('refreshToken');
+    // Old token should be revoked
+    expect(db.client.refreshToken.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { revoked: true } }),
+    );
   });
 
   it('should reject invalid refresh token', async () => {
     await expect(service.refresh('invalid-token')).rejects.toThrow(UnauthorizedException);
   });
 
-  it('should reject when user not found for valid token', async () => {
-    db.client.user.findUnique.mockResolvedValue(null);
+  it('should reject when token not found in database', async () => {
+    db.client.refreshToken.findUnique.mockResolvedValue(null);
     const token = generateTestToken();
 
     await expect(service.refresh(token)).rejects.toThrow(UnauthorizedException);
   });
-});
 
+  it('should revoke entire family on token reuse', async () => {
+    const token = generateTestToken();
+    db.client.refreshToken.findUnique.mockResolvedValue({
+      id: 'rt-1',
+      userId: TEST_ADMIN.id,
+      tokenHash: 'mock-hash',
+      familyId: 'family-1',
+      revoked: true, // Already used — reuse detected!
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+    });
+    db.client.refreshToken.updateMany.mockResolvedValue({ count: 3 });
+
+    await expect(service.refresh(token)).rejects.toThrow(UnauthorizedException);
+    expect(db.client.refreshToken.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { familyId: 'family-1' } }),
+    );
+  });
+
+  it('should reject when user not found for valid token', async () => {
+    const token = generateTestToken();
+    db.client.refreshToken.findUnique.mockResolvedValue({
+      id: 'rt-1',
+      userId: TEST_ADMIN.id,
+      tokenHash: 'mock-hash',
+      familyId: 'family-1',
+      revoked: false,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+    });
+    db.client.refreshToken.update.mockResolvedValue({});
+    db.client.user.findUnique.mockResolvedValue(null);
+
+    await expect(service.refresh(token)).rejects.toThrow(UnauthorizedException);
+  });
+});

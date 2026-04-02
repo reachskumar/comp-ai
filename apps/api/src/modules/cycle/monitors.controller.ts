@@ -12,7 +12,7 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth';
-import { TenantGuard } from '../../common';
+import { TenantGuard, PermissionGuard, RequirePermission } from '../../common';
 import { BudgetDriftService } from './services/monitors/budget-drift.service';
 import { PolicyViolationService } from './services/monitors/policy-violation.service';
 import { OutlierDetectorService } from './services/monitors/outlier-detector.service';
@@ -27,7 +27,8 @@ interface AuthRequest {
 
 @ApiTags('cycle-monitors')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
+@RequirePermission('Compensation Cycles', 'view')
 @Controller('cycles/:cycleId/monitors')
 export class MonitorsController {
   constructor(
