@@ -329,6 +329,24 @@ class ApiClient {
     >(`/api/v1/platform-admin/tenants/${id}/roles`);
   }
 
+  async adminGetTenantPermissions(id: string) {
+    return this.fetch<{
+      tenantId: string;
+      roles: Array<{
+        compportRoleId: string;
+        roleName: string;
+        pages: Array<{
+          pageName: string;
+          canView: boolean;
+          canInsert: boolean;
+          canUpdate: boolean;
+          canDelete: boolean;
+        }>;
+      }>;
+      totalPermissions: number;
+    }>(`/api/v1/platform-admin/tenants/${id}/permissions`);
+  }
+
   async adminCreateTenant(data: {
     name: string;
     slug?: string;

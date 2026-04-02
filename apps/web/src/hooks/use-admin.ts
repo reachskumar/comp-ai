@@ -51,6 +51,14 @@ export function useAdminTenantRoles(tenantId: string | null) {
   });
 }
 
+export function useAdminTenantPermissions(tenantId: string | null) {
+  return useQuery({
+    queryKey: ['admin-tenant-permissions', tenantId],
+    queryFn: () => apiClient.adminGetTenantPermissions(tenantId!),
+    enabled: !!tenantId,
+  });
+}
+
 // ─── Mutation Hooks ───────────────────────────────────────
 
 export function useAdminCreateTenant() {
