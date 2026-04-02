@@ -80,7 +80,7 @@ SELECT _enable_rls_for_table('career_ladders');
 -- Write-Back
 -- =============================================================================
 SELECT _enable_rls_for_table('write_back_batches');
-SELECT _enable_rls_for_table('write_back_records');
+-- write_back_records: no tenantId column — isolated via FK cascade from write_back_batches
 
 -- =============================================================================
 -- Dynamic Roles & Permissions (from 20260401100000)
