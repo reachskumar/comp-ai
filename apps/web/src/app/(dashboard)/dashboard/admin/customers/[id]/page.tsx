@@ -12,6 +12,9 @@ import {
   Loader2,
   Ban,
   CheckCircle2,
+  Shield,
+  FileText,
+  Key,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -24,6 +27,8 @@ import { useToast } from '@/components/ui/toast';
 import {
   useAdminTenant,
   useAdminTenantUsers,
+  useAdminTenantOverview,
+  useAdminTenantRoles,
   useAdminUpdateTenant,
   useAdminSuspendTenant,
   useAdminActivateTenant,
@@ -37,6 +42,8 @@ export default function AdminCustomerDetailPage() {
   const { toast } = useToast();
   const { data: tenant, isLoading } = useAdminTenant(id);
   const { data: usersData } = useAdminTenantUsers(id);
+  const { data: overview } = useAdminTenantOverview(id);
+  const { data: tenantRoles } = useAdminTenantRoles(id);
   const updateTenant = useAdminUpdateTenant();
   const suspendTenant = useAdminSuspendTenant();
   const activateTenant = useAdminActivateTenant();
@@ -120,17 +127,21 @@ export default function AdminCustomerDetailPage() {
         <Badge variant="outline">{tenant.plan as string}</Badge>
       </div>
 
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-7 gap-3">
         {(
           [
-            ['Users', counts?.users ?? 0, Users],
-            ['Employees', counts?.employees ?? 0, Briefcase],
+            ['Users', overview?.counts?.users ?? counts?.users ?? 0, Users],
+            ['Employees', overview?.counts?.employees ?? counts?.employees ?? 0, Briefcase],
+            ['Roles', overview?.syncedEntities?.roles ?? 0, Shield],
+            ['Pages', overview?.syncedEntities?.pages ?? 0, FileText],
+            ['Permissions', overview?.syncedEntities?.permissions ?? 0, Key],
             ['Cycles', counts?.compCycles ?? 0, Building2],
             ['Imports', counts?.importJobs ?? 0, Building2],
           ] as const
         ).map(([label, value, Icon]) => (
           <Card key={label}>
             <CardContent className="pt-4 text-center">
+              <Icon className="h-4 w-4 mx-auto mb-1 text-muted-foreground" />
               <p className="text-2xl font-bold">{value}</p>
               <p className="text-xs text-muted-foreground">{label}</p>
             </CardContent>
@@ -184,6 +195,7 @@ export default function AdminCustomerDetailPage() {
 
       <CustomerUsersCard
         users={usersData?.data}
+        syncedRoles={tenantRoles}
         onRemove={async (userId: string) => {
           try {
             await removeUser.mutateAsync({ tenantId: id, userId });
@@ -225,8 +237,11 @@ export default function AdminCustomerDetailPage() {
   );
 }
 
+const FALLBACK_ROLES = ['ADMIN', 'HR_MANAGER', 'MANAGER', 'ANALYST', 'EMPLOYEE'];
+
 function CustomerUsersCard({
   users,
+  syncedRoles,
   onRemove,
   newUser,
   setNewUser,
@@ -234,12 +249,15 @@ function CustomerUsersCard({
   isAdding,
 }: {
   users?: any[];
+  syncedRoles?: { compportRoleId: string; name: string; isActive: boolean }[];
   onRemove: (id: string) => void;
   newUser: { email: string; name: string; role: string; password: string };
   setNewUser: (fn: (n: any) => any) => void;
   onAddUser: () => void;
   isAdding: boolean;
 }) {
+  const activeRoles = syncedRoles?.filter((r) => r.isActive);
+  const hasRoles = activeRoles && activeRoles.length > 0;
   const [confirmPassword, setConfirmPassword] = useState('');
   const passwordMismatch =
     newUser.password.length > 0 &&
@@ -296,11 +314,24 @@ function CustomerUsersCard({
               value={newUser.role}
               onChange={(e) => setNewUser((n: any) => ({ ...n, role: e.target.value }))}
             >
-              {['ADMIN', 'HR_MANAGER', 'MANAGER', 'ANALYST', 'EMPLOYEE'].map((r) => (
-                <option key={r} value={r}>
-                  {r.replace('_', ' ')}
-                </option>
-              ))}
+              {hasRoles ? (
+                <>
+                  <option value="" disabled>
+                    Select a role…
+                  </option>
+                  {activeRoles.map((r) => (
+                    <option key={r.compportRoleId} value={r.compportRoleId}>
+                      {r.name}
+                    </option>
+                  ))}
+                </>
+              ) : (
+                FALLBACK_ROLES.map((r) => (
+                  <option key={r} value={r}>
+                    {r.replace('_', ' ')}
+                  </option>
+                ))
+              )}
             </select>
           </div>
         </div>

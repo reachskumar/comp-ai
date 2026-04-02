@@ -300,6 +300,35 @@ class ApiClient {
     return this.fetch<Record<string, unknown>>(`/api/v1/platform-admin/tenants/${id}`);
   }
 
+  async adminGetTenantOverview(id: string) {
+    return this.fetch<{
+      tenant: {
+        id: string;
+        name: string;
+        slug: string;
+        isActive: boolean;
+        plan: string;
+        compportSchema: string | null;
+      };
+      counts: { users: number; employees: number };
+      syncedEntities: { roles: number; pages: number; permissions: number };
+      roleDistribution: { compportRoleId: string; name: string; userCount: number }[];
+      lastSync: Record<string, unknown> | null;
+    }>(`/api/v1/platform-admin/tenants/${id}/overview`);
+  }
+
+  async adminGetTenantRoles(id: string) {
+    return this.fetch<
+      {
+        compportRoleId: string;
+        name: string;
+        module: string;
+        isActive: boolean;
+        userCount: number;
+      }[]
+    >(`/api/v1/platform-admin/tenants/${id}/roles`);
+  }
+
   async adminCreateTenant(data: {
     name: string;
     slug?: string;
