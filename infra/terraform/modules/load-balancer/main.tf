@@ -123,7 +123,16 @@ resource "google_compute_url_map" "main" {
     path_matcher = "main"
   }
 
-  # Wildcard subdomain host rule — routes *.compportiq.ai to the same backends
+  # api.compportiq.ai → all traffic to API backend
+  dynamic "host_rule" {
+    for_each = var.domain_name != "" ? [1] : []
+    content {
+      hosts        = ["api.${var.domain_name}"]
+      path_matcher = "api"
+    }
+  }
+
+  # Wildcard subdomain host rule — routes remaining *.compportiq.ai to the web+api path matcher
   dynamic "host_rule" {
     for_each = var.wildcard_domain != "" ? [1] : []
     content {
@@ -132,6 +141,7 @@ resource "google_compute_url_map" "main" {
     }
   }
 
+  # Root domain: /api/* → API backend, everything else → web backend
   path_matcher {
     name            = "main"
     default_service = google_compute_backend_service.web.id
@@ -140,6 +150,12 @@ resource "google_compute_url_map" "main" {
       paths   = ["/api/*"]
       service = google_compute_backend_service.api.id
     }
+  }
+
+  # API subdomain: all traffic → API backend
+  path_matcher {
+    name            = "api"
+    default_service = google_compute_backend_service.api.id
   }
 }
 
