@@ -80,6 +80,12 @@ export class PlatformAdminController {
     return this.service.activateTenant(id);
   }
 
+  @Delete('tenants/:id')
+  @ApiOperation({ summary: 'Permanently delete a tenant and all its data' })
+  deleteTenant(@Param('id') id: string) {
+    return this.service.deleteTenant(id);
+  }
+
   // ─── User Management ─────────────────────────────────────
 
   @Get('tenants/:id/users')

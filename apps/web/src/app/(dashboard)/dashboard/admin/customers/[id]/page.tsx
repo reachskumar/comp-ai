@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import {
   ArrowLeft,
   Users,
@@ -39,6 +39,8 @@ import {
   useAdminActivateTenant,
   useAdminCreateTenantUser,
   useAdminRemoveTenantUser,
+  useAdminDeleteTenant,
+  useCompportTenants,
 } from '@/hooks/use-admin';
 import Link from 'next/link';
 
@@ -56,8 +58,16 @@ export default function AdminCustomerDetailPage() {
   const createUser = useAdminCreateTenantUser();
   const removeUser = useAdminRemoveTenantUser();
 
+  const router = useRouter();
+  const deleteTenant = useAdminDeleteTenant();
+  const { data: compportData } = useCompportTenants();
+
   const [branding, setBranding] = useState({ subdomain: '', logoUrl: '', primaryColor: '' });
   const [newUser, setNewUser] = useState({ email: '', name: '', role: 'ADMIN', password: '' });
+  const [deleteConfirmName, setDeleteConfirmName] = useState('');
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [selectedSchema, setSelectedSchema] = useState('');
+  const [showSchemaConfirm, setShowSchemaConfirm] = useState(false);
   const [brandingLoaded, setBrandingLoaded] = useState(false);
 
   if (tenant && !brandingLoaded) {
@@ -99,6 +109,29 @@ export default function AdminCustomerDetailPage() {
       }
     } catch {
       toast({ title: 'Action failed', variant: 'destructive' });
+    }
+  };
+
+  const handleDeleteTenant = async () => {
+    if (deleteConfirmName !== tenant.name) return;
+    try {
+      await deleteTenant.mutateAsync(id);
+      toast({ title: 'Tenant deleted' });
+      router.push('/dashboard/admin/customers');
+    } catch {
+      toast({ title: 'Failed to delete tenant', variant: 'destructive' });
+    }
+  };
+
+  const handleChangeSchema = async () => {
+    if (!selectedSchema) return;
+    try {
+      await updateTenant.mutateAsync({ id, data: { compportSchema: selectedSchema } });
+      toast({ title: `Schema updated to "${selectedSchema}"` });
+      setShowSchemaConfirm(false);
+      setSelectedSchema('');
+    } catch {
+      toast({ title: 'Failed to update schema', variant: 'destructive' });
     }
   };
 
@@ -199,6 +232,74 @@ export default function AdminCustomerDetailPage() {
         </CardContent>
       </Card>
 
+      <Card>
+        <CardHeader>
+          <CardTitle>Compport Schema Mapping</CardTitle>
+          <CardDescription>
+            The Compport schema determines which dataset this tenant reads from Cloud SQL.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center gap-4">
+            <div className="space-y-1 flex-1">
+              <Label>Current Schema</Label>
+              <p className="text-sm font-mono bg-muted px-3 py-2 rounded-md">
+                {(tenant.compportSchema as string) || (
+                  <span className="text-muted-foreground italic">Not mapped</span>
+                )}
+              </p>
+            </div>
+            <div className="space-y-1 flex-1">
+              <Label>Change To</Label>
+              <select
+                className="w-full rounded-md border px-3 py-2 text-sm bg-background"
+                value={selectedSchema}
+                onChange={(e) => {
+                  setSelectedSchema(e.target.value);
+                  setShowSchemaConfirm(false);
+                }}
+              >
+                <option value="">Select a schema...</option>
+                {compportData?.tenants?.map((ct) => (
+                  <option key={ct.schemaName} value={ct.schemaName}>
+                    {ct.companyName} ({ct.schemaName})
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {selectedSchema && selectedSchema !== tenant.compportSchema && !showSchemaConfirm && (
+            <Button variant="outline" onClick={() => setShowSchemaConfirm(true)}>
+              Change Schema Mapping
+            </Button>
+          )}
+
+          {showSchemaConfirm && selectedSchema && selectedSchema !== tenant.compportSchema && (
+            <div className="rounded-md border border-amber-500/50 bg-amber-50 dark:bg-amber-950/20 p-4 space-y-3">
+              <p className="text-sm font-medium text-amber-800 dark:text-amber-200">
+                ⚠️ Changing the schema will make this tenant read data from a different Compport
+                dataset. This does not migrate any data.
+              </p>
+              <p className="text-sm">
+                <span className="font-mono">{(tenant.compportSchema as string) || 'none'}</span>
+                {' → '}
+                <span className="font-mono font-bold">{selectedSchema}</span>
+              </p>
+              <div className="flex gap-2">
+                <Button onClick={handleChangeSchema} disabled={updateTenant.isPending}>
+                  {updateTenant.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  Confirm Change
+                </Button>
+                <Button variant="ghost" onClick={() => setShowSchemaConfirm(false)}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       <CustomerUsersCard
         users={usersData?.data}
         syncedRoles={tenantRoles}
@@ -222,23 +323,80 @@ export default function AdminCustomerDetailPage() {
         <CardHeader>
           <CardTitle className="text-destructive">Danger Zone</CardTitle>
         </CardHeader>
-        <CardContent>
-          <Button
-            variant={tenant.isActive ? 'destructive' : 'default'}
-            onClick={handleToggleSuspend}
-          >
-            {tenant.isActive ? (
-              <>
-                <Ban className="mr-2 h-4 w-4" />
-                Suspend Tenant
-              </>
-            ) : (
-              <>
-                <CheckCircle2 className="mr-2 h-4 w-4" />
-                Activate Tenant
-              </>
+        <CardContent className="space-y-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="font-medium">{tenant.isActive ? 'Suspend' : 'Activate'} this tenant</p>
+              <p className="text-sm text-muted-foreground">
+                {tenant.isActive
+                  ? 'Suspending will prevent all users from accessing the tenant.'
+                  : 'Re-activate this tenant to restore access for all users.'}
+              </p>
+            </div>
+            <Button
+              variant={tenant.isActive ? 'destructive' : 'default'}
+              onClick={handleToggleSuspend}
+            >
+              {tenant.isActive ? (
+                <>
+                  <Ban className="mr-2 h-4 w-4" />
+                  Suspend Tenant
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="mr-2 h-4 w-4" />
+                  Activate Tenant
+                </>
+              )}
+            </Button>
+          </div>
+
+          <Separator />
+
+          <div>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="font-medium">Delete this tenant</p>
+                <p className="text-sm text-muted-foreground">
+                  Permanently delete this tenant and all associated data. This action cannot be
+                  undone.
+                </p>
+              </div>
+              <Button
+                variant="destructive"
+                onClick={() => setShowDeleteConfirm(!showDeleteConfirm)}
+              >
+                <Trash2 className="mr-2 h-4 w-4" />
+                Delete Tenant
+              </Button>
+            </div>
+
+            {showDeleteConfirm && (
+              <div className="mt-4 rounded-md border border-destructive/50 p-4 space-y-3">
+                <p className="text-sm">
+                  Type <span className="font-bold">{tenant.name as string}</span> to confirm
+                  deletion:
+                </p>
+                <Input
+                  value={deleteConfirmName}
+                  onChange={(e) => setDeleteConfirmName(e.target.value)}
+                  placeholder="Type tenant name to confirm"
+                />
+                <Button
+                  variant="destructive"
+                  disabled={deleteConfirmName !== tenant.name || deleteTenant.isPending}
+                  onClick={handleDeleteTenant}
+                >
+                  {deleteTenant.isPending ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="mr-2 h-4 w-4" />
+                  )}
+                  Permanently Delete
+                </Button>
+              </div>
             )}
-          </Button>
+          </div>
         </CardContent>
       </Card>
     </div>

@@ -94,8 +94,9 @@ export function useAdminSuspendTenant() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => apiClient.adminSuspendTenant(id),
-    onSuccess: () => {
+    onSuccess: (_d, id) => {
       void qc.invalidateQueries({ queryKey: ['admin-tenants'] });
+      void qc.invalidateQueries({ queryKey: ['admin-tenant', id] });
       void qc.invalidateQueries({ queryKey: ['admin-stats'] });
     },
   });
@@ -105,6 +106,18 @@ export function useAdminActivateTenant() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => apiClient.adminActivateTenant(id),
+    onSuccess: (_d, id) => {
+      void qc.invalidateQueries({ queryKey: ['admin-tenants'] });
+      void qc.invalidateQueries({ queryKey: ['admin-tenant', id] });
+      void qc.invalidateQueries({ queryKey: ['admin-stats'] });
+    },
+  });
+}
+
+export function useAdminDeleteTenant() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => apiClient.adminDeleteTenant(id),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['admin-tenants'] });
       void qc.invalidateQueries({ queryKey: ['admin-stats'] });
