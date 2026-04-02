@@ -379,6 +379,13 @@ class ApiClient {
     });
   }
 
+  async adminDeleteTenant(id: string) {
+    return this.fetch<{ deleted: boolean; id: string; name: string }>(
+      `/api/v1/platform-admin/tenants/${id}`,
+      { method: 'DELETE' },
+    );
+  }
+
   async adminListTenantUsers(tenantId: string) {
     return this.fetch<{
       data: Array<{

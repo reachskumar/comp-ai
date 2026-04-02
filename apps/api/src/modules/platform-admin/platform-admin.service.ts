@@ -148,6 +148,13 @@ export class PlatformAdminService {
     return updated;
   }
 
+  async deleteTenant(id: string) {
+    const tenant = await this.getTenant(id);
+    await this.db.client.tenant.delete({ where: { id } });
+    this.logger.warn(`Tenant DELETED: ${tenant.name} (${tenant.id})`);
+    return { deleted: true, id, name: tenant.name };
+  }
+
   // ─── User Management ─────────────────────────────────────
 
   async listTenantUsers(tenantId: string) {
