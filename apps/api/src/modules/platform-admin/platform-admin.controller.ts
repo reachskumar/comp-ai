@@ -140,6 +140,14 @@ export class PlatformAdminController {
     return this.service.getTenantPermissions(id);
   }
 
+  @Post('tenants/:id/sync-roles')
+  @ApiOperation({
+    summary: 'Re-sync roles, pages, and permissions from Compport Cloud SQL',
+  })
+  syncTenantRoles(@Param('id') id: string) {
+    return this.service.syncTenantRoles(id);
+  }
+
   // ─── Stats ───────────────────────────────────────────────
 
   @Get('stats')

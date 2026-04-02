@@ -183,6 +183,18 @@ export function useAdminOnboard() {
   });
 }
 
+export function useAdminSyncTenantRoles() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (tenantId: string) => apiClient.adminSyncTenantRoles(tenantId),
+    onSuccess: (_d, tenantId) => {
+      void qc.invalidateQueries({ queryKey: ['admin-tenant-overview', tenantId] });
+      void qc.invalidateQueries({ queryKey: ['admin-tenant-roles', tenantId] });
+      void qc.invalidateQueries({ queryKey: ['admin-tenant-permissions', tenantId] });
+    },
+  });
+}
+
 // ─── Bridge Query Hooks ──────────────────────────────────
 
 export function useBridgeDiscoveryTables(schemaName: string | null) {

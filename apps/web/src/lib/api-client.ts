@@ -457,6 +457,21 @@ class ApiClient {
     }>('/api/v1/platform-admin/stats');
   }
 
+  async adminSyncTenantRoles(id: string) {
+    return this.fetch<{
+      tenantId: string;
+      tenantName: string;
+      compportSchema: string;
+      result: {
+        roles: { synced: number; errors: number };
+        pages: { synced: number; errors: number };
+        permissions: { synced: number; errors: number };
+        users: { synced: number; linked: number; errors: number };
+        durationMs: number;
+      };
+    }>(`/api/v1/platform-admin/tenants/${id}/sync-roles`, { method: 'POST' });
+  }
+
   // ─── Compport Bridge Query Endpoints ─────────────────────
 
   async bridgeQueryTable(

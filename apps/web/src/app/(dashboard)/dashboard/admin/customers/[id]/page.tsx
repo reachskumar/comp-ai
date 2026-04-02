@@ -19,6 +19,7 @@ import {
   X as XIcon,
   ChevronDown,
   ChevronRight,
+  RefreshCw,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -41,6 +42,7 @@ import {
   useAdminRemoveTenantUser,
   useAdminDeleteTenant,
   useCompportTenants,
+  useAdminSyncTenantRoles,
 } from '@/hooks/use-admin';
 import Link from 'next/link';
 
@@ -61,6 +63,7 @@ export default function AdminCustomerDetailPage() {
   const router = useRouter();
   const deleteTenant = useAdminDeleteTenant();
   const { data: compportData } = useCompportTenants();
+  const syncRoles = useAdminSyncTenantRoles();
 
   const [branding, setBranding] = useState({ subdomain: '', logoUrl: '', primaryColor: '' });
   const [newUser, setNewUser] = useState({ email: '', name: '', role: 'ADMIN', password: '' });
@@ -69,6 +72,13 @@ export default function AdminCustomerDetailPage() {
   const [selectedSchema, setSelectedSchema] = useState('');
   const [showSchemaConfirm, setShowSchemaConfirm] = useState(false);
   const [brandingLoaded, setBrandingLoaded] = useState(false);
+  const [schemaChanged, setSchemaChanged] = useState(false);
+  const [syncResult, setSyncResult] = useState<{
+    roles: number;
+    pages: number;
+    permissions: number;
+    users: number;
+  } | null>(null);
 
   if (tenant && !brandingLoaded) {
     setBranding({
@@ -130,8 +140,29 @@ export default function AdminCustomerDetailPage() {
       toast({ title: `Schema updated to "${selectedSchema}"` });
       setShowSchemaConfirm(false);
       setSelectedSchema('');
+      setSchemaChanged(true);
+      setSyncResult(null);
     } catch {
       toast({ title: 'Failed to update schema', variant: 'destructive' });
+    }
+  };
+
+  const handleSyncRoles = async () => {
+    try {
+      const result = await syncRoles.mutateAsync(id);
+      toast({
+        title: 'Roles & Permissions synced',
+        description: `${result.result.roles.synced} roles, ${result.result.pages.synced} pages, ${result.result.permissions.synced} permissions`,
+      });
+      setSyncResult({
+        roles: result.result.roles.synced,
+        pages: result.result.pages.synced,
+        permissions: result.result.permissions.synced,
+        users: result.result.users.synced,
+      });
+      setSchemaChanged(false);
+    } catch {
+      toast({ title: 'Failed to sync roles', variant: 'destructive' });
     }
   };
 
@@ -297,6 +328,68 @@ export default function AdminCustomerDetailPage() {
               </div>
             </div>
           )}
+
+          <Separator />
+
+          {/* Re-sync Roles & Permissions */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <Label className="text-sm font-medium">Roles & Permissions</Label>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Sync roles, pages, and permissions from the Compport Cloud SQL schema
+                </p>
+              </div>
+              <Button
+                onClick={handleSyncRoles}
+                disabled={syncRoles.isPending || !tenant.compportSchema}
+                variant="outline"
+                size="sm"
+              >
+                {syncRoles.isPending ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                )}
+                Re-sync
+              </Button>
+            </div>
+
+            {schemaChanged && (
+              <div className="rounded-md border border-blue-500/50 bg-blue-50 dark:bg-blue-950/20 p-3">
+                <p className="text-sm text-blue-800 dark:text-blue-200">
+                  💡 Schema has been changed. Click "Re-sync" to update roles and permissions from
+                  the new schema.
+                </p>
+              </div>
+            )}
+
+            {syncResult && (
+              <div className="rounded-md border border-green-500/50 bg-green-50 dark:bg-green-950/20 p-3 space-y-1">
+                <p className="text-sm font-medium text-green-800 dark:text-green-200">
+                  ✅ Sync completed successfully
+                </p>
+                <div className="grid grid-cols-4 gap-2 text-xs">
+                  <div>
+                    <span className="text-muted-foreground">Roles:</span>{' '}
+                    <span className="font-semibold">{syncResult.roles}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Pages:</span>{' '}
+                    <span className="font-semibold">{syncResult.pages}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Permissions:</span>{' '}
+                    <span className="font-semibold">{syncResult.permissions}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Users:</span>{' '}
+                    <span className="font-semibold">{syncResult.users}</span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
         </CardContent>
       </Card>
 
