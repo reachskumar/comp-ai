@@ -39,7 +39,7 @@ export function createMockPrismaClient() {
   const createModelMock = () => ({
     findFirst: vi.fn(),
     findUnique: vi.fn(),
-    findMany: vi.fn(),
+    findMany: vi.fn().mockResolvedValue([]),
     create: vi.fn(),
     createMany: vi.fn(),
     update: vi.fn(),
@@ -65,6 +65,8 @@ export function createMockPrismaClient() {
     syncLog: createModelMock(),
     fieldMapping: createModelMock(),
     refreshToken: createModelMock(),
+    tenantRole: createModelMock(),
+    tenantPage: createModelMock(),
     $connect: vi.fn(),
     $disconnect: vi.fn(),
     $queryRawUnsafe: vi.fn().mockResolvedValue([{ '?column?': 1 }]),
