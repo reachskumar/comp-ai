@@ -191,21 +191,26 @@ describe('TenantRegistryService', () => {
     // First call: verify database exists
     cloudSql.executeQuery
       .mockResolvedValueOnce([{ Database: 'platform_admin_db' }])
-      // Second call: query clients table
+      // Second call: DESCRIBE manage_company
+      .mockResolvedValueOnce([
+        { Field: 'dbname' },
+        { Field: 'company_name' },
+        { Field: 'status' },
+        { Field: 'createdon' },
+      ])
+      // Third call: query manage_company table
       .mockResolvedValueOnce([
         {
-          database_name: '200326_1585209819',
+          dbname: '200326_1585209819',
           company_name: 'Acme Corp',
-          status: 'active',
-          created_at: '2020-03-26',
-          employee_count: 500,
+          status: 1,
+          createdon: '2020-03-26',
         },
         {
-          database_name: '200415_1586900000',
+          dbname: '200415_1586900000',
           company_name: 'Globex Inc',
-          status: 'active',
-          created_at: '2020-04-15',
-          employee_count: 200,
+          status: 1,
+          createdon: '2020-04-15',
         },
       ]);
 
@@ -215,9 +220,9 @@ describe('TenantRegistryService', () => {
     expect(tenants[0]).toEqual({
       schemaName: '200326_1585209819',
       companyName: 'Acme Corp',
-      status: 'active',
-      createdAt: '2020-03-26',
-      employeeCount: 500,
+      status: '1',
+      createdAt: new Date('2020-03-26').toISOString(),
+      employeeCount: null,
     });
   });
 
@@ -281,9 +286,15 @@ describe('InboundSyncService — syncAll', () => {
     db.client.integrationConnector.update.mockResolvedValue({});
     db.client.employee.upsert.mockResolvedValue({});
     fieldMapping.findByConnector.mockResolvedValue([]);
-    cloudSql.executeQuery
-      .mockResolvedValueOnce([MOCK_EMPLOYEE_ROW]) // First batch
-      .mockResolvedValueOnce([]); // End of data
+
+    let employeeCallCount = 0;
+    cloudSql.executeQuery.mockImplementation((_schema: string, query: string) => {
+      if (typeof query === 'string' && query.includes('SELECT * FROM')) {
+        employeeCallCount++;
+        return employeeCallCount === 1 ? Promise.resolve([MOCK_EMPLOYEE_ROW]) : Promise.resolve([]);
+      }
+      return Promise.resolve([]);
+    });
 
     const result = await service.syncAll(TEST_TENANT_ID, CONNECTOR_ID, SYNC_JOB_ID);
 
@@ -321,7 +332,14 @@ describe('InboundSyncService — syncAll', () => {
       errors: [],
     });
 
-    cloudSql.executeQuery.mockResolvedValueOnce([MOCK_EMPLOYEE_ROW]).mockResolvedValueOnce([]);
+    let employeeCallCount = 0;
+    cloudSql.executeQuery.mockImplementation((_schema: string, query: string) => {
+      if (typeof query === 'string' && query.includes('SELECT * FROM')) {
+        employeeCallCount++;
+        return employeeCallCount === 1 ? Promise.resolve([MOCK_EMPLOYEE_ROW]) : Promise.resolve([]);
+      }
+      return Promise.resolve([]);
+    });
 
     const result = await service.syncAll(TEST_TENANT_ID, CONNECTOR_ID, SYNC_JOB_ID);
 
@@ -337,9 +355,16 @@ describe('InboundSyncService — syncAll', () => {
     fieldMapping.findByConnector.mockResolvedValue([]);
 
     // Row missing required employee_id
-    cloudSql.executeQuery
-      .mockResolvedValueOnce([{ name: 'No ID employee' }])
-      .mockResolvedValueOnce([]);
+    let employeeCallCount = 0;
+    cloudSql.executeQuery.mockImplementation((_schema: string, query: string) => {
+      if (typeof query === 'string' && query.includes('SELECT * FROM')) {
+        employeeCallCount++;
+        return employeeCallCount === 1
+          ? Promise.resolve([{ name: 'No ID employee' }])
+          : Promise.resolve([]);
+      }
+      return Promise.resolve([]);
+    });
 
     const result = await service.syncAll(TEST_TENANT_ID, CONNECTOR_ID, SYNC_JOB_ID);
 
@@ -354,7 +379,7 @@ describe('InboundSyncService — syncAll', () => {
     db.client.syncLog.create.mockResolvedValue({});
     db.client.integrationConnector.update.mockResolvedValue({});
     fieldMapping.findByConnector.mockResolvedValue([]);
-    cloudSql.executeQuery.mockResolvedValueOnce([]);
+    cloudSql.executeQuery.mockResolvedValue([]);
 
     const result = await service.syncAll(TEST_TENANT_ID, CONNECTOR_ID, SYNC_JOB_ID);
 
@@ -402,7 +427,14 @@ describe('InboundSyncService — syncAll', () => {
     db.client.employee.upsert.mockRejectedValue(new Error('DB constraint violation'));
     fieldMapping.findByConnector.mockResolvedValue([]);
 
-    cloudSql.executeQuery.mockResolvedValueOnce([MOCK_EMPLOYEE_ROW]).mockResolvedValueOnce([]);
+    let employeeCallCount = 0;
+    cloudSql.executeQuery.mockImplementation((_schema: string, query: string) => {
+      if (typeof query === 'string' && query.includes('SELECT * FROM')) {
+        employeeCallCount++;
+        return employeeCallCount === 1 ? Promise.resolve([MOCK_EMPLOYEE_ROW]) : Promise.resolve([]);
+      }
+      return Promise.resolve([]);
+    });
 
     const result = await service.syncAll(TEST_TENANT_ID, CONNECTOR_ID, SYNC_JOB_ID);
 
