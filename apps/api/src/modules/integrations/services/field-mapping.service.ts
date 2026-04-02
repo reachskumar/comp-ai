@@ -92,13 +92,39 @@ export class FieldMappingService {
       `Suggesting mappings for ${connectorType} (${sourceFields.length} source fields)`,
     );
 
-    return invokeFieldMappingGraph({
-      tenantId,
-      userId,
-      connectorType,
-      sourceFields,
-      targetFields: COMPPORT_TARGET_SCHEMA,
-    });
+    const TIMEOUT_MS = 60_000;
+
+    try {
+      const result = await Promise.race([
+        invokeFieldMappingGraph({
+          tenantId,
+          userId,
+          connectorType,
+          sourceFields,
+          targetFields: COMPPORT_TARGET_SCHEMA,
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error(`AI field mapping timed out after ${TIMEOUT_MS / 1000}s`)),
+            TIMEOUT_MS,
+          ),
+        ),
+      ]);
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown AI error';
+      this.logger.error(
+        `Field mapping AI failed for tenant=${tenantId} connector=${connectorType}: ${message}`,
+      );
+      return {
+        tenantId,
+        userId,
+        suggestions: [],
+        unmappedSource: sourceFields.map((f) => f.name),
+        unmappedTarget: [],
+        overallConfidence: 0,
+      };
+    }
   }
 
   async delete(tenantId: string, id: string) {

@@ -26,14 +26,7 @@ export class DashboardService {
   constructor(private readonly db: DatabaseService) {}
 
   async getSummary(tenantId: string): Promise<DashboardSummary> {
-    const [
-      totalEmployees,
-      activeCycles,
-      complianceScore,
-      pendingAnomalies,
-      recentImports,
-      recentActivity,
-    ] = await Promise.all([
+    const results = await Promise.allSettled([
       this.getEmployeeCount(tenantId),
       this.getActiveCycleCount(tenantId),
       this.getLatestComplianceScore(tenantId),
@@ -42,13 +35,22 @@ export class DashboardService {
       this.getRecentActivity(tenantId),
     ]);
 
+    const extract = <T>(index: number, fallback: T): T => {
+      const result = results[index]!;
+      if (result.status === 'fulfilled') return result.value as T;
+      this.logger.warn(
+        `Dashboard query ${index} failed for tenant=${tenantId}: ${(result as PromiseRejectedResult).reason}`,
+      );
+      return fallback;
+    };
+
     return {
-      totalEmployees,
-      activeCycles,
-      complianceScore,
-      pendingAnomalies,
-      recentImports,
-      recentActivity,
+      totalEmployees: extract(0, 0),
+      activeCycles: extract(1, 0),
+      complianceScore: extract(2, null),
+      pendingAnomalies: extract(3, 0),
+      recentImports: extract(4, 0),
+      recentActivity: extract(5, []),
     };
   }
 
