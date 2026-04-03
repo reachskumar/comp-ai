@@ -148,6 +148,14 @@ export class PlatformAdminController {
     return this.service.syncTenantRoles(id);
   }
 
+  @Post('tenants/:id/sync-full')
+  @ApiOperation({
+    summary: 'Full sync: roles, pages, permissions, users, and employees from Compport Cloud SQL',
+  })
+  syncTenantFull(@Param('id') id: string) {
+    return this.service.syncTenantFull(id);
+  }
+
   @Post('tenants/:id/test-connection')
   @ApiOperation({
     summary: "Test Cloud SQL connectivity for a tenant's Compport schema",

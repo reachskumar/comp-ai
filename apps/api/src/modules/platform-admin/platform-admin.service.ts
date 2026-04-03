@@ -190,7 +190,87 @@ export class PlatformAdminService {
 
   async deleteTenant(id: string) {
     const tenant = await this.getTenant(id);
-    await this.db.client.tenant.delete({ where: { id } });
+
+    // Delete all child records in dependency order within a transaction.
+    // We use raw SQL to bypass RLS policies (platform admin operation)
+    // and delete in the correct FK order to avoid constraint violations.
+    await this.db.client.$transaction(
+      async (tx) => {
+        // Leaf-level tables first (no other tables reference these)
+        const tablesToDelete = [
+          // Deepest leaves
+          'tenant_role_permissions',
+          'policy_chunks',
+          'import_issues',
+          'import_ai_analyses',
+          'rules',
+          'test_cases',
+          'calibration_votes',
+          'payroll_line_items',
+          'payroll_anomalies',
+          'benefit_dependents',
+          'compensation_letters',
+          'attrition_risk_scores',
+          'equity_vesting_events',
+          'copilot_messages',
+          'write_back_rows',
+          'simulation_scenario_results',
+          // Mid-level
+          'tenant_pages',
+          'tenant_roles',
+          'field_mappings',
+          'sync_jobs',
+          'webhook_endpoints',
+          'write_back_batches',
+          'ad_hoc_increases',
+          'comp_recommendations',
+          'cycle_budgets',
+          'calibration_sessions',
+          'benefit_enrollments',
+          'enrollment_windows',
+          'life_events',
+          'equity_grants',
+          'rewards_statements',
+          'copilot_conversations',
+          'simulation_scenarios',
+          'simulation_runs',
+          'payroll_runs',
+          'attrition_analysis_runs',
+          'pay_equity_reports',
+          'career_ladders',
+          // Higher-level
+          'job_levels',
+          'job_families',
+          'salary_bands',
+          'market_data_sources',
+          'exchange_rates',
+          'tenant_currencies',
+          'merit_matrices',
+          'comp_cycles',
+          'benefit_plans',
+          'equity_plans',
+          'policy_documents',
+          'rule_sets',
+          'import_jobs',
+          'integration_connectors',
+          'notifications',
+          'audit_logs',
+          'refresh_tokens',
+          // User and Employee (User references Employee, so delete Users first)
+          'users',
+          'employees',
+        ];
+
+        for (const table of tablesToDelete) {
+          await tx.$executeRawUnsafe(`DELETE FROM "${table}" WHERE "tenantId" = $1`, id);
+        }
+
+        // Finally delete the tenant itself
+        await tx.$executeRawUnsafe(`DELETE FROM "tenants" WHERE "id" = $1`, id);
+      },
+      { timeout: 60_000 }, // 60s timeout for large tenants
+    );
+
     this.logger.warn(`Tenant DELETED: ${tenant.name} (${tenant.id})`);
     return { deleted: true, id, name: tenant.name };
   }
@@ -802,6 +882,63 @@ export class PlatformAdminService {
         tenantName: tenant.name,
         compportSchema: tenant.compportSchema,
         result,
+      };
+    } finally {
+      await this.cloudSql.disconnect();
+    }
+  }
+
+  /**
+   * Full sync: roles, pages, permissions, users, AND employees.
+   * This is the complete sync that should be triggered from the admin UI.
+   */
+  async syncTenantFull(tenantId: string) {
+    const tenant = await this.getTenant(tenantId);
+
+    if (!tenant.compportSchema) {
+      throw new BadRequestException(
+        `Tenant "${tenant.name}" has no Compport schema configured. Cannot sync.`,
+      );
+    }
+
+    const mysqlConfig = this.getMySqlConfig();
+    try {
+      await this.cloudSql.connect({
+        host: mysqlConfig.host!,
+        port: mysqlConfig.port ?? 3306,
+        user: mysqlConfig.user!,
+        password: mysqlConfig.password!,
+        database: tenant.compportSchema,
+        sslCa: mysqlConfig.sslCa,
+        sslCert: mysqlConfig.sslCert,
+        sslKey: mysqlConfig.sslKey,
+      });
+
+      // Step 1: Sync roles, pages, permissions, and users
+      const roleResult = await this.inboundSyncService.syncRolesAndPermissions(
+        tenantId,
+        tenant.compportSchema,
+      );
+
+      // Step 2: Sync employees from employee_master
+      const employeeResult = await this.inboundSyncService.syncEmployeesForTenant(
+        tenantId,
+        tenant.compportSchema,
+        'employee_master',
+      );
+
+      this.logger.log(
+        `Full sync for ${tenant.name}: roles=${roleResult.roles.synced}, ` +
+          `pages=${roleResult.pages.synced}, permissions=${roleResult.permissions.synced}, ` +
+          `users=${roleResult.users.synced}, employees=${employeeResult.synced}`,
+      );
+
+      return {
+        tenantId,
+        tenantName: tenant.name,
+        compportSchema: tenant.compportSchema,
+        roles: roleResult,
+        employees: employeeResult,
       };
     } finally {
       await this.cloudSql.disconnect();

@@ -593,6 +593,85 @@ export class InboundSyncService {
     };
   }
 
+  /**
+   * Sync employees from Cloud SQL for a platform-admin-managed tenant.
+   * Unlike syncEmployees(), this does NOT require a DataConnector or SyncJob —
+   * it takes the schema/table directly and returns a summary.
+   *
+   * Assumes Cloud SQL connection is already established by the caller.
+   */
+  async syncEmployeesForTenant(
+    tenantId: string,
+    schemaName: string,
+    tableName = 'employee_master',
+  ): Promise<{ synced: number; skipped: number; errors: number; durationMs: number }> {
+    const start = Date.now();
+    let synced = 0;
+    let skipped = 0;
+    let errors = 0;
+
+    const lookups = await this.loadLookupMaps(schemaName);
+    this.logger.log(
+      `[tenant-sync] Loaded lookup maps: functions=${lookups.functions.size}, levels=${lookups.levels.size}`,
+    );
+
+    let offset = 0;
+    let hasMore = true;
+
+    while (hasMore) {
+      const rows = await this.cloudSql.executeQuery<Record<string, unknown>>(
+        schemaName,
+        `SELECT * FROM \`${tableName}\` LIMIT ? OFFSET ?`,
+        [BATCH_SIZE, offset],
+      );
+
+      if (rows.length === 0) {
+        hasMore = false;
+        break;
+      }
+
+      for (const row of rows) {
+        try {
+          const parsed = CloudSqlEmployeeRowSchema.safeParse(row);
+          if (!parsed.success) {
+            skipped++;
+            continue;
+          }
+
+          const validRow = parsed.data;
+          const employeeId = String(
+            validRow.employee_code || validRow.employee_id || validRow.id || 'unknown',
+          );
+          if (!employeeId || employeeId === 'unknown' || employeeId === '') {
+            skipped++;
+            continue;
+          }
+
+          const mappedData = this.defaultMapping(validRow, lookups);
+          await this.upsertEmployee(tenantId, employeeId, mappedData);
+          synced++;
+        } catch (err) {
+          errors++;
+          const message = err instanceof Error ? err.message : 'Unknown error';
+          this.logger.warn(`[tenant-sync] Failed to sync employee: ${message.substring(0, 200)}`);
+        }
+      }
+
+      offset += rows.length;
+      if (rows.length < BATCH_SIZE) hasMore = false;
+    }
+
+    const durationMs = Date.now() - start;
+    this.logger.log(
+      `[tenant-sync] Employee sync complete: synced=${synced}, skipped=${skipped}, errors=${errors}, duration=${durationMs}ms`,
+    );
+
+    // Resolve manager relationships
+    await this.resolveManagerRelationships(tenantId, schemaName, tableName);
+
+    return { synced, skipped, errors, durationMs: Date.now() - start };
+  }
+
   // ─── Private Helpers ─────────────────────────────────────────
 
   /**
@@ -1199,11 +1278,7 @@ export class InboundSyncService {
         role: string;
         email: string | null;
         name: string | null;
-        is_people_manager: number | null;
-      }>(
-        schemaName,
-        'SELECT employee_code, role, email, name, is_people_manager FROM `login_user`',
-      );
+      }>(schemaName, 'SELECT employee_code, role, email, name FROM `login_user`');
 
       for (const row of rows) {
         try {
