@@ -43,6 +43,7 @@ import {
   useAdminDeleteTenant,
   useCompportTenants,
   useAdminSyncTenantRoles,
+  useAdminTestTenantConnection,
 } from '@/hooks/use-admin';
 import Link from 'next/link';
 
@@ -85,6 +86,7 @@ export default function AdminCustomerDetailPage() {
   const deleteTenant = useAdminDeleteTenant();
   const { data: compportData } = useCompportTenants();
   const syncRoles = useAdminSyncTenantRoles();
+  const testConnection = useAdminTestTenantConnection();
 
   const [branding, setBranding] = useState({ subdomain: '', logoUrl: '', primaryColor: '' });
   const [newUser, setNewUser] = useState({ email: '', name: '', role: 'ADMIN', password: '' });
@@ -99,6 +101,12 @@ export default function AdminCustomerDetailPage() {
     pages: number;
     permissions: number;
     users: number;
+  } | null>(null);
+  const [connectionResult, setConnectionResult] = useState<{
+    ok: boolean;
+    durationMs: number;
+    schema: string;
+    error?: string;
   } | null>(null);
 
   if (tenant && !brandingLoaded) {
@@ -185,6 +193,21 @@ export default function AdminCustomerDetailPage() {
       setSchemaChanged(false);
     } catch {
       toast({ title: 'Failed to sync roles', variant: 'destructive' });
+    }
+  };
+
+  const handleTestConnection = async () => {
+    setConnectionResult(null);
+    try {
+      const result = await testConnection.mutateAsync(id);
+      setConnectionResult(result);
+    } catch {
+      setConnectionResult({
+        ok: false,
+        durationMs: 0,
+        schema: (tenant?.compportSchema as string) || '',
+        error: 'Request failed — check network or API',
+      });
     }
   };
 
@@ -360,6 +383,57 @@ export default function AdminCustomerDetailPage() {
               </div>
             </div>
           )}
+
+          <Separator />
+
+          {/* Test Cloud SQL Connection */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <Label className="text-sm font-medium">Connection Test</Label>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Verify Cloud SQL connectivity before syncing
+                </p>
+              </div>
+              <Button
+                onClick={handleTestConnection}
+                disabled={testConnection.isPending || !tenant.compportSchema}
+                variant="outline"
+                size="sm"
+              >
+                {testConnection.isPending ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="mr-2 h-4 w-4" />
+                )}
+                Test Connection
+              </Button>
+            </div>
+
+            {connectionResult && connectionResult.ok && (
+              <div className="rounded-md border border-green-500/50 bg-green-50 dark:bg-green-950/20 p-3">
+                <p className="text-sm font-medium text-green-800 dark:text-green-200">
+                  ✅ Connected to <span className="font-mono">{connectionResult.schema}</span> in{' '}
+                  {connectionResult.durationMs}ms
+                </p>
+              </div>
+            )}
+
+            {connectionResult && !connectionResult.ok && (
+              <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 space-y-1">
+                <p className="text-sm font-medium text-destructive">❌ Connection failed</p>
+                <p className="text-xs text-muted-foreground">
+                  Schema: <span className="font-mono">{connectionResult.schema}</span>
+                  {connectionResult.durationMs > 0 && ` · ${connectionResult.durationMs}ms`}
+                </p>
+                {connectionResult.error && (
+                  <p className="text-xs text-destructive/80 font-mono break-all">
+                    {connectionResult.error}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
 
           <Separator />
 

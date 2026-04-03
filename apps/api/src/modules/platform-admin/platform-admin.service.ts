@@ -801,6 +801,78 @@ export class PlatformAdminService {
     }
   }
 
+  /**
+   * Test Cloud SQL connectivity for a tenant's Compport schema.
+   * Lightweight check: connect → ping → disconnect.
+   */
+  async testTenantConnection(tenantId: string) {
+    const tenant = await this.getTenant(tenantId);
+
+    if (!tenant.compportSchema) {
+      throw new BadRequestException(
+        `Tenant "${tenant.name}" has no Compport schema configured. Cannot test connection.`,
+      );
+    }
+
+    const mysqlConfig = this.getMySqlConfig();
+    const start = Date.now();
+
+    if (!mysqlConfig.host || !mysqlConfig.user || !mysqlConfig.password) {
+      return {
+        ok: false,
+        durationMs: Date.now() - start,
+        schema: tenant.compportSchema,
+        error: 'Cloud SQL credentials not configured (missing DB_HOST, DB_USER, or DB_PWD)',
+      };
+    }
+
+    try {
+      await this.cloudSql.connect({
+        host: mysqlConfig.host,
+        port: mysqlConfig.port ?? 3306,
+        user: mysqlConfig.user,
+        password: mysqlConfig.password,
+        database: tenant.compportSchema,
+      });
+
+      const healthy = await this.cloudSql.isHealthy();
+      const durationMs = Date.now() - start;
+
+      if (!healthy) {
+        return {
+          ok: false,
+          durationMs,
+          schema: tenant.compportSchema,
+          error: 'Connected but health check (ping) failed',
+        };
+      }
+
+      this.logger.log(
+        `Connection test OK for ${tenant.name} (schema=${tenant.compportSchema}, ${durationMs}ms)`,
+      );
+
+      return {
+        ok: true,
+        durationMs,
+        schema: tenant.compportSchema,
+      };
+    } catch (err) {
+      const durationMs = Date.now() - start;
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      this.logger.warn(
+        `Connection test FAILED for ${tenant.name} (schema=${tenant.compportSchema}): ${message}`,
+      );
+      return {
+        ok: false,
+        durationMs,
+        schema: tenant.compportSchema,
+        error: message,
+      };
+    } finally {
+      await this.cloudSql.disconnect();
+    }
+  }
+
   // ─── Platform Stats ──────────────────────────────────────
 
   async getStats() {
