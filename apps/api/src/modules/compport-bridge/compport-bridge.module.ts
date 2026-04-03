@@ -6,6 +6,7 @@ import { CompportDbService } from './services/compport-db.service';
 import { CompportApiService } from './services/compport-api.service';
 import { CompportSessionService } from './services/compport-session.service';
 import { CompportCloudSqlService } from './services/compport-cloudsql.service';
+import { ConnectionManagerService } from './services/connection-manager.service';
 import { WriteBackService } from './services/write-back.service';
 import { CompportHistoryService } from './services/history.service';
 import { InboundSyncService } from './services/inbound-sync.service';
@@ -17,6 +18,11 @@ import { InboundSyncController } from './controllers/inbound-sync.controller';
 import { BridgeRateLimitGuard } from './guards/bridge-rate-limit.guard';
 import { WriteBackProcessor, WRITE_BACK_QUEUE } from './processors/write-back.processor';
 import { InboundSyncProcessor, INBOUND_SYNC_QUEUE } from './processors/inbound-sync.processor';
+import {
+  SyncSchedulerService,
+  RealtimeSyncProcessor,
+  REALTIME_SYNC_QUEUE,
+} from './services/sync-scheduler.service';
 import { IntegrationModule } from '../integrations/integrations.module';
 import { BullModule } from '@nestjs/bullmq';
 
@@ -45,6 +51,7 @@ export class CompportBridgeModule {
         IntegrationModule,
         BullModule.registerQueue({ name: WRITE_BACK_QUEUE }),
         BullModule.registerQueue({ name: INBOUND_SYNC_QUEUE }),
+        BullModule.registerQueue({ name: REALTIME_SYNC_QUEUE }),
         JwtModule.registerAsync({
           inject: [ConfigService],
           useFactory: (configService: ConfigService) => ({
@@ -60,11 +67,14 @@ export class CompportBridgeModule {
         CompportApiService,
         CompportSessionService,
         CompportCloudSqlService,
+        ConnectionManagerService,
         CompportHistoryService,
         WriteBackService,
         WriteBackProcessor,
         InboundSyncService,
         InboundSyncProcessor,
+        SyncSchedulerService,
+        RealtimeSyncProcessor,
         SchemaDiscoveryService,
         TenantRegistryService,
         BridgeRateLimitGuard,
@@ -75,9 +85,11 @@ export class CompportBridgeModule {
         CompportApiService,
         CompportSessionService,
         CompportCloudSqlService,
+        ConnectionManagerService,
         CompportHistoryService,
         WriteBackService,
         InboundSyncService,
+        SyncSchedulerService,
         SchemaDiscoveryService,
         TenantRegistryService,
       ],

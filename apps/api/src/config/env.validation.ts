@@ -110,6 +110,13 @@ export class EnvironmentVariables {
   @IsString()
   @IsOptional()
   INTEGRATION_ENCRYPTION_KEY?: string;
+
+  // ---- Real-time Sync ----
+
+  @Transform(({ value }) => (value != null ? parseInt(String(value), 10) : value))
+  @IsNumber()
+  @IsOptional()
+  SYNC_INTERVAL_SECONDS?: number = 120;
 }
 
 export function validate(config: Record<string, unknown>): EnvironmentVariables {

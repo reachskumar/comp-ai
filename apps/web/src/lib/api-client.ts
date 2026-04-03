@@ -558,6 +558,38 @@ class ApiClient {
       `/api/v1/compport-bridge/discovery/schemas/${schemaName}/tables`,
     );
   }
+
+  async bridgeSyncHealth() {
+    return this.fetch<{
+      status: 'healthy' | 'degraded' | 'idle';
+      scheduler: { intervalSeconds: number };
+      connections: { total: number; healthy: number; degraded: number; disconnected: number };
+      tenants: Array<{
+        tenantId: string;
+        connected: boolean;
+        paused: boolean;
+        lastHealthCheck: string | null;
+        lastError: string | null;
+        consecutiveFailures: number;
+        connectedSince: string | null;
+        schemaName: string | null;
+      }>;
+    }>('/api/v1/compport-bridge/sync/health');
+  }
+
+  async bridgePauseSync(tenantId: string) {
+    return this.fetch<{ tenantId: string; paused: boolean; message: string }>(
+      `/api/v1/compport-bridge/sync/pause/${tenantId}`,
+      { method: 'POST' },
+    );
+  }
+
+  async bridgeResumeSync(tenantId: string) {
+    return this.fetch<{ tenantId: string; paused: boolean; message: string }>(
+      `/api/v1/compport-bridge/sync/resume/${tenantId}`,
+      { method: 'POST' },
+    );
+  }
 }
 
 export const apiClient = new ApiClient();
