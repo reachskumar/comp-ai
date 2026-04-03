@@ -508,43 +508,60 @@ export class PlatformAdminService {
   async getTenantOverview(tenantId: string) {
     const tenant = await this.getTenant(tenantId);
 
-    const [userCount, employeeCount, roles, pages, permissions, lastSync] = await this.db.forTenant(
-      tenantId,
-      (tx) =>
-        Promise.all([
-          tx.user.count({ where: { tenantId } }),
-          tx.employee.count({ where: { tenantId } }),
-          tx.tenantRole.findMany({
-            where: { tenantId, isActive: true },
-            select: { id: true, compportRoleId: true, name: true },
-          }),
-          tx.tenantPage.count({ where: { tenantId } }),
-          tx.tenantRolePermission.count({ where: { tenantId } }),
-          tx.syncJob.findFirst({
-            where: { tenantId },
-            orderBy: { createdAt: 'desc' },
-            select: {
-              id: true,
-              status: true,
-              entityType: true,
-              totalRecords: true,
-              processedRecords: true,
-              failedRecords: true,
-              startedAt: true,
-              completedAt: true,
-              errorMessage: true,
-            },
-          }),
-        ]),
-    );
+    // Wrap all forTenant calls so RLS/query failures return safe defaults
+    let userCount = 0;
+    let employeeCount = 0;
+    let roles: { id: string; compportRoleId: string; name: string }[] = [];
+    let pages = 0;
+    let permissions = 0;
+    let lastSync: Record<string, unknown> | null = null;
+    let users: { role: string }[] = [];
+
+    try {
+      [userCount, employeeCount, roles, pages, permissions, lastSync] = await this.db.forTenant(
+        tenantId,
+        (tx) =>
+          Promise.all([
+            tx.user.count({ where: { tenantId } }),
+            tx.employee.count({ where: { tenantId } }),
+            tx.tenantRole.findMany({
+              where: { tenantId, isActive: true },
+              select: { id: true, compportRoleId: true, name: true },
+            }),
+            tx.tenantPage.count({ where: { tenantId } }),
+            tx.tenantRolePermission.count({ where: { tenantId } }),
+            tx.syncJob.findFirst({
+              where: { tenantId },
+              orderBy: { createdAt: 'desc' },
+              select: {
+                id: true,
+                status: true,
+                entityType: true,
+                totalRecords: true,
+                processedRecords: true,
+                failedRecords: true,
+                startedAt: true,
+                completedAt: true,
+                errorMessage: true,
+              },
+            }),
+          ]),
+      );
+    } catch (err) {
+      this.logger.warn(`getTenantOverview: forTenant query failed for ${tenantId}: ${err}`);
+    }
 
     // Build role distribution: count users per Compport role
-    const users = await this.db.forTenant(tenantId, (tx) =>
-      tx.user.findMany({
-        where: { tenantId },
-        select: { role: true },
-      }),
-    );
+    try {
+      users = await this.db.forTenant(tenantId, (tx) =>
+        tx.user.findMany({
+          where: { tenantId },
+          select: { role: true },
+        }),
+      );
+    } catch (err) {
+      this.logger.warn(`getTenantOverview: user role query failed for ${tenantId}: ${err}`);
+    }
 
     const roleCountMap = new Map<string, number>();
     for (const u of users) {
@@ -617,26 +634,40 @@ export class PlatformAdminService {
   async getTenantRoles(tenantId: string) {
     await this.getTenant(tenantId);
 
-    const [roles, users] = await this.db.forTenant(tenantId, (tx) =>
-      Promise.all([
-        tx.tenantRole.findMany({
-          where: { tenantId },
-          select: {
-            id: true,
-            compportRoleId: true,
-            name: true,
-            module: true,
-            isActive: true,
-            syncedAt: true,
-          },
-          orderBy: { name: 'asc' },
-        }),
-        tx.user.findMany({
-          where: { tenantId },
-          select: { role: true },
-        }),
-      ]),
-    );
+    let roles: {
+      id: string;
+      compportRoleId: string;
+      name: string;
+      module: string | null;
+      isActive: boolean;
+      syncedAt: Date | null;
+    }[] = [];
+    let users: { role: string }[] = [];
+
+    try {
+      [roles, users] = await this.db.forTenant(tenantId, (tx) =>
+        Promise.all([
+          tx.tenantRole.findMany({
+            where: { tenantId },
+            select: {
+              id: true,
+              compportRoleId: true,
+              name: true,
+              module: true,
+              isActive: true,
+              syncedAt: true,
+            },
+            orderBy: { name: 'asc' },
+          }),
+          tx.user.findMany({
+            where: { tenantId },
+            select: { role: true },
+          }),
+        ]),
+      );
+    } catch (err) {
+      this.logger.warn(`getTenantRoles: forTenant query failed for ${tenantId}: ${err}`);
+    }
 
     const roleCountMap = new Map<string, number>();
     for (const u of users) {
@@ -657,16 +688,29 @@ export class PlatformAdminService {
   async getTenantPermissions(tenantId: string) {
     await this.getTenant(tenantId);
 
-    const permissions = await this.db.forTenant(tenantId, (tx) =>
-      tx.tenantRolePermission.findMany({
-        where: { tenantId },
-        include: {
-          role: { select: { compportRoleId: true, name: true } },
-          page: { select: { name: true, compportPageId: true } },
-        },
-        orderBy: [{ role: { name: 'asc' } }, { page: { name: 'asc' } }],
-      }),
-    );
+    let permissions: {
+      role: { compportRoleId: string; name: string };
+      page: { name: string; compportPageId: string };
+      canView: boolean;
+      canInsert: boolean;
+      canUpdate: boolean;
+      canDelete: boolean;
+    }[] = [];
+
+    try {
+      permissions = await this.db.forTenant(tenantId, (tx) =>
+        tx.tenantRolePermission.findMany({
+          where: { tenantId },
+          include: {
+            role: { select: { compportRoleId: true, name: true } },
+            page: { select: { name: true, compportPageId: true } },
+          },
+          orderBy: [{ role: { name: 'asc' } }, { page: { name: 'asc' } }],
+        }),
+      );
+    } catch (err) {
+      this.logger.warn(`getTenantPermissions: forTenant query failed for ${tenantId}: ${err}`);
+    }
 
     // Group by role
     const byRole = new Map<
