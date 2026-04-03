@@ -284,11 +284,16 @@ export class PlatformAdminService {
       this.configService.get('DB_PWD', '') ||
       this.configService.get('COMPPORT_CLOUDSQL_PASSWORD', '');
 
-    return { host, port, user, password };
+    // SSL client certificates (required by Cloud SQL in production)
+    const sslCa = process.env['MYSQL_CA_CERT'];
+    const sslCert = process.env['MYSQL_CLIENT_CERT'];
+    const sslKey = process.env['MYSQL_CLIENT_KEY'];
+
+    return { host, port, user, password, sslCa, sslCert, sslKey };
   }
 
   async listCompportTenants() {
-    const { host, port, user, password } = this.getMySqlConfig();
+    const { host, port, user, password, sslCa, sslCert, sslKey } = this.getMySqlConfig();
 
     if (!host || !user || !password) {
       const missing = [!host && 'DB_HOST', !user && 'DB_USER', !password && 'DB_PWD'].filter(
@@ -299,10 +304,6 @@ export class PlatformAdminService {
       );
       return { tenants: [], count: 0 };
     }
-
-    const sslCa = process.env['MYSQL_CA_CERT'];
-    const sslCert = process.env['MYSQL_CLIENT_CERT'];
-    const sslKey = process.env['MYSQL_CLIENT_KEY'];
 
     try {
       await this.cloudSql.connect({ host, port, user, password, sslCa, sslCert, sslKey });
@@ -455,6 +456,9 @@ export class PlatformAdminService {
           user: mysqlConfig.user!,
           password: mysqlConfig.password!,
           database: dto.compportSchema,
+          sslCa: mysqlConfig.sslCa,
+          sslCert: mysqlConfig.sslCert,
+          sslKey: mysqlConfig.sslKey,
         });
 
         roleSyncResult = await this.inboundSyncService.syncRolesAndPermissions(
@@ -776,6 +780,9 @@ export class PlatformAdminService {
         user: mysqlConfig.user!,
         password: mysqlConfig.password!,
         database: tenant.compportSchema,
+        sslCa: mysqlConfig.sslCa,
+        sslCert: mysqlConfig.sslCert,
+        sslKey: mysqlConfig.sslKey,
       });
 
       // Sync roles, pages, permissions, and users
@@ -833,6 +840,9 @@ export class PlatformAdminService {
         user: mysqlConfig.user,
         password: mysqlConfig.password,
         database: tenant.compportSchema,
+        sslCa: mysqlConfig.sslCa,
+        sslCert: mysqlConfig.sslCert,
+        sslKey: mysqlConfig.sslKey,
       });
 
       const healthy = await this.cloudSql.isHealthy();
