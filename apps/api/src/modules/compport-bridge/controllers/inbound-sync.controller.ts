@@ -18,6 +18,8 @@ import { TenantGuard, PermissionGuard, RequirePermission } from '../../../common
 import { InboundSyncService } from '../services/inbound-sync.service';
 import { SchemaDiscoveryService } from '../services/schema-discovery.service';
 import { TenantRegistryService } from '../services/tenant-registry.service';
+import { ConnectionManagerService } from '../services/connection-manager.service';
+import { SyncSchedulerService } from '../services/sync-scheduler.service';
 import { INBOUND_SYNC_QUEUE, type InboundSyncJobData } from '../processors/inbound-sync.processor';
 import { DatabaseService } from '../../../database';
 import { CredentialVaultService } from '../../integrations/services/credential-vault.service';
@@ -50,6 +52,8 @@ export class InboundSyncController {
     private readonly inboundSyncService: InboundSyncService,
     private readonly schemaDiscovery: SchemaDiscoveryService,
     private readonly tenantRegistry: TenantRegistryService,
+    private readonly connectionManager: ConnectionManagerService,
+    private readonly syncScheduler: SyncSchedulerService,
     private readonly db: DatabaseService,
     private readonly credentialVault: CredentialVaultService,
     private readonly cloudSql: CompportCloudSqlService,
@@ -140,6 +144,54 @@ export class InboundSyncController {
     });
 
     return { jobs, total, page: p, limit: l, totalPages: Math.ceil(total / l) };
+  }
+
+  // ─── Sync Health & Control ─────────────────────────────
+
+  @Get('sync/health')
+  @ApiOperation({ summary: 'Real-time sync health: connection pools, scheduler status' })
+  async getSyncHealth() {
+    const pools = this.connectionManager.getAllStatus();
+    const healthy = pools.filter((p) => p.connected && p.consecutiveFailures === 0).length;
+    const degraded = pools.filter((p) => p.connected && p.consecutiveFailures > 0).length;
+    const disconnected = pools.filter((p) => !p.connected).length;
+
+    return {
+      status: disconnected > 0 ? 'degraded' : pools.length === 0 ? 'idle' : 'healthy',
+      scheduler: {
+        intervalSeconds: this.syncScheduler.intervalSeconds,
+      },
+      connections: {
+        total: pools.length,
+        healthy,
+        degraded,
+        disconnected,
+      },
+      tenants: pools.map((p) => ({
+        tenantId: p.tenantId,
+        connected: p.connected,
+        paused: this.syncScheduler.isPaused(p.tenantId),
+        lastHealthCheck: p.lastHealthCheck,
+        lastError: p.lastError,
+        consecutiveFailures: p.consecutiveFailures,
+        connectedSince: p.connectedSince,
+        schemaName: p.schemaName,
+      })),
+    };
+  }
+
+  @Post('sync/pause/:tenantId')
+  @ApiOperation({ summary: 'Pause real-time sync for a tenant' })
+  async pauseSync(@Param('tenantId') tenantId: string) {
+    this.syncScheduler.pauseTenant(tenantId);
+    return { tenantId, paused: true, message: `Sync paused for tenant ${tenantId}` };
+  }
+
+  @Post('sync/resume/:tenantId')
+  @ApiOperation({ summary: 'Resume real-time sync for a tenant' })
+  async resumeSync(@Param('tenantId') tenantId: string) {
+    this.syncScheduler.resumeTenant(tenantId);
+    return { tenantId, paused: false, message: `Sync resumed for tenant ${tenantId}` };
   }
 
   // ─── Schema Discovery Endpoints ──────────────────────────

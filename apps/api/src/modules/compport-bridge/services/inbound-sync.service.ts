@@ -1,11 +1,15 @@
 import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { DatabaseService } from '../../../database';
 import { CompportCloudSqlService } from './compport-cloudsql.service';
+import { ConnectionManagerService } from './connection-manager.service';
 import { CredentialVaultService } from '../../integrations/services/credential-vault.service';
 import { FieldMappingService } from '../../integrations/services/field-mapping.service';
 import { CloudSqlEmployeeRowSchema } from '../schemas/compport-data.schemas';
 
 const BATCH_SIZE = 1000;
+
+/** Common timestamp column names in Compport MySQL schemas */
+const TIMESTAMP_COLUMNS = ['updated_at', 'modified_date', 'modified_at', 'last_modified'];
 
 /** Lookup tables from Compport manage_* tables: numeric ID → human-readable name */
 interface LookupMaps {
@@ -73,6 +77,7 @@ export class InboundSyncService {
   constructor(
     private readonly db: DatabaseService,
     private readonly cloudSql: CompportCloudSqlService,
+    private readonly connectionManager: ConnectionManagerService,
     private readonly credentialVault: CredentialVaultService,
     private readonly fieldMappingService: FieldMappingService,
   ) {}
@@ -123,6 +128,294 @@ export class InboundSyncService {
       return result;
     } finally {
       await this.cloudSql.disconnect();
+    }
+  }
+
+  /**
+   * Incremental sync: only fetches records changed since the last sync.
+   * Uses the persistent ConnectionManager pool (no connect/disconnect per sync).
+   * Falls back to full sync if no lastSyncAt exists for the connector.
+   */
+  async syncIncremental(tenantId: string, connectorId: string): Promise<InboundSyncResult> {
+    const start = Date.now();
+    const connector = await this.getConnectorOrThrow(tenantId, connectorId);
+    const config = connector.config as Record<string, string>;
+    const schemaName = config?.schemaName;
+    const tableName = config?.tableName ?? 'employees';
+
+    if (!schemaName) {
+      throw new BadRequestException('Connector config missing schemaName');
+    }
+
+    const lastSyncAt = connector.lastSyncAt;
+    const isFullSync = !lastSyncAt;
+
+    // Create a SyncJob record for this incremental run
+    const syncJob = await this.db.forTenant(tenantId, (tx) =>
+      tx.syncJob.create({
+        data: {
+          tenantId,
+          connectorId,
+          direction: 'INBOUND',
+          entityType: 'employee',
+          status: 'RUNNING',
+          metadata: {
+            type: isFullSync ? 'full' : 'incremental',
+            since: lastSyncAt?.toISOString() ?? null,
+          } as never,
+        },
+      }),
+    );
+
+    this.logger.log(
+      `Starting ${isFullSync ? 'FULL' : 'INCREMENTAL'} sync: tenant=${tenantId}, ` +
+        `connector=${connectorId}, since=${lastSyncAt?.toISOString() ?? 'never'}`,
+    );
+
+    // If no lastSyncAt, fall back to full sync (with connect/disconnect)
+    if (isFullSync) {
+      return this.syncAll(tenantId, connectorId, syncJob.id);
+    }
+
+    // Use persistent connection pool for incremental sync
+    const mappings = await this.fieldMappingService.findByConnector(tenantId, connectorId);
+
+    try {
+      // Detect which timestamp column exists in the table
+      const timestampCol = await this.detectTimestampColumn(tenantId, schemaName, tableName);
+
+      // Sync roles and permissions (always full — they're small)
+      await this.ensureConnectionManagerConnected(tenantId);
+      const roleSyncResult = await this.syncRolesAndPermissions(tenantId, schemaName);
+      this.logger.log(
+        `Role sync: roles=${roleSyncResult.roles.synced}, pages=${roleSyncResult.pages.synced}`,
+      );
+
+      // Sync only changed employees
+      const result = await this.syncEmployeesIncremental(
+        tenantId,
+        connectorId,
+        syncJob.id,
+        schemaName,
+        tableName,
+        mappings,
+        lastSyncAt,
+        timestampCol,
+      );
+
+      return result;
+    } catch (err) {
+      // Update sync job as failed
+      await this.db.forTenant(tenantId, (tx) =>
+        tx.syncJob.update({
+          where: { id: syncJob.id },
+          data: {
+            status: 'FAILED',
+            completedAt: new Date(),
+            errorMessage: (err as Error).message.substring(0, 500),
+          },
+        }),
+      );
+      throw err;
+    }
+  }
+
+  /**
+   * Sync only employees modified since a given timestamp.
+   */
+  private async syncEmployeesIncremental(
+    tenantId: string,
+    connectorId: string,
+    syncJobId: string,
+    schemaName: string,
+    tableName: string,
+    mappings: Array<{
+      sourceField: string;
+      targetField: string;
+      transformType: string;
+      transformConfig: Record<string, unknown> | unknown;
+      isRequired: boolean;
+      defaultValue?: string | null;
+    }>,
+    since: Date,
+    timestampCol: string,
+  ): Promise<InboundSyncResult> {
+    const start = Date.now();
+    let synced = 0;
+    let skipped = 0;
+    let errors = 0;
+    const details: { id: string; status: 'synced' | 'skipped' | 'error'; reason?: string }[] = [];
+
+    const lookups = await this.loadLookupMaps(schemaName);
+    let offset = 0;
+    let hasMore = true;
+
+    while (hasMore) {
+      const rows = await this.connectionManager.executeQuery<Record<string, unknown>>(
+        tenantId,
+        schemaName,
+        `SELECT * FROM \`${tableName}\` WHERE \`${timestampCol}\` > ? LIMIT ? OFFSET ?`,
+        [since, BATCH_SIZE, offset],
+      );
+
+      if (rows.length === 0) {
+        hasMore = false;
+        break;
+      }
+
+      for (const row of rows) {
+        try {
+          const parsed = CloudSqlEmployeeRowSchema.safeParse(row);
+          if (!parsed.success) {
+            skipped++;
+            const employeeId = String(
+              row['employee_code'] ?? row['employee_id'] ?? row['id'] ?? 'unknown',
+            );
+            details.push({ id: employeeId, status: 'skipped', reason: parsed.error.message });
+            continue;
+          }
+
+          const validRow = parsed.data;
+          const employeeId = String(
+            validRow.employee_code || validRow.employee_id || validRow.id || 'unknown',
+          );
+          if (!employeeId || employeeId === 'unknown' || employeeId === '') {
+            skipped++;
+            details.push({ id: 'unknown', status: 'skipped', reason: 'No employee identifier' });
+            continue;
+          }
+
+          let mappedData: Record<string, unknown>;
+          if (mappings.length > 0) {
+            const mapResult = this.fieldMappingService.applyMappings(
+              validRow as unknown as Record<string, unknown>,
+              mappings.map((m) => ({
+                ...m,
+                transformConfig: (m.transformConfig ?? {}) as Record<string, unknown>,
+              })),
+            );
+            if (!mapResult.success && mapResult.errors.length > 0) {
+              this.logger.warn(
+                `Field mapping errors for ${employeeId}: ${mapResult.errors.map((e) => e.message).join(', ')}`,
+              );
+            }
+            mappedData = mapResult.mappedData;
+          } else {
+            mappedData = this.defaultMapping(validRow, lookups);
+          }
+
+          await this.upsertEmployee(tenantId, employeeId, mappedData);
+          synced++;
+          details.push({ id: employeeId, status: 'synced' });
+        } catch (err) {
+          errors++;
+          const employeeId = String(row['employee_code'] ?? row['id'] ?? 'unknown');
+          details.push({
+            id: employeeId,
+            status: 'error',
+            reason: (err as Error).message.substring(0, 200),
+          });
+        }
+      }
+
+      offset += rows.length;
+      if (rows.length < BATCH_SIZE) hasMore = false;
+    }
+
+    const durationMs = Date.now() - start;
+
+    // Update sync job
+    await this.db.forTenant(tenantId, (tx) =>
+      tx.syncJob.update({
+        where: { id: syncJobId },
+        data: {
+          status: errors > 0 && synced === 0 ? 'FAILED' : 'COMPLETED',
+          totalRecords: synced + skipped + errors,
+          processedRecords: synced,
+          failedRecords: errors,
+          skippedRecords: skipped,
+          completedAt: new Date(),
+          errorMessage: errors > 0 ? `${errors} records failed` : null,
+        },
+      }),
+    );
+
+    // Update connector lastSyncAt
+    await this.db.forTenant(tenantId, (tx) =>
+      tx.integrationConnector.update({
+        where: { id: connectorId },
+        data: { lastSyncAt: new Date() },
+      }),
+    );
+
+    this.logger.log(
+      `Incremental sync complete: synced=${synced}, skipped=${skipped}, errors=${errors}, duration=${durationMs}ms`,
+    );
+
+    return {
+      syncJobId,
+      entityType: 'employee',
+      durationMs,
+      totalRecords: synced + skipped + errors,
+      processedRecords: synced,
+      failedRecords: errors,
+      skippedRecords: skipped,
+    };
+  }
+
+  /**
+   * Detect which timestamp column exists in a table.
+   * Tries common column names: updated_at, modified_date, modified_at, last_modified.
+   * Falls back to empty string if none found (full sync will be used).
+   */
+  private async detectTimestampColumn(
+    tenantId: string,
+    schemaName: string,
+    tableName: string,
+  ): Promise<string> {
+    try {
+      const columns = await this.connectionManager.executeQuery<{ Field: string }>(
+        tenantId,
+        schemaName,
+        `DESCRIBE \`${tableName}\``,
+      );
+      const columnNames = columns.map((c) => c.Field.toLowerCase());
+
+      for (const candidate of TIMESTAMP_COLUMNS) {
+        if (columnNames.includes(candidate)) {
+          this.logger.log(`Detected timestamp column: ${candidate} in ${schemaName}.${tableName}`);
+          return candidate;
+        }
+      }
+
+      this.logger.warn(
+        `No timestamp column found in ${schemaName}.${tableName}, incremental sync unavailable`,
+      );
+      return 'updated_at'; // Default, query will handle gracefully
+    } catch (err) {
+      this.logger.warn(`Failed to detect timestamp column: ${(err as Error).message}`);
+      return 'updated_at';
+    }
+  }
+
+  /**
+   * Ensure the persistent connection manager has a pool for this tenant.
+   * Used by syncRolesAndPermissions which still uses cloudSql service internally.
+   */
+  private async ensureConnectionManagerConnected(tenantId: string): Promise<void> {
+    if (!this.connectionManager.isConnected(tenantId)) {
+      await this.connectionManager.connect(tenantId);
+    }
+    // Also ensure the legacy cloudSql service has a pool for roles sync
+    if (!this.cloudSql.isConnected) {
+      const connector = await this.db.forTenant(tenantId, (tx) =>
+        tx.integrationConnector.findFirst({
+          where: { tenantId, connectorType: 'COMPPORT_CLOUDSQL', status: 'ACTIVE' },
+        }),
+      );
+      if (connector) {
+        await this.connectToCloudSql(tenantId, connector);
+      }
     }
   }
 
