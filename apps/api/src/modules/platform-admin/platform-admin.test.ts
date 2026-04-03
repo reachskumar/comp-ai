@@ -168,10 +168,11 @@ describe('PlatformAdminService', () => {
 
   describe('getTenant', () => {
     it('should return tenant by id', async () => {
-      const tenant = { id: 't1', name: 'Acme', _count: { users: 5, employees: 100 } };
+      const tenant = { id: 't1', name: 'Acme' };
       db.client.tenant.findUnique.mockResolvedValue(tenant);
       const result = await service.getTenant('t1');
-      expect(result).toEqual(tenant);
+      expect(result).toMatchObject(tenant);
+      expect(result._count).toBeDefined();
     });
 
     it('should throw NotFoundException for missing tenant', async () => {
@@ -209,7 +210,7 @@ describe('PlatformAdminService', () => {
       const tenant = { id: 't1', isActive: true };
       db.client.tenant.findUnique.mockResolvedValue(tenant);
       const result = await service.activateTenant('t1');
-      expect(result).toEqual(tenant);
+      expect(result).toMatchObject(tenant);
       expect(db.client.tenant.update).not.toHaveBeenCalled();
     });
   });
