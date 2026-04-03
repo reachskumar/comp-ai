@@ -38,6 +38,15 @@ export class CompportCloudSqlService implements OnModuleDestroy {
   private readonly logger = new Logger(CompportCloudSqlService.name);
   private pool: mysql.Pool | null = null;
 
+  /**
+   * Create a standalone instance with its own pool — not the DI singleton.
+   * Use this when you need a dedicated connection that won't be clobbered
+   * by concurrent requests using the shared singleton.
+   */
+  static createIsolated(): CompportCloudSqlService {
+    return new CompportCloudSqlService();
+  }
+
   async onModuleDestroy(): Promise<void> {
     await this.disconnect();
   }

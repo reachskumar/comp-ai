@@ -604,13 +604,15 @@ export class InboundSyncService {
     tenantId: string,
     schemaName: string,
     tableName = 'employee_master',
+    cloudSqlOverride?: CompportCloudSqlService,
   ): Promise<{ synced: number; skipped: number; errors: number; durationMs: number }> {
+    const sql = cloudSqlOverride ?? this.cloudSql;
     const start = Date.now();
     let synced = 0;
     let skipped = 0;
     let errors = 0;
 
-    const lookups = await this.loadLookupMaps(schemaName);
+    const lookups = await this.loadLookupMaps(schemaName, sql);
     this.logger.log(
       `[tenant-sync] Loaded lookup maps: functions=${lookups.functions.size}, levels=${lookups.levels.size}`,
     );
@@ -619,7 +621,7 @@ export class InboundSyncService {
     let hasMore = true;
 
     while (hasMore) {
-      const rows = await this.cloudSql.executeQuery<Record<string, unknown>>(
+      const rows = await sql.executeQuery<Record<string, unknown>>(
         schemaName,
         `SELECT * FROM \`${tableName}\` LIMIT ? OFFSET ?`,
         [BATCH_SIZE, offset],
@@ -667,7 +669,7 @@ export class InboundSyncService {
     );
 
     // Resolve manager relationships
-    await this.resolveManagerRelationships(tenantId, schemaName, tableName);
+    await this.resolveManagerRelationships(tenantId, schemaName, tableName, sql);
 
     return { synced, skipped, errors, durationMs: Date.now() - start };
   }
@@ -891,10 +893,14 @@ export class InboundSyncService {
    * These are small tables (10–870 rows each) used to resolve numeric FK IDs
    * in the login_user table to human-readable names.
    */
-  private async loadLookupMaps(schemaName: string): Promise<LookupMaps> {
+  private async loadLookupMaps(
+    schemaName: string,
+    sqlOverride?: CompportCloudSqlService,
+  ): Promise<LookupMaps> {
+    const csql = sqlOverride ?? this.cloudSql;
     const loadTable = async (tableName: string): Promise<Map<number, string>> => {
       try {
-        const rows = await this.cloudSql.executeQuery<{ id: number; name: string }>(
+        const rows = await csql.executeQuery<{ id: number; name: string }>(
           schemaName,
           `SELECT id, name FROM \`${tableName}\``,
           [],
@@ -976,7 +982,9 @@ export class InboundSyncService {
     tenantId: string,
     schemaName: string,
     tableName: string,
+    sqlOverride?: CompportCloudSqlService,
   ): Promise<void> {
+    const csql = sqlOverride ?? this.cloudSql;
     const start = Date.now();
 
     // Step 1: Build employeeCode → PG id map
@@ -1000,7 +1008,7 @@ export class InboundSyncService {
     let noManager = 0;
 
     while (hasMore) {
-      const rows = await this.cloudSql.executeQuery<{
+      const rows = await csql.executeQuery<{
         employee_code: string;
         manager_name: string | null;
       }>(schemaName, `SELECT employee_code, manager_name FROM \`${tableName}\` LIMIT ? OFFSET ?`, [
@@ -1095,7 +1103,12 @@ export class InboundSyncService {
    *
    * Assumes Cloud SQL connection is already established.
    */
-  async syncRolesAndPermissions(tenantId: string, schemaName: string): Promise<RoleSyncResult> {
+  async syncRolesAndPermissions(
+    tenantId: string,
+    schemaName: string,
+    cloudSqlOverride?: CompportCloudSqlService,
+  ): Promise<RoleSyncResult> {
+    const csql = cloudSqlOverride ?? this.cloudSql;
     const start = Date.now();
     const result: RoleSyncResult = {
       roles: { synced: 0, errors: 0 },
@@ -1107,7 +1120,7 @@ export class InboundSyncService {
 
     // ── Step 1: Sync roles ─────────────────────────────────────
     try {
-      const rows = await this.cloudSql.executeQuery<{
+      const rows = await csql.executeQuery<{
         role_pk_id: number;
         id: string;
         name: string;
@@ -1149,7 +1162,7 @@ export class InboundSyncService {
 
     // ── Step 2: Sync pages ─────────────────────────────────────
     try {
-      const rows = await this.cloudSql.executeQuery<{
+      const rows = await csql.executeQuery<{
         id: number;
         name: string;
         uri_segment: string | null;
@@ -1212,7 +1225,7 @@ export class InboundSyncService {
     });
 
     try {
-      const rows = await this.cloudSql.executeQuery<{
+      const rows = await csql.executeQuery<{
         role_id: string;
         page_id: number;
         view: number;
@@ -1273,7 +1286,7 @@ export class InboundSyncService {
 
     // ── Step 4: Sync login_user → User records ─────────────────
     try {
-      const rows = await this.cloudSql.executeQuery<{
+      const rows = await csql.executeQuery<{
         employee_code: string;
         role: string;
         email: string | null;

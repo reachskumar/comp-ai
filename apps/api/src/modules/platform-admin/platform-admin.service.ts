@@ -914,9 +914,12 @@ export class PlatformAdminService {
       );
     }
 
+    // Use an ISOLATED Cloud SQL instance so concurrent requests
+    // (e.g. tenant list, sync-roles) don't clobber our connection pool.
+    const isolatedSql = CompportCloudSqlService.createIsolated();
     const mysqlConfig = this.getMySqlConfig();
     try {
-      await this.cloudSql.connect({
+      await isolatedSql.connect({
         host: mysqlConfig.host!,
         port: mysqlConfig.port ?? 3306,
         user: mysqlConfig.user!,
@@ -927,10 +930,13 @@ export class PlatformAdminService {
         sslKey: mysqlConfig.sslKey,
       });
 
+      this.logger.log(`[sync-full] Isolated Cloud SQL connected for ${tenant.name}`);
+
       // Step 1: Sync roles, pages, permissions, and users
       const roleResult = await this.inboundSyncService.syncRolesAndPermissions(
         tenantId,
         tenant.compportSchema,
+        isolatedSql,
       );
 
       // Step 2: Sync employees — auto-detect table (employee_master → login_user → employees)
@@ -944,25 +950,28 @@ export class PlatformAdminService {
             tenantId,
             tenant.compportSchema,
             table,
+            isolatedSql,
           );
-          this.logger.log(`Employee sync used table "${table}": synced=${employeeResult!.synced}`);
+          this.logger.log(
+            `[sync-full] Employee sync used table "${table}": synced=${employeeResult!.synced}`,
+          );
           syncError = null;
           break;
         } catch (err) {
           syncError = err instanceof Error ? err : new Error(String(err));
           this.logger.warn(
-            `Employee table "${table}" failed: ${syncError.message.substring(0, 120)}`,
+            `[sync-full] Employee table "${table}" failed: ${syncError.message.substring(0, 120)}`,
           );
         }
       }
 
       if (syncError || !employeeResult!) {
         employeeResult = { synced: 0, skipped: 0, errors: 1, durationMs: 0 };
-        this.logger.error(`All employee table candidates failed for ${tenant.name}`);
+        this.logger.error(`[sync-full] All employee table candidates failed for ${tenant.name}`);
       }
 
       this.logger.log(
-        `Full sync for ${tenant.name}: roles=${roleResult.roles.synced}, ` +
+        `[sync-full] Complete for ${tenant.name}: roles=${roleResult.roles.synced}, ` +
           `pages=${roleResult.pages.synced}, permissions=${roleResult.permissions.synced}, ` +
           `users=${roleResult.users.synced}, employees=${employeeResult.synced}`,
       );
@@ -975,7 +984,8 @@ export class PlatformAdminService {
         employees: employeeResult,
       };
     } finally {
-      await this.cloudSql.disconnect();
+      await isolatedSql.disconnect();
+      this.logger.log(`[sync-full] Isolated Cloud SQL disconnected for ${tenant.name}`);
     }
   }
 
