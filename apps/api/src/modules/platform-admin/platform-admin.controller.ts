@@ -153,7 +153,16 @@ export class PlatformAdminController {
     summary: 'Full sync: roles, pages, permissions, users, and employees from Compport Cloud SQL',
   })
   syncTenantFull(@Param('id') id: string) {
-    return this.service.syncTenantFull(id);
+    // Fire-and-forget: respond immediately, sync runs in background.
+    // This avoids HTTP timeout for large tenants (thousands of employees).
+    this.service.syncTenantFull(id).catch((err) => {
+      this.logger.error(`Background sync-full failed for tenant ${id}: ${err}`);
+    });
+    return {
+      status: 'started',
+      tenantId: id,
+      message: 'Full sync started in background. Check sync-status for progress.',
+    };
   }
 
   @Post('tenants/:id/test-connection')
