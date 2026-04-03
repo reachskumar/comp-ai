@@ -32,6 +32,14 @@ export class CsrfGuard implements CanActivate {
       return Promise.resolve(true);
     }
 
+    // Bearer-authenticated requests are inherently CSRF-proof — the token
+    // lives in JS-controlled storage and cannot be attached automatically by
+    // the browser, so a cross-site attacker cannot forge the request.
+    const authHeader = request.headers['authorization'] ?? '';
+    if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+      return Promise.resolve(true);
+    }
+
     // Check excluded paths
     const url = (request.url ?? '').split('?')[0] ?? ''; // strip query string
     if (EXCLUDED_PATHS.some((p) => url === p || url.startsWith(p + '/'))) {
