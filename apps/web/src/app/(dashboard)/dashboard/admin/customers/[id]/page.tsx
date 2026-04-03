@@ -46,14 +46,35 @@ import {
 } from '@/hooks/use-admin';
 import Link from 'next/link';
 
+/** Inline error banner for a failed section */
+function SectionError({ label, error }: { label: string; error: unknown }) {
+  return (
+    <Card className="border-destructive/50">
+      <CardContent className="py-3">
+        <p className="text-sm text-destructive">
+          Failed to load {label}: {error instanceof Error ? error.message : 'Unknown error'}
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function AdminCustomerDetailPage() {
   const { id } = useParams<{ id: string }>();
   const { toast } = useToast();
-  const { data: tenant, isLoading } = useAdminTenant(id);
-  const { data: usersData } = useAdminTenantUsers(id);
-  const { data: overview } = useAdminTenantOverview(id);
-  const { data: tenantRoles } = useAdminTenantRoles(id);
-  const { data: permissionsData, isLoading: permissionsLoading } = useAdminTenantPermissions(id);
+  const { data: tenant, isLoading, error: tenantError } = useAdminTenant(id);
+  const { data: usersData, error: usersError, isLoading: usersLoading } = useAdminTenantUsers(id);
+  const {
+    data: overview,
+    error: overviewError,
+    isLoading: overviewLoading,
+  } = useAdminTenantOverview(id);
+  const { data: tenantRoles, error: rolesError } = useAdminTenantRoles(id);
+  const {
+    data: permissionsData,
+    isLoading: permissionsLoading,
+    error: permissionsError,
+  } = useAdminTenantPermissions(id);
   const updateTenant = useAdminUpdateTenant();
   const suspendTenant = useAdminSuspendTenant();
   const activateTenant = useAdminActivateTenant();
@@ -97,6 +118,7 @@ export default function AdminCustomerDetailPage() {
         ))}
       </div>
     );
+  if (tenantError) return <SectionError label="tenant" error={tenantError} />;
   if (!tenant) return <p className="text-muted-foreground">Tenant not found.</p>;
 
   const handleSaveBranding = async () => {
@@ -197,27 +219,37 @@ export default function AdminCustomerDetailPage() {
         <Badge variant="outline">{tenant.plan as string}</Badge>
       </div>
 
-      <div className="grid grid-cols-7 gap-3">
-        {(
-          [
-            ['Users', overview?.counts?.users ?? counts?.users ?? 0, Users],
-            ['Employees', overview?.counts?.employees ?? counts?.employees ?? 0, Briefcase],
-            ['Roles', overview?.syncedEntities?.roles ?? 0, Shield],
-            ['Pages', overview?.syncedEntities?.pages ?? 0, FileText],
-            ['Permissions', overview?.syncedEntities?.permissions ?? 0, Key],
-            ['Cycles', counts?.compCycles ?? 0, Building2],
-            ['Imports', counts?.importJobs ?? 0, Building2],
-          ] as const
-        ).map(([label, value, Icon]) => (
-          <Card key={label}>
-            <CardContent className="pt-4 text-center">
-              <Icon className="h-4 w-4 mx-auto mb-1 text-muted-foreground" />
-              <p className="text-2xl font-bold">{value}</p>
-              <p className="text-xs text-muted-foreground">{label}</p>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
+      {overviewError && <SectionError label="overview" error={overviewError} />}
+
+      {overviewLoading ? (
+        <div className="grid grid-cols-7 gap-3">
+          {[1, 2, 3, 4, 5, 6, 7].map((k) => (
+            <Skeleton key={k} className="h-24 w-full rounded-lg" />
+          ))}
+        </div>
+      ) : (
+        <div className="grid grid-cols-7 gap-3">
+          {(
+            [
+              ['Users', overview?.counts?.users ?? counts?.users ?? 0, Users],
+              ['Employees', overview?.counts?.employees ?? counts?.employees ?? 0, Briefcase],
+              ['Roles', overview?.syncedEntities?.roles ?? 0, Shield],
+              ['Pages', overview?.syncedEntities?.pages ?? 0, FileText],
+              ['Permissions', overview?.syncedEntities?.permissions ?? 0, Key],
+              ['Cycles', counts?.compCycles ?? 0, Building2],
+              ['Imports', counts?.importJobs ?? 0, Building2],
+            ] as const
+          ).map(([label, value, Icon]) => (
+            <Card key={label}>
+              <CardContent className="pt-4 text-center">
+                <Icon className="h-4 w-4 mx-auto mb-1 text-muted-foreground" />
+                <p className="text-2xl font-bold">{value}</p>
+                <p className="text-xs text-muted-foreground">{label}</p>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
 
       <Card>
         <CardHeader>
@@ -393,9 +425,13 @@ export default function AdminCustomerDetailPage() {
         </CardContent>
       </Card>
 
+      {usersError && <SectionError label="users" error={usersError} />}
+      {rolesError && <SectionError label="roles" error={rolesError} />}
+
       <CustomerUsersCard
         users={usersData?.data}
-        syncedRoles={tenantRoles}
+        syncedRoles={Array.isArray(tenantRoles) ? tenantRoles : []}
+        isLoadingUsers={usersLoading}
         onRemove={async (userId: string) => {
           try {
             await removeUser.mutateAsync({ tenantId: id, userId });
@@ -410,6 +446,7 @@ export default function AdminCustomerDetailPage() {
         isAdding={createUser.isPending}
       />
 
+      {permissionsError && <SectionError label="permissions" error={permissionsError} />}
       <RolePermissionsCard permissionsData={permissionsData} isLoading={permissionsLoading} />
 
       <Card className="border-destructive/50">
@@ -501,6 +538,7 @@ const FALLBACK_ROLES = ['ADMIN', 'HR_MANAGER', 'MANAGER', 'ANALYST', 'EMPLOYEE']
 function CustomerUsersCard({
   users,
   syncedRoles,
+  isLoadingUsers,
   onRemove,
   newUser,
   setNewUser,
@@ -509,6 +547,7 @@ function CustomerUsersCard({
 }: {
   users?: any[];
   syncedRoles?: { compportRoleId: string; name: string; isActive: boolean }[];
+  isLoadingUsers?: boolean;
   onRemove: (id: string) => void;
   newUser: { email: string; name: string; role: string; password: string };
   setNewUser: (fn: (n: any) => any) => void;
@@ -536,6 +575,13 @@ function CustomerUsersCard({
         <CardDescription>Manage users for this tenant</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        {isLoadingUsers ? (
+          <div className="space-y-2">
+            {[1, 2].map((k) => (
+              <Skeleton key={k} className="h-12 w-full" />
+            ))}
+          </div>
+        ) : null}
         {users?.map((u: any) => (
           <div key={u.id} className="flex items-center gap-3 py-2 border-b last:border-0">
             <div className="flex-1">
