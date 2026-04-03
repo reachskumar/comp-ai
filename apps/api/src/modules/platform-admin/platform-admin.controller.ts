@@ -153,33 +153,35 @@ export class PlatformAdminController {
   @ApiOperation({
     summary: 'Full sync: roles, pages, permissions, users, and employees from Compport Cloud SQL',
   })
-  async syncTenantFull(@Param('id') id: string, @Res() res: any) {
+  async syncTenantFull(@Param('id') id: string, @Res() reply: any) {
     // Use chunked transfer encoding to keep the HTTP connection alive.
     // Cloud Run kills background tasks when no active request is open.
-    res.setHeader('Content-Type', 'application/x-ndjson');
-    res.setHeader('Transfer-Encoding', 'chunked');
-    res.flushHeaders();
+    // Fastify: use reply.raw (Node http.ServerResponse) for streaming.
+    const raw = reply.raw;
+    raw.setHeader('Content-Type', 'application/x-ndjson');
+    raw.setHeader('Transfer-Encoding', 'chunked');
+    raw.flushHeaders();
 
     // Send a keep-alive ping every 30s so load balancers don't time out
     const keepAlive = setInterval(() => {
       try {
-        res.write(JSON.stringify({ type: 'ping', ts: new Date().toISOString() }) + '\n');
+        raw.write(JSON.stringify({ type: 'ping', ts: new Date().toISOString() }) + '\n');
       } catch {
         /* connection closed */
       }
     }, 30_000);
 
     try {
-      res.write(JSON.stringify({ type: 'started', tenantId: id }) + '\n');
+      raw.write(JSON.stringify({ type: 'started', tenantId: id }) + '\n');
       const result = await this.service.syncTenantFull(id);
-      res.write(JSON.stringify({ type: 'complete', ...result }) + '\n');
+      raw.write(JSON.stringify({ type: 'complete', ...result }) + '\n');
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`sync-full failed for tenant ${id}: ${message}`);
-      res.write(JSON.stringify({ type: 'error', message }) + '\n');
+      raw.write(JSON.stringify({ type: 'error', message }) + '\n');
     } finally {
       clearInterval(keepAlive);
-      res.end();
+      raw.end();
     }
   }
 
