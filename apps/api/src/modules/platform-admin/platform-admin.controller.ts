@@ -7,6 +7,7 @@ import {
   Body,
   Param,
   Query,
+  Res,
   UseGuards,
   Logger,
 } from '@nestjs/common';
@@ -152,17 +153,34 @@ export class PlatformAdminController {
   @ApiOperation({
     summary: 'Full sync: roles, pages, permissions, users, and employees from Compport Cloud SQL',
   })
-  syncTenantFull(@Param('id') id: string) {
-    // Fire-and-forget: respond immediately, sync runs in background.
-    // This avoids HTTP timeout for large tenants (thousands of employees).
-    this.service.syncTenantFull(id).catch((err) => {
-      this.logger.error(`Background sync-full failed for tenant ${id}: ${err}`);
-    });
-    return {
-      status: 'started',
-      tenantId: id,
-      message: 'Full sync started in background. Check sync-status for progress.',
-    };
+  async syncTenantFull(@Param('id') id: string, @Res() res: any) {
+    // Use chunked transfer encoding to keep the HTTP connection alive.
+    // Cloud Run kills background tasks when no active request is open.
+    res.setHeader('Content-Type', 'application/x-ndjson');
+    res.setHeader('Transfer-Encoding', 'chunked');
+    res.flushHeaders();
+
+    // Send a keep-alive ping every 30s so load balancers don't time out
+    const keepAlive = setInterval(() => {
+      try {
+        res.write(JSON.stringify({ type: 'ping', ts: new Date().toISOString() }) + '\n');
+      } catch {
+        /* connection closed */
+      }
+    }, 30_000);
+
+    try {
+      res.write(JSON.stringify({ type: 'started', tenantId: id }) + '\n');
+      const result = await this.service.syncTenantFull(id);
+      res.write(JSON.stringify({ type: 'complete', ...result }) + '\n');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`sync-full failed for tenant ${id}: ${message}`);
+      res.write(JSON.stringify({ type: 'error', message }) + '\n');
+    } finally {
+      clearInterval(keepAlive);
+      res.end();
+    }
   }
 
   @Post('tenants/:id/test-connection')
