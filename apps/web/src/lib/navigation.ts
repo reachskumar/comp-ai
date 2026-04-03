@@ -48,6 +48,7 @@ import {
   Network,
   Layers,
   DatabaseBackup,
+  Activity,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -193,6 +194,7 @@ export const platformAdminGroup: NavGroup = {
     { title: 'Customers', href: '/dashboard/admin/customers', icon: Building2 },
     { title: 'Onboarding', href: '/dashboard/admin/onboarding', icon: Upload },
     { title: 'Data Explorer', href: '/dashboard/admin/data-explorer', icon: DatabaseBackup },
+    { title: 'Sync Status', href: '/dashboard/admin/sync-status', icon: Activity },
     { title: 'Platform Stats', href: '/dashboard/admin/stats', icon: PieChart },
   ],
 };

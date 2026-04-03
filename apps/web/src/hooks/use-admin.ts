@@ -240,3 +240,33 @@ export function useMyDataQuery(
     enabled: !!tableName,
   });
 }
+
+// ─── Sync Health Hooks ──────────────────────────────────
+
+export function useSyncHealth() {
+  return useQuery({
+    queryKey: ['sync-health'],
+    queryFn: () => apiClient.bridgeSyncHealth(),
+    refetchInterval: 10_000, // Auto-refresh every 10s
+  });
+}
+
+export function usePauseSync() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (tenantId: string) => apiClient.bridgePauseSync(tenantId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['sync-health'] });
+    },
+  });
+}
+
+export function useResumeSync() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (tenantId: string) => apiClient.bridgeResumeSync(tenantId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['sync-health'] });
+    },
+  });
+}

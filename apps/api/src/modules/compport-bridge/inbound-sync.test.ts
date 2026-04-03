@@ -44,14 +44,57 @@ function createMockFieldMappingService() {
   };
 }
 
+// ─── Mock Connection Manager Service ────────────────────────────────────────
+function createMockConnectionManager() {
+  return {
+    connect: vi.fn().mockResolvedValue({}),
+    disconnect: vi.fn().mockResolvedValue(undefined),
+    disconnectAll: vi.fn().mockResolvedValue(undefined),
+    getPool: vi.fn().mockResolvedValue({}),
+    executeQuery: vi.fn().mockResolvedValue([]),
+    getSchemaName: vi.fn().mockReturnValue(null),
+    getAllStatus: vi.fn().mockReturnValue([]),
+    getStatus: vi
+      .fn()
+      .mockReturnValue({
+        tenantId: '',
+        connected: false,
+        lastHealthCheck: null,
+        lastError: null,
+        consecutiveFailures: 0,
+        connectedSince: null,
+        schemaName: null,
+      }),
+    isConnected: vi.fn().mockReturnValue(false),
+    activeConnections: 0,
+    startHealthChecks: vi.fn(),
+    stopHealthChecks: vi.fn(),
+    onModuleDestroy: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
 // ─── Factory Functions ─────────────────────────────────────────────────────
 function createInboundSyncService() {
   const db = createMockDatabaseService();
   const cloudSql = createMockCloudSqlService();
+  const connectionManager = createMockConnectionManager();
   const credentialVault = createMockCredentialVault();
   const fieldMapping = createMockFieldMappingService();
-  const service = new (InboundSyncService as any)(db, cloudSql, credentialVault, fieldMapping);
-  return { service: service as InboundSyncService, db, cloudSql, credentialVault, fieldMapping };
+  const service = new (InboundSyncService as any)(
+    db,
+    cloudSql,
+    connectionManager,
+    credentialVault,
+    fieldMapping,
+  );
+  return {
+    service: service as InboundSyncService,
+    db,
+    cloudSql,
+    connectionManager,
+    credentialVault,
+    fieldMapping,
+  };
 }
 
 function createSchemaDiscoveryService() {
