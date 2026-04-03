@@ -197,6 +197,7 @@ export class PlatformAdminService {
     await this.db.client.$transaction(
       async (tx) => {
         // Leaf-level tables first (no other tables reference these)
+        // Table names must match @@map() values in schema.prisma exactly
         const tablesToDelete = [
           // Deepest leaves
           'tenant_role_permissions',
@@ -205,16 +206,22 @@ export class PlatformAdminService {
           'import_ai_analyses',
           'rules',
           'test_cases',
-          'calibration_votes',
+          'calibration_sessions',
           'payroll_line_items',
           'payroll_anomalies',
           'benefit_dependents',
           'compensation_letters',
           'attrition_risk_scores',
-          'equity_vesting_events',
+          'vesting_events',
           'copilot_messages',
-          'write_back_rows',
-          'simulation_scenario_results',
+          'write_back_records',
+          'simulation_results',
+          'anomaly_explanations',
+          'compliance_findings',
+          'pay_equity_dimensions',
+          'policy_conversions',
+          'sync_logs',
+          'saved_reports',
           // Mid-level
           'tenant_pages',
           'tenant_roles',
@@ -225,7 +232,6 @@ export class PlatformAdminService {
           'ad_hoc_increases',
           'comp_recommendations',
           'cycle_budgets',
-          'calibration_sessions',
           'benefit_enrollments',
           'enrollment_windows',
           'life_events',
@@ -236,6 +242,7 @@ export class PlatformAdminService {
           'simulation_runs',
           'payroll_runs',
           'attrition_analysis_runs',
+          'compliance_scans',
           'pay_equity_reports',
           'career_ladders',
           // Higher-level
@@ -262,13 +269,19 @@ export class PlatformAdminService {
         ];
 
         for (const table of tablesToDelete) {
-          await tx.$executeRawUnsafe(`DELETE FROM "${table}" WHERE "tenantId" = $1`, id);
+          try {
+            await tx.$executeRawUnsafe(`DELETE FROM "${table}" WHERE "tenantId" = $1`, id);
+          } catch (err) {
+            // Table may not exist yet (migration pending) — log and continue
+            const msg = err instanceof Error ? err.message : String(err);
+            this.logger.warn(`deleteTenant: skip "${table}": ${msg.substring(0, 120)}`);
+          }
         }
 
         // Finally delete the tenant itself
         await tx.$executeRawUnsafe(`DELETE FROM "tenants" WHERE "id" = $1`, id);
       },
-      { timeout: 60_000 }, // 60s timeout for large tenants
+      { timeout: 120_000 }, // 120s timeout for large tenants
     );
 
     this.logger.warn(`Tenant DELETED: ${tenant.name} (${tenant.id})`);
@@ -920,12 +933,33 @@ export class PlatformAdminService {
         tenant.compportSchema,
       );
 
-      // Step 2: Sync employees from employee_master
-      const employeeResult = await this.inboundSyncService.syncEmployeesForTenant(
-        tenantId,
-        tenant.compportSchema,
-        'employee_master',
-      );
+      // Step 2: Sync employees — auto-detect table (employee_master → login_user → employees)
+      let employeeResult: { synced: number; skipped: number; errors: number; durationMs: number };
+      const candidateTables = ['employee_master', 'login_user', 'employees'];
+      let syncError: Error | null = null;
+
+      for (const table of candidateTables) {
+        try {
+          employeeResult = await this.inboundSyncService.syncEmployeesForTenant(
+            tenantId,
+            tenant.compportSchema,
+            table,
+          );
+          this.logger.log(`Employee sync used table "${table}": synced=${employeeResult!.synced}`);
+          syncError = null;
+          break;
+        } catch (err) {
+          syncError = err instanceof Error ? err : new Error(String(err));
+          this.logger.warn(
+            `Employee table "${table}" failed: ${syncError.message.substring(0, 120)}`,
+          );
+        }
+      }
+
+      if (syncError || !employeeResult!) {
+        employeeResult = { synced: 0, skipped: 0, errors: 1, durationMs: 0 };
+        this.logger.error(`All employee table candidates failed for ${tenant.name}`);
+      }
 
       this.logger.log(
         `Full sync for ${tenant.name}: roles=${roleResult.roles.synced}, ` +
