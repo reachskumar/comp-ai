@@ -318,15 +318,19 @@ class ApiClient {
   }
 
   async adminGetTenantRoles(id: string) {
-    return this.fetch<
-      {
+    const res = await this.fetch<{
+      tenantId: string;
+      roles: {
         compportRoleId: string;
         name: string;
         module: string;
         isActive: boolean;
         userCount: number;
-      }[]
-    >(`/api/v1/platform-admin/tenants/${id}/roles`);
+      }[];
+      total: number;
+    }>(`/api/v1/platform-admin/tenants/${id}/roles`);
+    // Backend wraps in { tenantId, roles, total } – unwrap for consumers
+    return res.roles ?? [];
   }
 
   async adminGetTenantPermissions(id: string) {
