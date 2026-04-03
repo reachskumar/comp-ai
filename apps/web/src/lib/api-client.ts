@@ -476,6 +476,15 @@ class ApiClient {
     }>(`/api/v1/platform-admin/tenants/${id}/sync-roles`, { method: 'POST' });
   }
 
+  async adminTestTenantConnection(id: string) {
+    return this.fetch<{
+      ok: boolean;
+      durationMs: number;
+      schema: string;
+      error?: string;
+    }>(`/api/v1/platform-admin/tenants/${id}/test-connection`, { method: 'POST' });
+  }
+
   // ─── Compport Bridge Query Endpoints ─────────────────────
 
   async bridgeQueryTable(

@@ -195,6 +195,12 @@ export function useAdminSyncTenantRoles() {
   });
 }
 
+export function useAdminTestTenantConnection() {
+  return useMutation({
+    mutationFn: (tenantId: string) => apiClient.adminTestTenantConnection(tenantId),
+  });
+}
+
 // ─── Bridge Query Hooks ──────────────────────────────────
 
 export function useBridgeDiscoveryTables(schemaName: string | null) {

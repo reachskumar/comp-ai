@@ -148,6 +148,14 @@ export class PlatformAdminController {
     return this.service.syncTenantRoles(id);
   }
 
+  @Post('tenants/:id/test-connection')
+  @ApiOperation({
+    summary: "Test Cloud SQL connectivity for a tenant's Compport schema",
+  })
+  testTenantConnection(@Param('id') id: string) {
+    return this.service.testTenantConnection(id);
+  }
+
   // ─── Stats ───────────────────────────────────────────────
 
   @Get('stats')
