@@ -92,7 +92,13 @@ export class AuthService {
 
     const userRow = users[0];
 
+    // DEBUG: temporary login diagnostics (remove after verifying)
+    this.logger.warn(
+      `[LOGIN-DEBUG] email=${dto.email} usersFound=${users.length} hasRow=${!!userRow} hasHash=${!!userRow?.passwordHash} hashPrefix=${userRow?.passwordHash?.substring(0, 10) ?? 'N/A'} role=${userRow?.role ?? 'N/A'}`,
+    );
+
     if (!userRow || !userRow.passwordHash) {
+      this.logger.warn(`[LOGIN-DEBUG] FAIL: user not found or no passwordHash`);
       throw new UnauthorizedException('Invalid credentials');
     }
 
@@ -108,6 +114,9 @@ export class AuthService {
     }
 
     const isPasswordValid = await bcrypt.compare(dto.password, userRow.passwordHash);
+    this.logger.warn(
+      `[LOGIN-DEBUG] bcrypt.compare result=${isPasswordValid} passwordLen=${dto.password.length}`,
+    );
     if (!isPasswordValid) {
       const attempts = (userRow.failedLoginAttempts ?? 0) + 1;
       const updateData: { failedLoginAttempts: number; lockedUntil?: Date } = {
