@@ -18,11 +18,13 @@ export class AuthService {
   ) {}
 
   async register(dto: RegisterDto) {
-    const existing = await this.db.client.user.findFirst({
-      where: { email: dto.email },
-    });
+    // Bypass RLS for pre-auth email check
+    const existingUsers = await this.db.client.$queryRawUnsafe<Array<{ id: string }>>(
+      `SELECT id FROM users WHERE email = $1 LIMIT 1`,
+      dto.email,
+    );
 
-    if (existing) {
+    if (existingUsers.length > 0) {
       throw new ConflictException('User with this email already exists');
     }
 
@@ -68,70 +70,100 @@ export class AuthService {
   private readonly LOCKOUT_DURATION_MINUTES = 30;
 
   async login(dto: LoginDto) {
-    const user = await this.db.client.user.findFirst({
-      where: { email: dto.email },
-      include: {
-        tenant: {
-          select: { id: true, name: true, slug: true, settings: true },
-        },
-      },
-    });
+    // Use a tenant-scoped query to find the user.
+    // First, find the user without RLS to get the tenantId (auth is pre-session).
+    // We use $queryRawUnsafe to bypass RLS for the initial lookup.
+    const users = await this.db.client.$queryRawUnsafe<
+      Array<{
+        id: string;
+        tenantId: string;
+        email: string;
+        name: string;
+        passwordHash: string | null;
+        role: string;
+        failedLoginAttempts: number;
+        lockedUntil: Date | null;
+      }>
+    >(
+      `SELECT id, "tenantId", email, name, "passwordHash", role, "failedLoginAttempts", "lockedUntil"
+       FROM users WHERE email = $1 LIMIT 1`,
+      dto.email,
+    );
 
-    if (!user || !user.passwordHash) {
+    const userRow = users[0];
+
+    if (!userRow || !userRow.passwordHash) {
       throw new UnauthorizedException('Invalid credentials');
     }
 
     // Check if account is locked
-    if (user.lockedUntil && user.lockedUntil > new Date()) {
-      const remainingMinutes = Math.ceil((user.lockedUntil.getTime() - Date.now()) / 60_000);
+    if (userRow.lockedUntil && userRow.lockedUntil > new Date()) {
+      const remainingMinutes = Math.ceil((userRow.lockedUntil.getTime() - Date.now()) / 60_000);
       this.logger.warn(
-        `Login blocked — account locked: ${user.email} (${remainingMinutes}m remaining)`,
+        `Login blocked — account locked: ${userRow.email} (${remainingMinutes}m remaining)`,
       );
       throw new UnauthorizedException(
         `Account is locked due to too many failed attempts. Try again in ${remainingMinutes} minute(s).`,
       );
     }
 
-    const isPasswordValid = await bcrypt.compare(dto.password, user.passwordHash);
+    const isPasswordValid = await bcrypt.compare(dto.password, userRow.passwordHash);
     if (!isPasswordValid) {
-      const attempts = (user.failedLoginAttempts ?? 0) + 1;
+      const attempts = (userRow.failedLoginAttempts ?? 0) + 1;
       const updateData: { failedLoginAttempts: number; lockedUntil?: Date } = {
         failedLoginAttempts: attempts,
       };
 
       if (attempts >= this.MAX_FAILED_ATTEMPTS) {
         updateData.lockedUntil = new Date(Date.now() + this.LOCKOUT_DURATION_MINUTES * 60_000);
-        this.logger.warn(`Account locked after ${attempts} failed attempts: ${user.email}`);
+        this.logger.warn(`Account locked after ${attempts} failed attempts: ${userRow.email}`);
       }
 
-      await this.db.client.user.update({
-        where: { id: user.id },
-        data: updateData,
+      // Use forTenant so RLS context is set for the update
+      await this.db.forTenant(userRow.tenantId, async (tx) => {
+        await tx.user.update({
+          where: { id: userRow.id },
+          data: updateData,
+        });
       });
 
       throw new UnauthorizedException('Invalid credentials');
     }
 
     // Successful login — reset failed attempts counter
-    if (user.failedLoginAttempts > 0 || user.lockedUntil) {
-      await this.db.client.user.update({
-        where: { id: user.id },
-        data: { failedLoginAttempts: 0, lockedUntil: null },
+    if (userRow.failedLoginAttempts > 0 || userRow.lockedUntil) {
+      await this.db.forTenant(userRow.tenantId, async (tx) => {
+        await tx.user.update({
+          where: { id: userRow.id },
+          data: { failedLoginAttempts: 0, lockedUntil: null },
+        });
       });
     }
 
-    const tokens = await this.generateTokens(user.id, user.tenantId, user.email, user.role);
+    const tokens = await this.generateTokens(
+      userRow.id,
+      userRow.tenantId,
+      userRow.email,
+      userRow.role,
+    );
 
-    this.logger.log(`User logged in: ${user.email}`);
+    this.logger.log(`User logged in: ${userRow.email}`);
+
+    // Fetch tenant info separately (tenants table may also have RLS)
+    const tenant = await this.db.client.$queryRawUnsafe<
+      Array<{ id: string; name: string; slug: string; settings: unknown }>
+    >(`SELECT id, name, slug, settings FROM tenants WHERE id = $1 LIMIT 1`, userRow.tenantId);
+
+    const tenantRow = tenant[0];
 
     return {
-      user: { id: user.id, email: user.email, name: user.name, role: user.role },
-      tenant: user.tenant
+      user: { id: userRow.id, email: userRow.email, name: userRow.name, role: userRow.role },
+      tenant: tenantRow
         ? {
-            id: user.tenant.id,
-            name: user.tenant.name,
-            slug: user.tenant.slug,
-            settings: user.tenant.settings,
+            id: tenantRow.id,
+            name: tenantRow.name,
+            slug: tenantRow.slug,
+            settings: tenantRow.settings,
           }
         : null,
       ...tokens,
@@ -143,23 +175,34 @@ export class AuthService {
    * Called after the OAuth2 callback validates the Azure AD token.
    */
   async loginWithAzureAd(profile: { oid: string; email: string; name: string; tenantId?: string }) {
-    // Try to find existing user by Azure AD OID
-    let user = await this.db.client.user.findFirst({
-      where: { azureAdOid: profile.oid },
-    });
+    // Try to find existing user by Azure AD OID (bypass RLS — pre-auth)
+    const oidUsers = await this.db.client.$queryRawUnsafe<
+      Array<{ id: string; tenantId: string; email: string; name: string; role: string }>
+    >(
+      `SELECT id, "tenantId", email, name, role FROM users WHERE "azureAdOid" = $1 LIMIT 1`,
+      profile.oid,
+    );
+    let user = oidUsers[0] ?? null;
 
     if (!user) {
-      // Try to find by email (linking existing account)
-      user = await this.db.client.user.findFirst({
-        where: { email: profile.email },
-      });
+      // Try to find by email (linking existing account) — bypass RLS
+      const emailUsers = await this.db.client.$queryRawUnsafe<
+        Array<{ id: string; tenantId: string; email: string; name: string; role: string }>
+      >(
+        `SELECT id, "tenantId", email, name, role FROM users WHERE email = $1 LIMIT 1`,
+        profile.email,
+      );
+      const foundUser = emailUsers[0] ?? null;
 
-      if (user) {
-        // Link Azure AD OID to existing account
-        user = await this.db.client.user.update({
-          where: { id: user.id },
-          data: { azureAdOid: profile.oid, name: profile.name || user.name },
+      if (foundUser) {
+        // Link Azure AD OID to existing account — use forTenant for the update
+        await this.db.forTenant(foundUser.tenantId, async (tx) => {
+          await tx.user.update({
+            where: { id: foundUser.id },
+            data: { azureAdOid: profile.oid, name: profile.name || foundUser.name },
+          });
         });
+        user = { ...foundUser, name: profile.name || foundUser.name };
         this.logger.log(`Linked Azure AD to existing user: ${user.email}`);
       } else {
         // Auto-provision: create tenant and user
@@ -252,11 +295,12 @@ export class AuthService {
       data: { revoked: true },
     });
 
-    // Fetch user
-    const user = await this.db.client.user.findUnique({
-      where: { id: payload.sub },
-    });
+    // Fetch user — bypass RLS since this is pre-session
+    const userRows = await this.db.client.$queryRawUnsafe<
+      Array<{ id: string; tenantId: string; email: string; role: string }>
+    >(`SELECT id, "tenantId", email, role FROM users WHERE id = $1 LIMIT 1`, payload.sub);
 
+    const user = userRows[0];
     if (!user) {
       throw new UnauthorizedException('User not found');
     }
