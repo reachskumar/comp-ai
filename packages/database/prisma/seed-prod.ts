@@ -50,7 +50,7 @@ async function main() {
   const passwordHash = await bcrypt.hash(ADMIN_PASSWORD, 12);
   const admin = await prisma.user.upsert({
     where: { tenantId_email: { tenantId: tenant.id, email: ADMIN_EMAIL } },
-    update: { passwordHash },
+    update: { passwordHash, failedLoginAttempts: 0, lockedUntil: null },
     create: {
       tenantId: tenant.id,
       email: ADMIN_EMAIL,
