@@ -380,6 +380,69 @@ class ApiClient {
       totalEmployees: number;
     }>('/api/v1/platform-admin/stats');
   }
+
+  // ─── Platform Config ──────────────────────────────────────
+
+  async adminGetConfigCategories() {
+    return this.fetch<{ categories: string[] }>('/api/v1/platform-admin/config/categories');
+  }
+
+  async adminGetConfig(category: string) {
+    return this.fetch<{
+      category: string;
+      settings: Array<{
+        key: string;
+        value: string;
+        isSecret: boolean;
+        description: string | null;
+        updatedAt: string;
+        updatedBy: string | null;
+      }>;
+    }>(`/api/v1/platform-admin/config/${category}`);
+  }
+
+  async adminSetConfig(category: string, key: string, value: string, isSecret?: boolean, description?: string) {
+    return this.fetch<{ updated: boolean }>(`/api/v1/platform-admin/config/${category}/${key}`, {
+      method: 'PUT',
+      body: JSON.stringify({ value, isSecret, description }),
+    });
+  }
+
+  async adminDeleteConfig(category: string, key: string) {
+    return this.fetch<{ deleted: boolean }>(`/api/v1/platform-admin/config/${category}/${key}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async adminGetAIPresets() {
+    return this.fetch<Record<string, unknown>>('/api/v1/platform-admin/config/presets/ai');
+  }
+
+  async adminGetMarketDataPresets() {
+    return this.fetch<Record<string, unknown>>('/api/v1/platform-admin/config/presets/market-data');
+  }
+
+  async adminGetFeaturePresets() {
+    return this.fetch<Record<string, unknown>>('/api/v1/platform-admin/config/presets/features');
+  }
+
+  async adminValidateAI() {
+    return this.fetch<{ valid: boolean; errors: string[] }>('/api/v1/platform-admin/config/validate/ai');
+  }
+
+  // ─── Integration Dashboard ────────────────────────────────
+
+  async adminGetIntegrationStats() {
+    return this.fetch<Record<string, unknown>>('/api/v1/platform-admin/integrations/stats');
+  }
+
+  async adminGetConnectionStatus() {
+    return this.fetch<Record<string, unknown>>('/api/v1/platform-admin/integrations/connection-status');
+  }
+
+  async adminGetOnboardingStatus() {
+    return this.fetch<Record<string, unknown>>('/api/v1/platform-admin/integrations/onboarding-status');
+  }
 }
 
 export const apiClient = new ApiClient();

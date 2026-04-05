@@ -42,6 +42,15 @@ export class ImportController {
       throw new BadRequestException('No file uploaded. Send a multipart form with a "file" field.');
     }
 
+    // Validate file type
+    const filename = data.filename?.toLowerCase() ?? '';
+    if (!filename.endsWith('.csv')) {
+      throw new BadRequestException('Only CSV files are supported');
+    }
+    if (data.mimetype && !['text/csv', 'application/csv', 'text/plain'].includes(data.mimetype)) {
+      throw new BadRequestException('Invalid file type. Expected text/csv');
+    }
+
     const chunks: Buffer[] = [];
     for await (const chunk of data.file) {
       chunks.push(chunk as Buffer);

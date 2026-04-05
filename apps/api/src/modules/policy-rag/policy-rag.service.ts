@@ -25,6 +25,8 @@ export class PolicyRagService implements PolicyRagDbAdapter {
         openAIApiKey: apiKey,
         modelName: 'text-embedding-3-small',
         dimensions: EMBEDDING_DIMENSIONS,
+        timeout: 30_000,
+        maxRetries: 2,
       });
     }
   }

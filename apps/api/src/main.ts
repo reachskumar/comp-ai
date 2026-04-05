@@ -44,9 +44,11 @@ async function bootstrap() {
       // Allow requests with no origin (server-to-server, curl, mobile apps)
       if (!origin) return callback(null, true);
 
-      // Allow localhost for development
-      if (origin.startsWith('http://localhost:') || origin.startsWith('https://localhost:')) {
-        return callback(null, true);
+      // Allow localhost for development only
+      if (process.env['NODE_ENV'] !== 'production') {
+        if (origin.startsWith('http://localhost:') || origin.startsWith('https://localhost:')) {
+          return callback(null, true);
+        }
       }
 
       // Allow any *.compportiq.ai subdomain
@@ -76,12 +78,12 @@ async function bootstrap() {
 
   // Enable multipart file uploads
   await app.register(import('@fastify/multipart') as never, {
-    limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
+    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
   });
 
   // Global prefix for API routes (exclude health and api-docs)
   app.setGlobalPrefix('api/v1', {
-    exclude: ['health', 'api-docs', 'api-docs-json'],
+    exclude: ['health', 'metrics', 'api-docs', 'api-docs-json'],
   });
 
   // Global validation pipe
@@ -95,6 +97,33 @@ async function bootstrap() {
 
   // Global exception filter
   app.useGlobalFilters(new AllExceptionsFilter());
+
+  // HTTP metrics collection via Fastify hooks
+  {
+    const { MetricsService } = await import('./common/services/metrics.service');
+    try {
+      const metrics = app.get(MetricsService);
+      const fastify = app.getHttpAdapter().getInstance();
+      fastify.addHook('onRequest', (_req: unknown, _reply: unknown, done: () => void) => {
+        ((_req as Record<string, unknown>).__startTime) = Date.now();
+        done();
+      });
+      fastify.addHook('onResponse', (req: Record<string, unknown>, reply: Record<string, unknown>, done: () => void) => {
+        const start = req.__startTime as number | undefined;
+        if (start) {
+          metrics.recordHttpRequest(
+            req.method as string,
+            req.url as string,
+            reply.statusCode as number,
+            Date.now() - start,
+          );
+        }
+        done();
+      });
+    } catch {
+      logger.warn('MetricsService not available — metrics collection disabled');
+    }
+  }
 
   // Swagger setup — disabled in production
   if (process.env['NODE_ENV'] !== 'production') {

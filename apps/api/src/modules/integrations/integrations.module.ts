@@ -8,10 +8,15 @@ import { CredentialVaultService } from './services/credential-vault.service';
 import { SyncEngineService } from './services/sync-engine.service';
 import { FieldMappingService } from './services/field-mapping.service';
 import { WebhookService } from './services/webhook.service';
+import { WebhookDeliveryService } from './services/webhook-delivery.service';
 import { SyncProcessor } from './processors/sync.processor';
+import { WebhookProcessor, WEBHOOK_DELIVERY_QUEUE } from './processors/webhook.processor';
 
 @Module({
-  imports: [BullModule.registerQueue({ name: 'integration-sync' })],
+  imports: [
+    BullModule.registerQueue({ name: 'integration-sync' }),
+    BullModule.registerQueue({ name: WEBHOOK_DELIVERY_QUEUE }),
+  ],
   controllers: [ConnectorController, FieldMappingController, WebhookController],
   providers: [
     ConnectorService,
@@ -19,13 +24,16 @@ import { SyncProcessor } from './processors/sync.processor';
     SyncEngineService,
     FieldMappingService,
     WebhookService,
+    WebhookDeliveryService,
     SyncProcessor,
+    WebhookProcessor,
   ],
   exports: [
     ConnectorService,
     CredentialVaultService,
     FieldMappingService,
     WebhookService,
+    WebhookDeliveryService,
     SyncEngineService,
   ],
 })

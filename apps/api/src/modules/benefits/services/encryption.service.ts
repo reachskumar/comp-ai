@@ -19,8 +19,11 @@ export class EncryptionService {
     const secret = this.configService.get<string>('BENEFITS_ENCRYPTION_KEY');
     if (secret && secret.length >= 32) {
       this.key = Buffer.from(secret.slice(0, 32), 'utf-8');
+    } else if (process.env['NODE_ENV'] === 'production') {
+      throw new Error(
+        'BENEFITS_ENCRYPTION_KEY must be set and at least 32 characters in production',
+      );
     } else {
-      // Fallback for development — NOT for production
       this.key = Buffer.from('benefits-dev-key-32-chars-long!!', 'utf-8');
       this.logger.warn(
         'Using default encryption key. Set BENEFITS_ENCRYPTION_KEY in production.',

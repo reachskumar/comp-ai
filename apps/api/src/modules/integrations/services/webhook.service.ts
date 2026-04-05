@@ -8,6 +8,7 @@ import {
 import * as crypto from 'crypto';
 import { DatabaseService } from '../../../database';
 import { CreateWebhookDto } from '../dto/create-webhook.dto';
+import { UpdateWebhookDto } from '../dto/update-webhook.dto';
 
 @Injectable()
 export class WebhookService {
@@ -76,6 +77,54 @@ export class WebhookService {
     // Never expose secretHash in list responses
     return webhooks.map((w: Record<string, unknown>) => {
       const { secretHash, ...safe } = w;
+      return safe;
+    });
+  }
+
+  async findAll(tenantId: string) {
+    const webhooks = await this.db.forTenant(tenantId, async (tx) => {
+      return tx.webhookEndpoint.findMany({
+        where: { tenantId },
+        orderBy: { createdAt: 'desc' },
+      });
+    });
+
+    // Never expose secretHash in list responses
+    return webhooks.map((w: Record<string, unknown>) => {
+      const { secretHash, ...safe } = w;
+      return safe;
+    });
+  }
+
+  async update(tenantId: string, id: string, dto: UpdateWebhookDto) {
+    return this.db.forTenant(tenantId, async (tx) => {
+      const webhook = await tx.webhookEndpoint.findFirst({
+        where: { id, tenantId },
+      });
+      if (!webhook) {
+        throw new NotFoundException(`Webhook endpoint ${id} not found`);
+      }
+
+      // Outbound webhooks must use HTTPS
+      if (
+        dto.url &&
+        webhook.direction === 'outbound' &&
+        !dto.url.startsWith('https://')
+      ) {
+        throw new BadRequestException('Outbound webhooks require HTTPS URLs');
+      }
+
+      const updated = await tx.webhookEndpoint.update({
+        where: { id },
+        data: {
+          ...(dto.url !== undefined ? { url: dto.url } : {}),
+          ...(dto.events !== undefined ? { events: dto.events } : {}),
+          ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+        },
+      });
+
+      // Never expose secretHash
+      const { secretHash, ...safe } = updated as Record<string, unknown>;
       return safe;
     });
   }

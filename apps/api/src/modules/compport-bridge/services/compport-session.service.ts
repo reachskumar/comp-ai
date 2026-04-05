@@ -249,6 +249,66 @@ export class CompportSessionService {
   }
 
   /**
+   * Notify Compport PHP that a user has logged out.
+   * Back-channel logout: invalidates the Compport-side session so the user
+   * can't continue using Compport PHP after logging out of the AI platform.
+   */
+  async notifyCompportLogout(userId: string, tenantId: string): Promise<boolean> {
+    if (this.config.isStandalone) return false;
+
+    const apiUrl = this.config.apiUrl;
+    const apiKey = this.config.apiKey;
+
+    if (!apiUrl || !apiKey) {
+      this.logger.warn('Cannot notify Compport logout: API URL or key not configured');
+      return false;
+    }
+
+    try {
+      // Sign the logout payload so Compport can verify authenticity
+      const secret = this.config.sessionSecret;
+      const payload = JSON.stringify({
+        action: 'logout',
+        userId,
+        tenantId,
+        timestamp: Date.now(),
+      });
+
+      const signature = secret
+        ? crypto.createHmac('sha256', secret).update(payload).digest('hex')
+        : '';
+
+      const response = await fetch(`${apiUrl}/api/v1/session/logout`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': apiKey,
+          'X-Logout-Signature': signature,
+          'User-Agent': 'CompportBridge/1.0',
+        },
+        body: payload,
+        signal: AbortSignal.timeout(10_000),
+      });
+
+      if (response.ok) {
+        this.logger.log(`Compport logout notification sent for user ${userId}`);
+        return true;
+      }
+
+      this.logger.warn(
+        `Compport logout notification failed: HTTP ${response.status}`,
+      );
+      return false;
+    } catch (error) {
+      // Non-blocking: don't fail the local logout if Compport notification fails
+      this.logger.warn(
+        `Compport logout notification error: ${(error as Error).message}`,
+      );
+      return false;
+    }
+  }
+
+  /**
    * Clean up expired jtis to prevent memory leaks.
    */
   private cleanupJtis(): void {

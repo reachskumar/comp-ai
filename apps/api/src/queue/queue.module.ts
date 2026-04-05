@@ -11,10 +11,18 @@ import { TestQueueProcessor } from './test-queue.processor';
       useFactory: (configService: ConfigService) => {
         const redisUrl = configService.get<string>('REDIS_URL') ?? 'redis://localhost:6379';
         const url = new URL(redisUrl);
+        const redisTls = configService.get<string>('REDIS_TLS') === 'true';
         return {
           connection: {
             host: url.hostname,
             port: parseInt(url.port || '6379', 10),
+            ...(redisTls ? { tls: { rejectUnauthorized: false } } : {}),
+          },
+          defaultJobOptions: {
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 5000 },
+            removeOnComplete: { age: 86400 },   // Keep completed jobs for 24h
+            removeOnFail: { age: 604800 },       // Keep failed jobs for 7 days
           },
         };
       },

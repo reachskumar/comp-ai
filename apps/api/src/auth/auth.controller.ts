@@ -1,13 +1,16 @@
 import {
   Body,
   Controller,
+  Delete,
   Post,
   UseGuards,
   Get,
+  Param,
   Query,
   Res,
   Request,
   Logger,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
@@ -56,6 +59,98 @@ export class AuthController {
     @Request() req: { user: { userId: string; tenantId: string; email: string; role: string } },
   ) {
     return req.user;
+  }
+
+  @Post('logout')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Logout and revoke tokens' })
+  async logout(
+    @Request() req: { user: { userId: string; tenantId: string } },
+    @Body() body: { refreshToken?: string },
+  ) {
+    // Decode JTIs from tokens to blacklist them
+    let accessJti: string | undefined;
+    let refreshJti: string | undefined;
+
+    try {
+      const authHeader = (req as unknown as { headers: Record<string, string> }).headers?.authorization;
+      if (authHeader) {
+        const decoded = this.authService['jwtService'].decode(authHeader.replace('Bearer ', ''));
+        accessJti = (decoded as Record<string, string>)?.jti;
+      }
+    } catch { /* best effort */ }
+
+    if (body.refreshToken) {
+      try {
+        const decoded = this.authService['jwtService'].decode(body.refreshToken);
+        refreshJti = (decoded as Record<string, string>)?.jti;
+      } catch { /* best effort */ }
+    }
+
+    await this.authService.logout(req.user.userId, req.user.tenantId, accessJti, refreshJti);
+    return { message: 'Logged out successfully' };
+  }
+
+  // ─── Session Management ───────────────────────────────────
+
+  @Get('sessions')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'List active sessions for current user' })
+  async listSessions(
+    @Request() req: { user: { userId: string; tenantId: string } },
+  ) {
+    return this.authService.listSessions(req.user.userId, req.user.tenantId);
+  }
+
+  @Post('sessions/:sessionId/terminate')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Terminate a specific session' })
+  async terminateSession(
+    @Request() req: { user: { userId: string; tenantId: string } },
+    @Param('sessionId') sessionId: string,
+  ) {
+    return this.authService.terminateSession(req.user.userId, req.user.tenantId, sessionId);
+  }
+
+  @Post('sessions/terminate-all')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Terminate all other sessions (keep current)' })
+  async terminateAllSessions(
+    @Request() req: { user: { userId: string; tenantId: string } },
+  ) {
+    // Extract current session JTI to keep it alive
+    let currentJti: string | undefined;
+    try {
+      const authHeader = (req as unknown as { headers: Record<string, string> }).headers?.authorization;
+      if (authHeader) {
+        const decoded = this.authService['jwtService'].decode(authHeader.replace('Bearer ', ''));
+        currentJti = (decoded as Record<string, string>)?.jti;
+      }
+    } catch { /* best effort */ }
+
+    await this.authService.terminateAllSessions(req.user.userId, req.user.tenantId, currentJti);
+    return { message: 'All other sessions terminated' };
+  }
+
+  // ─── GDPR Data Deletion ───────────────────────────────────
+
+  @Delete('user/:userId')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Delete user data (GDPR right-to-erasure)' })
+  async deleteUserData(
+    @Request() req: { user: { userId: string; tenantId: string; role: string } },
+    @Param('userId') targetUserId: string,
+  ) {
+    // Only admins or the user themselves can delete
+    if (req.user.role !== 'ADMIN' && req.user.role !== 'PLATFORM_ADMIN' && req.user.userId !== targetUserId) {
+      throw new UnauthorizedException('Only admins can delete other users');
+    }
+    return this.authService.deleteUserData(req.user.tenantId, targetUserId);
   }
 
   // ─── Tenant Branding (Public) ──────────────────────────────

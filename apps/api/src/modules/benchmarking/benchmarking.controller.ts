@@ -16,6 +16,7 @@ import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth';
 import { TenantGuard } from '../../common';
 import { BenchmarkingService } from './benchmarking.service';
+import { MarketDataSyncService } from './market-data-sync.service';
 import {
   CreateSalaryBandDto,
   UpdateSalaryBandDto,
@@ -34,7 +35,10 @@ interface AuthRequest {
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('benchmarking')
 export class BenchmarkingController {
-  constructor(private readonly benchmarkingService: BenchmarkingService) {}
+  constructor(
+    private readonly benchmarkingService: BenchmarkingService,
+    private readonly syncService: MarketDataSyncService,
+  ) {}
 
   // ─── Salary Bands CRUD ────────────────────────────────────────
 
@@ -105,5 +109,31 @@ export class BenchmarkingController {
     @Request() req: AuthRequest,
   ) {
     return this.benchmarkingService.updateSource(req.user.tenantId, id, dto);
+  }
+
+  // ─── Market Data Sync ────────────────────────────────────────
+
+  @Get('providers')
+  @ApiOperation({ summary: 'List available market data provider adapters' })
+  async listProviders() {
+    return this.syncService.getAvailableProviders();
+  }
+
+  @Post('sources/:id/sync')
+  @ApiOperation({ summary: 'Sync salary bands from a market data source' })
+  @HttpCode(HttpStatus.OK)
+  async syncSource(
+    @Param('id') id: string,
+    @Request() req: AuthRequest,
+    @Body() body: { jobFamily?: string; location?: string },
+  ) {
+    return this.syncService.syncSource(req.user.tenantId, id, body);
+  }
+
+  @Get('sources/:id/health')
+  @ApiOperation({ summary: 'Check if a market data source is reachable' })
+  async checkSourceHealth(@Param('id') id: string, @Request() req: AuthRequest) {
+    const healthy = await this.syncService.checkSourceHealth(req.user.tenantId, id);
+    return { sourceId: id, healthy };
   }
 }

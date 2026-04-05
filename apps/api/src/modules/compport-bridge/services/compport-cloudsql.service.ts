@@ -31,19 +31,31 @@ export class CompportCloudSqlService implements OnModuleDestroy {
   private readonly logger = new Logger(CompportCloudSqlService.name);
   private pool: mysql.Pool | null = null;
 
+  // Per-connector pool cache for multi-tenant scaling (250+ tenants)
+  private readonly poolCache = new Map<string, { pool: mysql.Pool; lastUsed: number; healthy: boolean }>();
+  private readonly MAX_CACHED_POOLS = 50;
+  private readonly POOL_IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+  private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
+
   async onModuleDestroy(): Promise<void> {
+    if (this.keepAliveTimer) clearInterval(this.keepAliveTimer);
     await this.disconnect();
+    await this.closeAllCachedPools();
   }
 
+  private lastConnectConfig: CloudSqlConnectionConfig | null = null;
+
   /**
-   * Create a connection pool to Cloud SQL.
-   * Call this once during connector setup, not per-request.
+   * Create a persistent connection pool to Cloud SQL.
+   * Includes keepalive pings and auto-reconnect on failure.
    */
   async connect(config: CloudSqlConnectionConfig): Promise<void> {
     if (this.pool) {
       this.logger.warn('Cloud SQL pool already exists, closing old pool');
       await this.disconnect();
     }
+
+    this.lastConnectConfig = config;
 
     this.pool = mysql.createPool({
       host: config.host,
@@ -54,15 +66,152 @@ export class CompportCloudSqlService implements OnModuleDestroy {
       waitForConnections: true,
       connectionLimit: 5,
       queueLimit: 10,
-      connectTimeout: 10_000,
+      connectTimeout: 15_000,
       enableKeepAlive: true,
-      keepAliveInitialDelay: 10_000,
+      keepAliveInitialDelay: 5_000,
+      idleTimeout: 0, // Never timeout idle connections
     });
 
     // Test the connection
     const conn = await this.pool.getConnection();
     conn.release();
     this.logger.log(`Connected to Cloud SQL at ${config.host}:${config.port}`);
+
+    // Start keepalive ping every 30 seconds to prevent connection drops
+    this.startKeepalive();
+  }
+
+  private startKeepalive(): void {
+    if (this.keepAliveTimer) clearInterval(this.keepAliveTimer);
+
+    this.keepAliveTimer = setInterval(async () => {
+      // Ping primary pool
+      if (this.pool) {
+        try {
+          const conn = await this.pool.getConnection();
+          await conn.ping();
+          conn.release();
+        } catch {
+          this.logger.warn('Primary Cloud SQL keepalive failed, attempting reconnect...');
+          await this.reconnectPrimary();
+        }
+      }
+
+      // Ping cached pools and mark health
+      for (const [id, entry] of this.poolCache) {
+        try {
+          const conn = await entry.pool.getConnection();
+          await conn.ping();
+          conn.release();
+          entry.healthy = true;
+        } catch {
+          entry.healthy = false;
+          this.logger.warn(`Cached pool ${id} keepalive failed`);
+        }
+      }
+
+      // Evict unhealthy idle pools
+      await this.evictIdlePools();
+    }, 30_000);
+  }
+
+  private async reconnectPrimary(): Promise<void> {
+    if (!this.lastConnectConfig) return;
+    try {
+      if (this.pool) await this.pool.end().catch(() => {});
+      this.pool = mysql.createPool({
+        ...this.lastConnectConfig,
+        waitForConnections: true,
+        connectionLimit: 5,
+        queueLimit: 10,
+        connectTimeout: 15_000,
+        enableKeepAlive: true,
+        keepAliveInitialDelay: 5_000,
+        idleTimeout: 0,
+      });
+      const conn = await this.pool.getConnection();
+      conn.release();
+      this.logger.log('Cloud SQL primary pool reconnected');
+    } catch (err) {
+      this.logger.error(`Cloud SQL reconnect failed: ${(err as Error).message}`);
+      this.pool = null;
+    }
+  }
+
+  /**
+   * Get or create a cached connection pool for a specific connector.
+   * Pools are reused across requests and evicted after idle timeout.
+   * This prevents pool exhaustion when 250+ tenants sync concurrently.
+   */
+  async getPoolForConnector(
+    connectorId: string,
+    config: CloudSqlConnectionConfig,
+  ): Promise<mysql.Pool> {
+    const cached = this.poolCache.get(connectorId);
+    if (cached) {
+      cached.lastUsed = Date.now();
+      return cached.pool;
+    }
+
+    // Evict idle pools if we're at capacity
+    if (this.poolCache.size >= this.MAX_CACHED_POOLS) {
+      await this.evictIdlePools();
+    }
+
+    // If still at capacity after eviction, evict the oldest
+    if (this.poolCache.size >= this.MAX_CACHED_POOLS) {
+      const oldest = [...this.poolCache.entries()].sort((a, b) => a[1].lastUsed - b[1].lastUsed)[0];
+      if (oldest) {
+        await oldest[1].pool.end().catch(() => {});
+        this.poolCache.delete(oldest[0]);
+      }
+    }
+
+    const pool = mysql.createPool({
+      host: config.host,
+      port: config.port,
+      user: config.user,
+      password: config.password,
+      database: config.database,
+      waitForConnections: true,
+      connectionLimit: 2,
+      queueLimit: 3,
+      connectTimeout: 10_000,
+      enableKeepAlive: true,
+      keepAliveInitialDelay: 10_000,
+    });
+
+    // Test the connection
+    const conn = await pool.getConnection();
+    conn.release();
+
+    this.poolCache.set(connectorId, { pool, lastUsed: Date.now(), healthy: true });
+    this.logger.log(
+      `Created cached pool for connector ${connectorId} (${this.poolCache.size}/${this.MAX_CACHED_POOLS} active)`,
+    );
+
+    return pool;
+  }
+
+  /**
+   * Get connection status for all pools — used by platform admin dashboard.
+   */
+  getPoolStatus(): {
+    primaryConnected: boolean;
+    cachedPools: number;
+    maxPools: number;
+    pools: Array<{ connectorId: string; healthy: boolean; lastUsed: number }>;
+  } {
+    return {
+      primaryConnected: this.pool !== null,
+      cachedPools: this.poolCache.size,
+      maxPools: this.MAX_CACHED_POOLS,
+      pools: [...this.poolCache.entries()].map(([id, entry]) => ({
+        connectorId: id,
+        healthy: entry.healthy,
+        lastUsed: entry.lastUsed,
+      })),
+    };
   }
 
   async disconnect(): Promise<void> {
@@ -71,6 +220,24 @@ export class CompportCloudSqlService implements OnModuleDestroy {
       this.pool = null;
       this.logger.log('Cloud SQL connection pool closed');
     }
+  }
+
+  private async evictIdlePools(): Promise<void> {
+    const now = Date.now();
+    for (const [id, entry] of this.poolCache) {
+      if (now - entry.lastUsed > this.POOL_IDLE_TIMEOUT_MS) {
+        await entry.pool.end().catch(() => {});
+        this.poolCache.delete(id);
+      }
+    }
+  }
+
+  private async closeAllCachedPools(): Promise<void> {
+    for (const [id, entry] of this.poolCache) {
+      await entry.pool.end().catch(() => {});
+      this.poolCache.delete(id);
+    }
+    this.logger.log('All cached Cloud SQL pools closed');
   }
 
   private ensurePool(): mysql.Pool {

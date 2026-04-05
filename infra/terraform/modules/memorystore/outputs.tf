@@ -14,3 +14,9 @@ output "auth_string" {
   sensitive   = true
 }
 
+output "server_ca_certs" {
+  description = "Redis TLS CA certificates"
+  value       = google_redis_instance.main.server_ca_certs
+  sensitive   = true
+}
+

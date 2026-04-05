@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Put,
   Delete,
   Param,
   Body,
@@ -16,7 +17,9 @@ import { FastifyRequest } from 'fastify';
 import { JwtAuthGuard } from '../../../auth';
 import { TenantGuard } from '../../../common';
 import { WebhookService } from '../services/webhook.service';
+import { WebhookDeliveryService } from '../services/webhook-delivery.service';
 import { CreateWebhookDto } from '../dto/create-webhook.dto';
+import { UpdateWebhookDto } from '../dto/update-webhook.dto';
 
 interface AuthenticatedRequest extends FastifyRequest {
   user: { userId: string; tenantId: string; email: string; role: string };
@@ -25,7 +28,10 @@ interface AuthenticatedRequest extends FastifyRequest {
 @ApiTags('integrations-webhooks')
 @Controller('integrations')
 export class WebhookController {
-  constructor(private readonly webhookService: WebhookService) {}
+  constructor(
+    private readonly webhookService: WebhookService,
+    private readonly webhookDeliveryService: WebhookDeliveryService,
+  ) {}
 
   // ── Authenticated endpoints ──────────────────────────────────
 
@@ -41,6 +47,14 @@ export class WebhookController {
     return this.webhookService.create(req.user.tenantId, dto);
   }
 
+  @Get('webhooks')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, TenantGuard)
+  @ApiOperation({ summary: 'List all webhook endpoints for tenant' })
+  async listAll(@Req() req: AuthenticatedRequest) {
+    return this.webhookService.findAll(req.user.tenantId);
+  }
+
   @Get('connectors/:connectorId/webhooks')
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, TenantGuard)
@@ -50,6 +64,18 @@ export class WebhookController {
     @Req() req: AuthenticatedRequest,
   ) {
     return this.webhookService.findByConnector(req.user.tenantId, connectorId);
+  }
+
+  @Put('webhooks/:id')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, TenantGuard)
+  @ApiOperation({ summary: 'Update a webhook endpoint' })
+  async update(
+    @Param('id') id: string,
+    @Body() dto: UpdateWebhookDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.webhookService.update(req.user.tenantId, id, dto);
   }
 
   @Delete('webhooks/:id')
@@ -62,6 +88,18 @@ export class WebhookController {
     @Req() req: AuthenticatedRequest,
   ) {
     return this.webhookService.delete(req.user.tenantId, id);
+  }
+
+  @Post('webhooks/:id/test')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, TenantGuard)
+  @ApiOperation({ summary: 'Send a test event to a webhook endpoint' })
+  @HttpCode(HttpStatus.OK)
+  async testWebhook(
+    @Param('id') id: string,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.webhookDeliveryService.sendTestEvent(req.user.tenantId, id);
   }
 
   // ── Inbound webhook endpoint (no JWT — uses HMAC verification) ──
@@ -77,4 +115,3 @@ export class WebhookController {
     return this.webhookService.processInbound(connectorId, signature, body);
   }
 }
-

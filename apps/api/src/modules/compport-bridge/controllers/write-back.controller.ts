@@ -117,6 +117,22 @@ export class WriteBackController {
     };
   }
 
+  @Post('batches/:batchId/rollback')
+  @ApiOperation({ summary: 'Rollback a previously applied batch (human-in-the-loop gate)' })
+  async rollbackBatch(
+    @Request() req: AuthRequest,
+    @Param('batchId') batchId: string,
+    @Body() body: { confirmPhrase: string },
+  ) {
+    this.logger.warn(`Write-back ROLLBACK requested by user=${req.user.userId} batch=${batchId}`);
+    return this.writeBackService.rollbackBatch(
+      req.user.tenantId,
+      batchId,
+      req.user.userId,
+      body.confirmPhrase,
+    );
+  }
+
   @Get('batches')
   @ApiOperation({ summary: 'List write-back batch history' })
   async listBatches(@Request() req: AuthRequest, @Query('cycleId') cycleId?: string) {

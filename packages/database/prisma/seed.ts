@@ -56,6 +56,10 @@ async function setRlsTenantContext(tenantId: string) {
 }
 
 async function main() {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('Seeding is not allowed in production. Aborting.');
+  }
+
   console.log('🌱 Seeding database...');
 
   // Hash passwords (bcrypt cost factor 12 per spec)

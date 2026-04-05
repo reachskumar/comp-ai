@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "NODE_OPTIONS='--experimental-require-module' nest start --watch",
     "build": "nest build",
-    "start": "node --experimental-require-module dist/main.js",
+    "start": "node --max-old-space-size=512 --experimental-require-module dist/main.js",
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
