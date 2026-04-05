@@ -104,11 +104,11 @@ async function bootstrap() {
     try {
       const metrics = app.get(MetricsService);
       const fastify = app.getHttpAdapter().getInstance();
-      fastify.addHook('onRequest', (_req: unknown, _reply: unknown, done: () => void) => {
-        ((_req as Record<string, unknown>).__startTime) = Date.now();
+      fastify.addHook('onRequest', (req: any, _reply: any, done: () => void) => {
+        req.__startTime = Date.now();
         done();
       });
-      fastify.addHook('onResponse', (req: Record<string, unknown>, reply: Record<string, unknown>, done: () => void) => {
+      fastify.addHook('onResponse', (req: any, reply: any, done: () => void) => {
         const start = req.__startTime as number | undefined;
         if (start) {
           metrics.recordHttpRequest(
