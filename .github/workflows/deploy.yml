@@ -99,21 +99,6 @@ jobs:
           echo "REVISION=$REV" >> $GITHUB_OUTPUT
           echo "Previous Web revision: $REV"
 
-      # ─── Deploy to Cloud Run ─────────────────────────────────
-      - name: Deploy API to Cloud Run
-        uses: google-github-actions/deploy-cloudrun@v2
-        with:
-          service: ${{ env.API_SERVICE }}
-          region: ${{ env.GCP_REGION }}
-          image: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/api:${{ steps.tag.outputs.TAG }}
-
-      - name: Deploy Web to Cloud Run
-        uses: google-github-actions/deploy-cloudrun@v2
-        with:
-          service: ${{ env.WEB_SERVICE }}
-          region: ${{ env.GCP_REGION }}
-          image: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/web:${{ steps.tag.outputs.TAG }}
-
       # ─── Resolve VPC connector ─────────────────────────────
       - name: Get VPC connector
         id: vpc
@@ -129,11 +114,11 @@ jobs:
           echo "CONNECTOR=$CONNECTOR" >> "$GITHUB_OUTPUT"
           echo "Using VPC connector: $CONNECTOR"
 
-      # ─── Run database migrations ────────────────────────────
+      # ─── Run database migrations BEFORE deploying containers ─
       - name: Run Prisma migrations
         run: |
-          # Incremental migrations — data is preserved across deploys.
-          # prisma migrate deploy applies only pending migrations.
+          # Migrations run BEFORE container deploy so new tables exist
+          # when the updated application starts up.
           gcloud run jobs create migrate-${{ steps.tag.outputs.TAG }} \
             --image=${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/api:${{ steps.tag.outputs.TAG }} \
             --region=${{ env.GCP_REGION }} \
@@ -179,6 +164,21 @@ jobs:
             --quiet
 
           echo "✅ Database seeded successfully"
+
+      # ─── Deploy to Cloud Run ─────────────────────────────────
+      - name: Deploy API to Cloud Run
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.API_SERVICE }}
+          region: ${{ env.GCP_REGION }}
+          image: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/api:${{ steps.tag.outputs.TAG }}
+
+      - name: Deploy Web to Cloud Run
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.WEB_SERVICE }}
+          region: ${{ env.GCP_REGION }}
+          image: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/web:${{ steps.tag.outputs.TAG }}
 
       # ─── Health Check ────────────────────────────────────────
       - name: Verify API health
