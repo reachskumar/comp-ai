@@ -84,14 +84,17 @@ export class InboundSyncService {
 
   /**
    * Sync all entities for a connector (employees + compensation).
+   * Supports delta sync: only pulls records updated since last sync.
    */
   async syncAll(
     tenantId: string,
     connectorId: string,
     syncJobId: string,
+    deltaOnly = false,
   ): Promise<InboundSyncResult> {
     const start = Date.now();
-    this.logger.log(`Starting full inbound sync: tenant=${tenantId}, connector=${connectorId}`);
+    const syncMode = deltaOnly ? 'delta' : 'full';
+    this.logger.log(`Starting ${syncMode} inbound sync: tenant=${tenantId}, connector=${connectorId}`);
 
     const connector = await this.getConnectorOrThrow(tenantId, connectorId);
     const config = connector.config as Record<string, string>;
@@ -100,6 +103,12 @@ export class InboundSyncService {
 
     if (!schemaName) {
       throw new BadRequestException('Connector config missing schemaName');
+    }
+
+    // For delta sync, get the last successful sync timestamp
+    let lastSyncAt: Date | null = null;
+    if (deltaOnly && connector.lastSyncAt) {
+      lastSyncAt = connector.lastSyncAt as Date;
     }
 
     // Connect to Cloud SQL
@@ -124,6 +133,7 @@ export class InboundSyncService {
         schemaName,
         tableName,
         mappings,
+        lastSyncAt,
       );
       return result;
     } finally {
@@ -436,6 +446,7 @@ export class InboundSyncService {
       isRequired: boolean;
       defaultValue?: string | null;
     }>,
+    lastSyncAt?: Date | null,
   ): Promise<InboundSyncResult> {
     const start = Date.now();
     let synced = 0;
@@ -455,11 +466,20 @@ export class InboundSyncService {
     let hasMore = true;
 
     while (hasMore) {
-      // Paginated SELECT from Cloud SQL
+      // Paginated SELECT from Cloud SQL (with optional delta filter)
+      let sql: string;
+      let params: unknown[];
+      if (lastSyncAt) {
+        sql = `SELECT * FROM \`${tableName}\` WHERE \`updated_at\` >= ? ORDER BY \`updated_at\` ASC LIMIT ? OFFSET ?`;
+        params = [lastSyncAt.toISOString().slice(0, 19).replace('T', ' '), BATCH_SIZE, offset];
+      } else {
+        sql = `SELECT * FROM \`${tableName}\` LIMIT ? OFFSET ?`;
+        params = [BATCH_SIZE, offset];
+      }
       const rows = await this.cloudSql.executeQuery<Record<string, unknown>>(
         schemaName,
-        `SELECT * FROM \`${tableName}\` LIMIT ? OFFSET ?`,
-        [BATCH_SIZE, offset],
+        sql,
+        params,
       );
 
       if (rows.length === 0) {

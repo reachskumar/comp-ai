@@ -1,11 +1,16 @@
 import { Injectable, UnauthorizedException, ConflictException, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
+import { randomUUID } from 'crypto';
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
 import { DatabaseService } from '../database';
 import { RegisterDto, LoginDto } from './dto';
 import { JwtPayload } from './interfaces/jwt-payload.interface';
+
+// Lockout constants (class-level properties are used instead)
+// const MAX_FAILED_ATTEMPTS = 5;
+// const LOCKOUT_DURATION_MS = 30 * 60 * 1000; // 30 minutes
 
 @Injectable()
 export class AuthService {
@@ -116,7 +121,7 @@ export class AuthService {
     if (user.failedLoginAttempts > 0 || user.lockedUntil) {
       await this.db.client.user.update({
         where: { id: user.id },
-        data: { failedLoginAttempts: 0, lockedUntil: null },
+        data: { failedLoginAttempts: 0, lockedUntil: null, lastLoginAt: new Date() },
       });
     }
 
@@ -216,6 +221,16 @@ export class AuthService {
       throw new UnauthorizedException('Invalid refresh token');
     }
 
+    // Check if token is blacklisted (logged out)
+    if ((payload as JwtPayload & { jti?: string }).jti) {
+      const blacklisted = await this.db.client.tokenBlacklist.findUnique({
+        where: { jti: (payload as JwtPayload & { jti?: string }).jti! },
+      });
+      if (blacklisted) {
+        throw new UnauthorizedException('Token has been revoked');
+      }
+    }
+
     const tokenHash = this.hashToken(refreshToken);
 
     // Look up the stored token record
@@ -263,6 +278,144 @@ export class AuthService {
 
     // Issue new tokens in the same family
     return this.generateTokens(user.id, user.tenantId, user.email, user.role, storedToken.familyId);
+  }
+
+  // ─── Logout / Token Revocation ────────────────────────────
+
+  async logout(userId: string, tenantId: string, accessJti?: string, refreshJti?: string) {
+    const jtis = [accessJti, refreshJti].filter(Boolean) as string[];
+
+    for (const jti of jtis) {
+      await this.db.client.tokenBlacklist.upsert({
+        where: { jti },
+        update: {},
+        create: {
+          jti,
+          userId,
+          tenantId,
+          reason: 'logout',
+          expiresAt: new Date(Date.now() + 8 * 24 * 60 * 60 * 1000), // 8 days (> refresh token TTL)
+        },
+      });
+    }
+
+    // Remove associated sessions
+    if (accessJti) {
+      await this.db.client.userSession.deleteMany({ where: { jti: accessJti } });
+    }
+
+    // Back-channel logout: notify Compport PHP to invalidate their session
+    try {
+      const compportApiUrl = this.configService.get<string>('COMPPORT_API_URL');
+      const compportApiKey = this.configService.get<string>('COMPPORT_API_KEY');
+      const compportMode = this.configService.get<string>('COMPPORT_MODE');
+
+      if (compportMode !== 'standalone' && compportApiUrl && compportApiKey) {
+        fetch(`${compportApiUrl}/api/v1/session/logout`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-API-Key': compportApiKey,
+          },
+          body: JSON.stringify({ userId, tenantId, timestamp: Date.now() }),
+          signal: AbortSignal.timeout(5_000),
+        }).catch(() => {
+          // Non-blocking: don't fail logout if Compport is unreachable
+        });
+      }
+    } catch {
+      // Swallow — Compport notification is best-effort
+    }
+
+    this.logger.log(`User logged out: ${userId}`);
+  }
+
+  // ─── Session Management ───────────────────────────────────
+
+  async listSessions(userId: string, tenantId: string) {
+    return this.db.forTenant(tenantId, (tx) =>
+      tx.userSession.findMany({
+        where: { userId, expiresAt: { gt: new Date() } },
+        orderBy: { lastActiveAt: 'desc' },
+      }),
+    );
+  }
+
+  async terminateSession(userId: string, tenantId: string, sessionId: string) {
+    const session = await this.db.forTenant(tenantId, (tx) =>
+      tx.userSession.findFirst({ where: { id: sessionId, userId } }),
+    ) as { id: string; jti: string; expiresAt: Date } | null;
+
+    if (!session) return { terminated: false };
+
+    // Blacklist the session's token
+    await this.db.client.tokenBlacklist.upsert({
+      where: { jti: session.jti },
+      update: {},
+      create: {
+        jti: session.jti,
+        userId,
+        tenantId,
+        reason: 'admin_terminated',
+        expiresAt: session.expiresAt,
+      },
+    });
+
+    await this.db.client.userSession.delete({ where: { id: sessionId } });
+
+    this.logger.log(`Session ${sessionId} terminated for user ${userId}`);
+    return { terminated: true };
+  }
+
+  async terminateAllSessions(userId: string, tenantId: string, exceptJti?: string) {
+    const sessions = await this.db.forTenant(tenantId, (tx) =>
+      tx.userSession.findMany({ where: { userId } }),
+    ) as Array<{ jti: string; expiresAt: Date }>;
+
+    for (const session of sessions) {
+      if (session.jti === exceptJti) continue;
+      await this.db.client.tokenBlacklist.upsert({
+        where: { jti: session.jti },
+        update: {},
+        create: {
+          jti: session.jti,
+          userId,
+          tenantId,
+          reason: 'terminate_all',
+          expiresAt: session.expiresAt,
+        },
+      });
+    }
+
+    const deleteWhere: Record<string, unknown> = { userId };
+    if (exceptJti) deleteWhere.jti = { not: exceptJti };
+    await this.db.client.userSession.deleteMany({ where: deleteWhere });
+
+    this.logger.log(`All sessions terminated for user ${userId} (except ${exceptJti ?? 'none'})`);
+  }
+
+  // ─── GDPR Data Deletion ───────────────────────────────────
+
+  async deleteUserData(tenantId: string, targetUserId: string) {
+    return this.db.forTenant(tenantId, async (tx) => {
+      // Delete sessions and blacklisted tokens
+      await tx.userSession.deleteMany({ where: { userId: targetUserId } });
+      await tx.tokenBlacklist.deleteMany({ where: { userId: targetUserId } });
+
+      // Anonymize audit logs (keep structure, remove PII)
+      await tx.auditLog.updateMany({
+        where: { userId: targetUserId },
+        data: { userId: 'DELETED_USER' },
+      });
+
+      // Delete notifications
+      await tx.notification.deleteMany({ where: { userId: targetUserId } });
+
+      // Delete the user record
+      await tx.user.delete({ where: { id: targetUserId } });
+
+      return { deleted: true, userId: targetUserId };
+    });
   }
 
   /**
@@ -320,11 +473,13 @@ export class AuthService {
     role: string,
     familyId?: string,
   ) {
+    const accessJti = randomUUID();
+    const refreshJti = randomUUID();
     const payload: JwtPayload = { sub: userId, tenantId, email, role };
 
     const [accessToken, refreshToken] = await Promise.all([
-      this.jwtService.signAsync(payload, { expiresIn: '15m' }),
-      this.jwtService.signAsync(payload, { expiresIn: '7d' }),
+      this.jwtService.signAsync({ ...payload, jti: accessJti }, { expiresIn: '15m' }),
+      this.jwtService.signAsync({ ...payload, jti: refreshJti }, { expiresIn: '7d' }),
     ]);
 
     // Store refresh token hash for rotation tracking
@@ -338,6 +493,19 @@ export class AuthService {
         familyId: familyId ?? crypto.randomUUID(),
         expiresAt,
       },
+    });
+
+    // Track session
+    await this.db.client.userSession.create({
+      data: {
+        userId,
+        tenantId,
+        jti: accessJti,
+        expiresAt,
+      },
+    }).catch(() => {
+      // Non-critical: don't block login if session tracking fails
+      this.logger.warn(`Failed to track session for user ${userId}`);
     });
 
     return { accessToken, refreshToken };

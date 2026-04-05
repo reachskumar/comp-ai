@@ -16,7 +16,8 @@ resource "google_redis_instance" "main" {
   authorized_network = var.vpc_network_id
   connect_mode       = "PRIVATE_SERVICE_ACCESS"
 
-  auth_enabled = true
+  auth_enabled            = true
+  transit_encryption_mode = "SERVER_AUTHENTICATION"
 
   redis_configs = {
     maxmemory-policy = "allkeys-lru"

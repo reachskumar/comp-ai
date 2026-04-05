@@ -16,8 +16,10 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { FastifyReply } from 'fastify';
+import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../../auth';
 import { TenantGuard, PermissionGuard, RequirePermission } from '../../common';
+import { AiCostGuard } from '../../common/guards/ai-cost.guard';
 import { CopilotService } from './copilot.service';
 import { ChatMessageDto, ConversationQueryDto } from './dto';
 import { formatSSE } from '@compensation/ai';
@@ -28,8 +30,9 @@ interface AuthRequest {
 
 @ApiTags('copilot')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard, AiCostGuard)
 @RequirePermission('AI Copilot', 'view')
+@Throttle({ default: { limit: 20, ttl: 60000 } })
 @Controller('copilot')
 export class CopilotController {
   private readonly logger = new Logger(CopilotController.name);

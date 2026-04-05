@@ -717,26 +717,27 @@ export class AnomalyDetectorService {
   ): Promise<void> {
     if (anomalies.length === 0) return;
 
-    // Clear previous anomalies for this run
-    await this.db.client.payrollAnomaly.deleteMany({
-      // RLS-exempt: no tenantId on PayrollAnomaly; scoped via payrollRunId FK
-      where: { payrollRunId },
-    });
-
-    // Insert in batches
-    const batches = chunk(anomalies, 1000);
-    for (const batch of batches) {
-      await this.db.client.payrollAnomaly.createMany({
-        // RLS-exempt: no tenantId on PayrollAnomaly; scoped via payrollRunId FK
-        data: batch.map((a) => ({
-          payrollRunId,
-          employeeId: a.employeeId,
-          anomalyType: a.anomalyType,
-          severity: a.severity,
-          details: a.details as unknown as Prisma.InputJsonValue,
-        })),
+    // Wrap delete + create in a transaction to prevent data loss on partial failure
+    await this.db.client.$transaction(async (tx) => {
+      // Clear previous anomalies for this run
+      await tx.payrollAnomaly.deleteMany({
+        where: { payrollRunId },
       });
-    }
+
+      // Insert in batches
+      const batches = chunk(anomalies, 1000);
+      for (const batch of batches) {
+        await tx.payrollAnomaly.createMany({
+          data: batch.map((a) => ({
+            payrollRunId,
+            employeeId: a.employeeId,
+            anomalyType: a.anomalyType,
+            severity: a.severity,
+            details: a.details as unknown as Prisma.InputJsonValue,
+          })),
+        });
+      }
+    });
 
     this.logger.log(`Persisted ${anomalies.length} anomalies for run ${payrollRunId}`);
   }

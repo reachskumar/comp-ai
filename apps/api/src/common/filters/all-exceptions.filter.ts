@@ -35,7 +35,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
       error = exception.name ?? error;
     } else if (exception instanceof Error) {
       message = exception.message;
-      this.logger.error(`Unhandled exception: ${exception.message}`, exception.stack);
+      if (process.env['NODE_ENV'] === 'production') {
+        this.logger.error(`Unhandled exception: ${exception.message}`);
+      } else {
+        this.logger.error(`Unhandled exception: ${exception.message}`, exception.stack);
+      }
     }
 
     void response.status(statusCode).send({

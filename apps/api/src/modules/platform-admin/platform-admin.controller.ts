@@ -8,6 +8,7 @@ import {
   Param,
   Query,
   Res,
+  Request,
   UseGuards,
   Logger,
 } from '@nestjs/common';
@@ -71,14 +72,14 @@ export class PlatformAdminController {
 
   @Post('tenants/:id/suspend')
   @ApiOperation({ summary: 'Suspend a tenant' })
-  suspendTenant(@Param('id') id: string) {
-    return this.service.suspendTenant(id);
+  suspendTenant(@Param('id') id: string, @Request() req: { user: { userId: string } }) {
+    return this.service.suspendTenant(id, req.user.userId);
   }
 
   @Post('tenants/:id/activate')
   @ApiOperation({ summary: 'Re-activate a suspended tenant' })
-  activateTenant(@Param('id') id: string) {
-    return this.service.activateTenant(id);
+  activateTenant(@Param('id') id: string, @Request() req: { user: { userId: string } }) {
+    return this.service.activateTenant(id, req.user.userId);
   }
 
   @Delete('tenants/:id')
@@ -191,6 +192,40 @@ export class PlatformAdminController {
   })
   testTenantConnection(@Param('id') id: string) {
     return this.service.testTenantConnection(id);
+  }
+
+  // ─── Tenant Usage ────────────────────────────────────────
+
+  @Get('tenants/:id/usage')
+  @ApiOperation({ summary: 'Get tenant resource usage' })
+  getTenantUsage(@Param('id') id: string) {
+    return this.service.getTenantUsage(id);
+  }
+
+  // ─── Admin Impersonation ─────────────────────────────────
+
+  @Post('tenants/:id/users/:userId/impersonate')
+  @ApiOperation({ summary: 'Impersonate a tenant user (generates scoped token info)' })
+  impersonate(
+    @Param('id') tenantId: string,
+    @Param('userId') userId: string,
+    @Request() req: { user: { userId: string } },
+  ) {
+    return this.service.impersonate(tenantId, userId, req.user.userId);
+  }
+
+  // ─── Admin Audit Log ─────────────────────────────────────
+
+  @Get('audit-log')
+  @ApiOperation({ summary: 'View platform admin action audit log' })
+  getAdminAuditLog(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.service.getAdminAuditLog(
+      page ? parseInt(page, 10) : 1,
+      limit ? parseInt(limit, 10) : 50,
+    );
   }
 
   // ─── Stats ───────────────────────────────────────────────

@@ -258,17 +258,19 @@ model Tenant {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  tenantId     String
-  email        String
-  name         String
-  passwordHash String?
-  azureAdOid   String?  // Azure AD Object ID for SSO users
-  role         String   @default("EMPLOYEE") // Compport role ID (e.g., "1.00") or "PLATFORM_ADMIN"
-  employeeId   String?  @unique // Link to synced Employee record (nullable for platform admins)
+  id                  String    @id @default(cuid())
+  tenantId            String
+  email               String
+  name                String
+  passwordHash        String?
+  azureAdOid          String?   // Azure AD Object ID for SSO users
+  role                String    @default("EMPLOYEE") // Compport role ID (e.g., "1.00") or "PLATFORM_ADMIN"
+  employeeId          String?   @unique // Link to synced Employee record (nullable for platform admins)
   avatarUrl           String?
   failedLoginAttempts Int       @default(0)
+  failedLoginCount    Int       @default(0)
   lockedUntil         DateTime?
+  lastLoginAt         DateTime?
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
@@ -289,6 +291,37 @@ model User {
   @@index([tenantId])
   @@index([employeeId])
   @@map("users")
+}
+
+model TokenBlacklist {
+  id        String   @id @default(cuid())
+  jti       String   @unique
+  userId    String
+  tenantId  String
+  reason    String   @default("logout")
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("token_blacklist")
+}
+
+model UserSession {
+  id           String   @id @default(cuid())
+  userId       String
+  tenantId     String
+  jti          String   @unique
+  ipAddress    String?
+  userAgent    String?
+  lastActiveAt DateTime @default(now())
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+
+  @@index([userId])
+  @@index([tenantId])
+  @@index([expiresAt])
+  @@map("user_sessions")
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -2084,4 +2117,24 @@ model PayEquityDimension {
   @@index([reportId])
   @@index([reportId, dimensionType])
   @@map("pay_equity_dimensions")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Platform Configuration (Admin-managed settings stored in DB)
+// ─────────────────────────────────────────────────────────────
+
+model PlatformConfig {
+  id          String   @id @default(cuid())
+  category    String   // e.g. "ai", "market_data", "integrations", "security", "features"
+  key         String   // e.g. "openai_api_key", "default_model", "bls_api_key"
+  value       String   @db.Text // stored value (encrypted for secrets)
+  isSecret    Boolean  @default(false) // if true, value is AES-encrypted
+  description String?  // human-readable description
+  updatedBy   String?  // userId who last changed it
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([category, key])
+  @@index([category])
+  @@map("platform_config")
 }

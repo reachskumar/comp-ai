@@ -7,11 +7,24 @@ import Redis from 'ioredis';
 export class HealthService {
   private readonly logger = new Logger(HealthService.name);
   private readonly startTime = Date.now();
+  private redisClient: Redis | null = null;
 
   constructor(
     private readonly db: DatabaseService,
     private readonly configService: ConfigService,
-  ) {}
+  ) {
+    const redisUrl = this.configService.get<string>('REDIS_URL') ?? 'redis://localhost:6379';
+    const redisTls = this.configService.get<string>('REDIS_TLS') === 'true';
+    this.redisClient = new Redis(redisUrl, {
+      lazyConnect: true,
+      connectTimeout: 3000,
+      maxRetriesPerRequest: 1,
+      ...(redisTls ? { tls: { rejectUnauthorized: false } } : {}),
+    });
+    this.redisClient.connect().catch(() => {
+      this.logger.warn('Redis health-check client failed initial connection');
+    });
+  }
 
   async check() {
     const [dbHealthy, redisHealthy] = await Promise.all([
@@ -64,11 +77,8 @@ export class HealthService {
 
   private async checkRedis(): Promise<boolean> {
     try {
-      const redisUrl = this.configService.get<string>('REDIS_URL') ?? 'redis://localhost:6379';
-      const redis = new Redis(redisUrl, { lazyConnect: true, connectTimeout: 3000 });
-      await redis.connect();
-      await redis.ping();
-      await redis.quit();
+      if (!this.redisClient) return false;
+      await this.redisClient.ping();
       return true;
     } catch {
       this.logger.warn('Redis health check failed');

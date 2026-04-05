@@ -71,7 +71,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
 
   async isHealthy(): Promise<boolean> {
     try {
-      await this._client.$queryRawUnsafe('SELECT 1');
+      await this._client.$queryRaw`SELECT 1`;
       return true;
     } catch {
       return false;

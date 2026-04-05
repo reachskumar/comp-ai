@@ -38,6 +38,42 @@ export interface AIConfig {
   graphModels: Record<string, Partial<ModelConfig>>;
 }
 
+/**
+ * Model tiers for cost/quality optimization across agents.
+ *
+ * Tier 1 (REASONING): Complex financial analysis, compliance, multi-step planning
+ *   → Best available model (Claude Sonnet 4 or GPT-4o)
+ *
+ * Tier 2 (INTERACTIVE): Real-time chat, streaming, tool-calling Q&A
+ *   → Fast + good quality (GPT-4o-mini or Claude Haiku)
+ *
+ * Tier 3 (BATCH): Background processing, template generation, simple classification
+ *   → Cost-optimized (GPT-4o-mini)
+ */
+export type ModelTier = 'reasoning' | 'interactive' | 'batch';
+
+const GRAPH_TIER_MAP: Record<string, ModelTier> = {
+  // Tier 1: Reasoning — complex financial/regulatory analysis
+  'compliance-scanner': 'reasoning',
+  simulation: 'reasoning',
+  'budget-optimizer': 'reasoning',
+  'calibration-assistant': 'reasoning',
+  'anomaly-explainer': 'reasoning',
+
+  // Tier 2: Interactive — user-facing, latency-sensitive
+  copilot: 'interactive',
+  'policy-rag': 'interactive',
+
+  // Tier 3: Batch — background, cost-sensitive
+  'field-mapping': 'batch',
+  'letter-generator': 'batch',
+  'data-quality': 'batch',
+  'attrition-predictor': 'batch',
+  'pay-equity': 'batch',
+  'report-builder': 'batch',
+  echo: 'batch',
+};
+
 /** Default model configurations per graph type */
 const GRAPH_MODEL_DEFAULTS: Record<string, Partial<ModelConfig>> = {
   'policy-parser': { temperature: 0.1, maxTokens: 4096 },
@@ -115,17 +151,27 @@ export function loadAIConfig(): AIConfig {
 /**
  * Resolve the model config for a specific graph type.
  * Merges default config with graph-specific overrides.
+ * Supports tier-based model selection via AI_MODEL_REASONING, AI_MODEL_INTERACTIVE, AI_MODEL_BATCH env vars.
  */
 export function resolveModelConfig(config: AIConfig, graphType?: string): ModelConfig {
   const base = config.defaultModel;
   if (!graphType) return base;
 
+  // Check if there's a tier-specific model override
+  const tier = GRAPH_TIER_MAP[graphType];
+  let tierModel: string | undefined;
+
+  if (tier) {
+    const envKey = `AI_MODEL_${tier.toUpperCase()}`;
+    tierModel = process.env[envKey] || undefined;
+  }
+
   const overrides = config.graphModels[graphType];
-  if (!overrides) return base;
 
   return {
     ...base,
     ...overrides,
+    ...(tierModel ? { model: tierModel } : {}),
   };
 }
 
@@ -156,6 +202,11 @@ function createUsageLoggingCallbacks(graphType?: string) {
       },
     },
   ];
+}
+
+/** Get the tier for a graph type */
+export function getGraphTier(graphType: string): ModelTier {
+  return GRAPH_TIER_MAP[graphType] ?? 'reasoning';
 }
 
 /**

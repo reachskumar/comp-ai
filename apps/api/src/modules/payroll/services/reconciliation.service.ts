@@ -53,48 +53,60 @@ export class ReconciliationService {
   // ─── Create Payroll Run ─────────────────────────────────────
 
   async createPayrollRun(tenantId: string, dto: CreatePayrollDto) {
-    // Create the payroll run
-    const run = await this.db.forTenant(tenantId, (tx) =>
-      tx.payrollRun.create({
+    // Wrap entire run creation + line items + totals in a single transaction
+    const updated = await this.db.forTenant(tenantId, async (tx) => {
+      // Create the payroll run
+      const run = await tx.payrollRun.create({
         data: {
           tenantId,
           period: dto.period,
           status: 'DRAFT',
           employeeCount: new Set(dto.lineItems.map((li) => li.employeeId)).size,
         },
-      }),
-    );
-
-    // Insert line items in batches
-    const batchSize = 1000;
-    for (let i = 0; i < dto.lineItems.length; i += batchSize) {
-      const batch = dto.lineItems.slice(i, i + batchSize);
-      await this.db.client.payrollLineItem.createMany({
-        // RLS-exempt: no tenantId on PayrollLineItem; scoped via payrollRunId FK
-        data: batch.map((li) => ({
-          payrollRunId: run.id,
-          employeeId: li.employeeId,
-          component: li.component,
-          amount: li.amount,
-          previousAmount: li.previousAmount ?? 0,
-          delta: li.amount - (li.previousAmount ?? 0),
-        })),
       });
-    }
 
-    // Update totals
-    const totals = await this.computeTotals(run.id);
-    const updated = await this.db.forTenant(tenantId, (tx) =>
-      tx.payrollRun.update({
+      // Insert line items in batches
+      const batchSize = 1000;
+      for (let i = 0; i < dto.lineItems.length; i += batchSize) {
+        const batch = dto.lineItems.slice(i, i + batchSize);
+        await tx.payrollLineItem.createMany({
+          data: batch.map((li) => ({
+            payrollRunId: run.id,
+            employeeId: li.employeeId,
+            component: li.component,
+            amount: li.amount,
+            previousAmount: li.previousAmount ?? 0,
+            delta: li.amount - (li.previousAmount ?? 0),
+          })),
+        });
+      }
+
+      // Compute and update totals within the same transaction
+      const items = await tx.payrollLineItem.findMany({
+        where: { payrollRunId: run.id },
+        select: { component: true, amount: true },
+      });
+
+      let gross = 0;
+      let deductions = 0;
+      const deductionPrefixes = ['TAX', 'DEDUCTION', 'INSURANCE', 'PENSION', 'CONTRIBUTION'];
+      for (const item of items) {
+        const amount = Number(item.amount);
+        const upper = item.component.toUpperCase();
+        if (deductionPrefixes.some((p) => upper.startsWith(p))) {
+          deductions += Math.abs(amount);
+        } else {
+          gross += amount;
+        }
+      }
+
+      return tx.payrollRun.update({
         where: { id: run.id },
-        data: {
-          totalGross: totals.gross,
-          totalNet: totals.net,
-        },
-      }),
-    );
+        data: { totalGross: gross, totalNet: gross - deductions },
+      });
+    });
 
-    this.logger.log(`Created payroll run ${run.id} with ${dto.lineItems.length} line items`);
+    this.logger.log(`Created payroll run ${updated.id} with ${dto.lineItems.length} line items`);
     return updated;
   }
 

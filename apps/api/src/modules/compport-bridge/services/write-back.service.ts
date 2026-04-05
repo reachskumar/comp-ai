@@ -652,6 +652,140 @@ export class WriteBackService {
     return batch;
   }
 
+  /**
+   * Rollback a previously applied batch using stored rollback SQL.
+   * HUMAN-IN-THE-LOOP GATE: Admin must pass confirmPhrase="ROLLBACK".
+   */
+  async rollbackBatch(
+    tenantId: string,
+    batchId: string,
+    userId: string,
+    confirmPhrase: string,
+  ) {
+    if (confirmPhrase !== 'ROLLBACK') {
+      throw new BadRequestException('Confirmation phrase must be "ROLLBACK"');
+    }
+
+    const batch = await this.getBatchOrThrow(tenantId, batchId);
+
+    if (batch.status !== 'APPLIED') {
+      throw new BadRequestException(
+        `Only APPLIED batches can be rolled back. Current status: ${batch.status}`,
+      );
+    }
+
+    if (!batch.rollbackSql) {
+      throw new BadRequestException('No rollback SQL stored for this batch');
+    }
+
+    const connector = await this.getConnectorConfig(tenantId, batch.connectorId);
+    const schemaName = (connector.config as Record<string, string>)?.schemaName;
+
+    if (!schemaName) {
+      throw new BadRequestException('Connector config missing schemaName');
+    }
+
+    // Parse rollback SQL into individual statements
+    const rollbackStatements = (batch.rollbackSql as string)
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && line.startsWith('UPDATE'));
+
+    if (rollbackStatements.length === 0) {
+      throw new BadRequestException('Rollback SQL contains no UPDATE statements');
+    }
+
+    // Mark batch as rolling back
+    await this.db.forTenant(tenantId, (tx) =>
+      tx.writeBackBatch.update({
+        where: { id: batchId },
+        data: { status: 'ROLLING_BACK' },
+      }),
+    );
+
+    // Connect and execute rollback
+    await this.connectToCloudSql(tenantId, connector);
+
+    try {
+      // Execute rollback statements in a transaction
+      // Rollback SQL uses schema-qualified table names, so no USE needed
+      const pool = (this.cloudSql as unknown as { pool: unknown }).pool;
+      if (!pool) throw new Error('Cloud SQL not connected');
+
+      // Use the cloudSql service's withSchema for transactional execution
+      const statements = rollbackStatements.map((sql) => ({
+        // Strip schema prefix since we'll USE the schema
+        sql: sql.replace(`\`${schemaName}\`.`, '').replace(/;$/, ''),
+        params: [] as unknown[],
+      }));
+
+      await this.cloudSql.executeWrite(schemaName, statements);
+
+      // Mark records as rolled back
+      await this.db.forTenant(tenantId, async (tx) => {
+        await tx.writeBackRecord.updateMany({
+          where: { batchId, status: 'APPLIED' },
+          data: { status: 'ROLLED_BACK' },
+        });
+
+        await tx.writeBackBatch.update({
+          where: { id: batchId },
+          data: { status: 'ROLLED_BACK' },
+        });
+
+        // Audit log
+        await tx.auditLog.create({
+          data: {
+            tenantId,
+            userId,
+            action: 'WRITEBACK_ROLLED_BACK',
+            entityType: 'WriteBackBatch',
+            entityId: batchId,
+            changes: {
+              statementsExecuted: rollbackStatements.length,
+              schemaName,
+              rolledBackBy: userId,
+            } as never,
+          },
+        });
+      });
+
+      this.logger.warn(
+        `Write-back batch ${batchId} ROLLED BACK: ${rollbackStatements.length} statements by user ${userId}`,
+      );
+
+      return {
+        batchId,
+        status: 'ROLLED_BACK',
+        statementsExecuted: rollbackStatements.length,
+      };
+    } catch (error) {
+      const errorMessage = (error as Error).message;
+
+      await this.db.forTenant(tenantId, async (tx) => {
+        await tx.writeBackBatch.update({
+          where: { id: batchId },
+          data: { status: 'ROLLBACK_FAILED', errorMessage: errorMessage.substring(0, 2000) },
+        });
+
+        await tx.auditLog.create({
+          data: {
+            tenantId,
+            userId,
+            action: 'WRITEBACK_ROLLBACK_FAILED',
+            entityType: 'WriteBackBatch',
+            entityId: batchId,
+            changes: { error: errorMessage.substring(0, 500), schemaName } as never,
+          },
+        });
+      });
+
+      throw error;
+    } finally {
+      await this.cloudSql.disconnect();
+    }
+  }
+
   // ─── Private Helpers ─────────────────────────────────────────
 
   private async getBatchOrThrow(tenantId: string, batchId: string) {

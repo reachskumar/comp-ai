@@ -166,24 +166,34 @@ export class PlatformAdminService {
     return updated;
   }
 
-  async suspendTenant(id: string) {
+  async suspendTenant(id: string, adminUserId?: string) {
     const tenant = await this.getTenant(id);
     if (!tenant.isActive) return tenant;
     const updated = await this.db.client.tenant.update({
       where: { id },
       data: { isActive: false },
     });
+    if (adminUserId) {
+      await this.logAdminAction(adminUserId, 'TENANT_SUSPEND', 'tenant', id, {
+        tenantName: tenant.name,
+      });
+    }
     this.logger.warn(`Tenant SUSPENDED: ${updated.name} (${updated.id})`);
     return updated;
   }
 
-  async activateTenant(id: string) {
+  async activateTenant(id: string, adminUserId?: string) {
     const tenant = await this.getTenant(id);
     if (tenant.isActive) return tenant;
     const updated = await this.db.client.tenant.update({
       where: { id },
       data: { isActive: true },
     });
+    if (adminUserId) {
+      await this.logAdminAction(adminUserId, 'TENANT_ACTIVATE', 'tenant', id, {
+        tenantName: tenant.name,
+      });
+    }
     this.logger.log(`Tenant ACTIVATED: ${updated.name} (${updated.id})`);
     return updated;
   }
@@ -1062,6 +1072,125 @@ export class PlatformAdminService {
     } finally {
       await this.cloudSql.disconnect();
     }
+  }
+
+  // ─── Tenant Deletion (GDPR) ───────────────────────────────
+
+  async deleteTenant(id: string, adminUserId: string) {
+    const tenant = await this.getTenant(id);
+
+    // Log the admin action before deletion
+    await this.logAdminAction(adminUserId, 'TENANT_DELETE', 'tenant', id, {
+      tenantName: tenant.name,
+      tenantSlug: tenant.slug,
+    });
+
+    // Cascade delete: Prisma onDelete: Cascade handles most relations.
+    // The Tenant model has cascade deletes on users, employees, cycles, etc.
+    await this.db.client.tenant.delete({ where: { id } });
+
+    this.logger.warn(`Tenant DELETED: ${tenant.name} (${id}) by admin ${adminUserId}`);
+    return { deleted: true, tenantName: tenant.name };
+  }
+
+  // ─── Admin Impersonation ─────────────────────────────────
+
+  async impersonate(tenantId: string, targetUserId: string, adminUserId: string) {
+    const tenant = await this.getTenant(tenantId);
+    const targetUser = await this.db.client.user.findFirst({
+      where: { id: targetUserId, tenantId },
+    });
+    if (!targetUser) throw new NotFoundException(`User ${targetUserId} not found in tenant`);
+
+    await this.logAdminAction(adminUserId, 'IMPERSONATE', 'user', targetUserId, {
+      tenantId,
+      tenantName: tenant.name,
+      targetEmail: targetUser.email,
+    });
+
+    this.logger.warn(
+      `Admin ${adminUserId} IMPERSONATING ${targetUser.email} in tenant ${tenant.name}`,
+    );
+
+    // Return user data that the caller can use to generate a scoped JWT
+    return {
+      userId: targetUser.id,
+      tenantId: targetUser.tenantId,
+      email: targetUser.email,
+      role: targetUser.role,
+      name: targetUser.name,
+      impersonatedBy: adminUserId,
+    };
+  }
+
+  // ─── Tenant Usage ────────────────────────────────────────
+
+  async getTenantUsage(tenantId: string) {
+    await this.getTenant(tenantId);
+
+    const [
+      userCount,
+      employeeCount,
+      cycleCount,
+      importJobCount,
+      payrollRunCount,
+      complianceScanCount,
+    ] = await Promise.all([
+      this.db.client.user.count({ where: { tenantId } }),
+      this.db.client.employee.count({ where: { tenantId } }),
+      this.db.client.compCycle.count({ where: { tenantId } }),
+      this.db.client.importJob.count({ where: { tenantId } }),
+      this.db.client.payrollRun.count({ where: { tenantId } }),
+      this.db.client.complianceScan.count({ where: { tenantId } }),
+    ]);
+
+    return {
+      tenantId,
+      users: userCount,
+      employees: employeeCount,
+      compCycles: cycleCount,
+      importJobs: importJobCount,
+      payrollRuns: payrollRunCount,
+      complianceScans: complianceScanCount,
+    };
+  }
+
+  // ─── Admin Action Audit Log ──────────────────────────────
+
+  async logAdminAction(
+    adminUserId: string,
+    action: string,
+    entityType: string,
+    entityId: string,
+    metadata?: Record<string, unknown>,
+  ) {
+    // Platform admin actions are logged to the platform tenant (or null tenant)
+    // We use the raw client since these are cross-tenant operations
+    await this.db.client.auditLog.create({
+      data: {
+        tenantId: 'PLATFORM',
+        userId: adminUserId,
+        action,
+        entityType,
+        entityId,
+        changes: metadata ?? {},
+      },
+    });
+  }
+
+  async getAdminAuditLog(page = 1, limit = 50) {
+    const skip = (page - 1) * limit;
+    const [data, total] = await Promise.all([
+      this.db.client.auditLog.findMany({
+        where: { tenantId: 'PLATFORM' },
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.db.client.auditLog.count({ where: { tenantId: 'PLATFORM' } }),
+    ]);
+
+    return { data, total, page, limit };
   }
 
   // ─── Platform Stats ──────────────────────────────────────
