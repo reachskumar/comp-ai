@@ -1955,7 +1955,9 @@ enum WriteBackBatchStatus {
   APPLIED
   PARTIALLY_APPLIED
   FAILED
+  ROLLING_BACK
   ROLLED_BACK
+  ROLLBACK_FAILED
 }
 
 enum WriteBackRecordStatus {
@@ -1963,6 +1965,7 @@ enum WriteBackRecordStatus {
   APPLIED
   FAILED
   SKIPPED
+  ROLLED_BACK
 }
 
 model WriteBackBatch {

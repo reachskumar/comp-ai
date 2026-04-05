@@ -273,6 +273,8 @@ export class PlatformAdminService {
           'notifications',
           'audit_logs',
           'refresh_tokens',
+          'token_blacklist',
+          'user_sessions',
           // User and Employee (User references Employee, so delete Users first)
           'users',
           'employees',
@@ -1074,25 +1076,6 @@ export class PlatformAdminService {
     }
   }
 
-  // ─── Tenant Deletion (GDPR) ───────────────────────────────
-
-  async deleteTenant(id: string, adminUserId: string) {
-    const tenant = await this.getTenant(id);
-
-    // Log the admin action before deletion
-    await this.logAdminAction(adminUserId, 'TENANT_DELETE', 'tenant', id, {
-      tenantName: tenant.name,
-      tenantSlug: tenant.slug,
-    });
-
-    // Cascade delete: Prisma onDelete: Cascade handles most relations.
-    // The Tenant model has cascade deletes on users, employees, cycles, etc.
-    await this.db.client.tenant.delete({ where: { id } });
-
-    this.logger.warn(`Tenant DELETED: ${tenant.name} (${id}) by admin ${adminUserId}`);
-    return { deleted: true, tenantName: tenant.name };
-  }
-
   // ─── Admin Impersonation ─────────────────────────────────
 
   async impersonate(tenantId: string, targetUserId: string, adminUserId: string) {
@@ -1173,7 +1156,7 @@ export class PlatformAdminService {
         action,
         entityType,
         entityId,
-        changes: metadata ?? {},
+        changes: (metadata ?? {}) as never,
       },
     });
   }
