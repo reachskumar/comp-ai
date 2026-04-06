@@ -206,6 +206,9 @@ export class PlatformAdminService {
     // and delete in the correct FK order to avoid constraint violations.
     await this.db.client.$transaction(
       async (tx) => {
+        // Set tenant context so RLS policies allow DELETE operations
+        await tx.$executeRaw`SELECT set_config('app.current_tenant_id', ${id}, true)`;
+
         // Leaf-level tables first (no other tables reference these)
         // Table names must match @@map() values in schema.prisma exactly
         const tablesToDelete = [

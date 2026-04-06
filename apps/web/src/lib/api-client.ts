@@ -92,9 +92,11 @@ class ApiClient {
       headers['Authorization'] = `Bearer ${token}`;
     }
 
-    // Include CSRF token on state-changing requests
+    // CSRF tokens are only needed for cookie-based auth (no Bearer token).
+    // The backend CsrfGuard skips validation when a Bearer token is present,
+    // so we skip the extra network roundtrip when authenticated.
     const method = (options.method || 'GET').toUpperCase();
-    if (MUTATION_METHODS.has(method)) {
+    if (MUTATION_METHODS.has(method) && !token) {
       const csrf = await this.getCsrfToken();
       if (csrf) {
         headers['x-csrf-token'] = csrf;
@@ -109,14 +111,6 @@ class ApiClient {
       if (refreshed) {
         const newToken = this.getToken();
         headers['Authorization'] = `Bearer ${newToken}`;
-        // Refresh CSRF token after auth token refresh
-        if (MUTATION_METHODS.has(method)) {
-          this.csrfToken = null;
-          const csrf = await this.getCsrfToken();
-          if (csrf) {
-            headers['x-csrf-token'] = csrf;
-          }
-        }
         res = await fetch(url, { ...options, headers, credentials: 'include' });
       } else {
         this.clearTokens();
