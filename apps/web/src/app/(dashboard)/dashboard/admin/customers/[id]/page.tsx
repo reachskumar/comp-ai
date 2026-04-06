@@ -43,6 +43,7 @@ import {
   useAdminDeleteTenant,
   useCompportTenants,
   useAdminSyncTenantRoles,
+  useAdminSyncTenantFull,
   useAdminTestTenantConnection,
 } from '@/hooks/use-admin';
 import Link from 'next/link';
@@ -86,6 +87,7 @@ export default function AdminCustomerDetailPage() {
   const deleteTenant = useAdminDeleteTenant();
   const { data: compportData } = useCompportTenants();
   const syncRoles = useAdminSyncTenantRoles();
+  const syncFull = useAdminSyncTenantFull();
   const testConnection = useAdminTestTenantConnection();
 
   const [branding, setBranding] = useState({ subdomain: '', logoUrl: '', primaryColor: '' });
@@ -499,6 +501,53 @@ export default function AdminCustomerDetailPage() {
                 </div>
               </div>
             )}
+          </div>
+
+          <Separator />
+
+          {/* Full Data Sync — roles + permissions + employees */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <Label className="text-sm font-medium">Full Data Sync</Label>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Sync all data: roles, permissions, users, and employees from Compport Cloud SQL.
+                  Delta sync runs automatically every 2 minutes.
+                </p>
+              </div>
+              <Button
+                onClick={async () => {
+                  try {
+                    await syncFull.mutateAsync(id);
+                    toast({ title: 'Full sync completed successfully' });
+                  } catch (e) {
+                    toast({
+                      title: 'Full sync failed',
+                      description: e instanceof Error ? e.message : 'Unknown error',
+                      variant: 'destructive',
+                    });
+                  }
+                }}
+                disabled={syncFull.isPending || !tenant.compportSchema}
+                variant="default"
+                size="sm"
+              >
+                {syncFull.isPending ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                )}
+                {syncFull.isPending ? 'Syncing...' : 'Sync All Data'}
+              </Button>
+            </div>
+
+            <div className="rounded-md bg-muted/50 p-3">
+              <p className="text-xs text-muted-foreground">
+                <strong>Auto-sync:</strong> Delta sync runs every 2 minutes automatically,
+                pulling only changed records. Use this button for a full re-sync when data
+                looks inconsistent or after schema changes.
+              </p>
+            </div>
           </div>
         </CardContent>
       </Card>

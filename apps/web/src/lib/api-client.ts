@@ -470,6 +470,34 @@ class ApiClient {
     }>(`/api/v1/platform-admin/tenants/${id}/sync-roles`, { method: 'POST' });
   }
 
+  async adminSyncTenantFull(id: string) {
+    // sync-full uses NDJSON streaming. Read all lines and return last "complete" message.
+    const url = `${(this as any).baseUrl || ''}/api/v1/platform-admin/tenants/${id}/sync-full`;
+    const token = this.getToken();
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    const res = await fetch(`${API_BASE_URL}/api/v1/platform-admin/tenants/${id}/sync-full`, {
+      method: 'POST',
+      headers,
+      credentials: 'include',
+    });
+    if (!res.ok) throw new Error(`Sync failed: ${res.status}`);
+
+    const text = await res.text();
+    const lines = text.trim().split('\n').filter(Boolean);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const msg = JSON.parse(lines[i]!);
+        if (msg.type === 'complete') return msg as { type: string; [k: string]: unknown };
+        if (msg.type === 'error') throw new Error(msg.message || 'Sync failed');
+      } catch (e) {
+        if (e instanceof Error && e.message.includes('Sync failed')) throw e;
+      }
+    }
+    throw new Error('Sync completed but no result received');
+  }
+
   async adminTestTenantConnection(id: string) {
     return this.fetch<{
       ok: boolean;

@@ -198,6 +198,14 @@ export function useAdminSyncTenantRoles() {
   });
 }
 
+export function useAdminSyncTenantFull() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (tenantId: string) => apiClient.adminSyncTenantFull(tenantId),
+    onSuccess: (_d, tenantId) => invalidateTenantQueries(qc, tenantId),
+  });
+}
+
 export function useAdminTestTenantConnection() {
   return useMutation({
     mutationFn: (tenantId: string) => apiClient.adminTestTenantConnection(tenantId),
