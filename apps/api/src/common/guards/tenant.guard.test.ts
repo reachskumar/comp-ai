@@ -200,14 +200,14 @@ describe('TenantGuard', () => {
       expect(await guard.canActivate(context1)).toBe(true);
 
       // Second check: tenant was deactivated between requests
-      db.client.tenant.findUnique.mockResolvedValueOnce({
+      const suspendedTenant = {
         id: TEST_TENANT_ID,
         name: 'Acme Corp',
         isActive: false,
-      });
+      };
+      db.client.tenant.findUnique.mockResolvedValueOnce(suspendedTenant);
 
       const context2 = createMockExecutionContext({ tenantId: TEST_TENANT_ID });
-      await expect(guard.canActivate(context2)).rejects.toThrow(ForbiddenException);
       await expect(guard.canActivate(context2)).rejects.toThrow(
         'Tenant is suspended. Please contact your administrator.',
       );

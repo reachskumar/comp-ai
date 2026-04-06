@@ -27,6 +27,8 @@ describe('AuthService — login', () => {
 
   beforeEach(() => {
     ({ service, db } = createAuthService());
+    db.client.refreshToken.create.mockResolvedValue({});
+    db.client.userSession.create.mockResolvedValue({});
   });
 
   it('should login with valid credentials and return tokens', async () => {
@@ -72,6 +74,8 @@ describe('AuthService — register', () => {
 
   beforeEach(() => {
     ({ service, db } = createAuthService());
+    db.client.refreshToken.create.mockResolvedValue({});
+    db.client.userSession.create.mockResolvedValue({});
   });
 
   it('should register a new user and tenant', async () => {
@@ -125,6 +129,8 @@ describe('AuthService — refresh', () => {
 
   beforeEach(() => {
     ({ service, db } = createAuthService());
+    db.client.tokenBlacklist.findUnique.mockResolvedValue(null);
+    db.client.userSession.create.mockResolvedValue({});
   });
 
   it('should refresh tokens with a valid refresh token', async () => {

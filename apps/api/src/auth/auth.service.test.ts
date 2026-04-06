@@ -35,6 +35,8 @@ describe('AuthService', () => {
 
     beforeEach(() => {
       ({ service, db } = createAuthService());
+      db.client.refreshToken.create.mockResolvedValue({});
+      db.client.userSession.create.mockResolvedValue({});
     });
 
     it('should register a new user and tenant, returning tokens', async () => {
@@ -188,6 +190,9 @@ describe('AuthService', () => {
 
     beforeEach(() => {
       ({ service, db } = createAuthService());
+      // generateTokens stores refresh token and session
+      db.client.refreshToken.create.mockResolvedValue({});
+      db.client.userSession.create.mockResolvedValue({});
     });
 
     it('should return user info and tokens for valid credentials', async () => {
@@ -270,11 +275,28 @@ describe('AuthService', () => {
     let service: AuthService;
     let db: ReturnType<typeof createMockDatabaseService>;
 
+    /** Helper: mock a valid stored refresh token */
+    function mockStoredToken() {
+      db.client.tokenBlacklist.findUnique.mockResolvedValue(null);
+      db.client.refreshToken.findUnique.mockResolvedValue({
+        id: 'rt-1',
+        userId: TEST_USER_ID,
+        tokenHash: 'mock-hash',
+        familyId: 'family-1',
+        revoked: false,
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      });
+      db.client.refreshToken.update.mockResolvedValue({});
+      db.client.refreshToken.create.mockResolvedValue({});
+      db.client.userSession.create.mockResolvedValue({});
+    }
+
     beforeEach(() => {
       ({ service, db } = createAuthService());
     });
 
     it('should return new tokens for a valid refresh token', async () => {
+      mockStoredToken();
       db.client.user.findUnique.mockResolvedValue(TEST_ADMIN);
       const validToken = generateTestToken();
 
@@ -304,6 +326,7 @@ describe('AuthService', () => {
     });
 
     it('should throw UnauthorizedException when user not found for valid token', async () => {
+      mockStoredToken();
       db.client.user.findUnique.mockResolvedValue(null);
       const validToken = generateTestToken();
 
@@ -311,7 +334,6 @@ describe('AuthService', () => {
     });
 
     it('should throw UnauthorizedException for expired token', async () => {
-      // Create a token that expired 1 hour ago
       const expiredJwtService = new JwtService({ secret: TEST_JWT_SECRET });
       const expiredToken = expiredJwtService.sign(
         {
@@ -320,13 +342,14 @@ describe('AuthService', () => {
           email: 'admin@acme.com',
           role: 'ADMIN',
         },
-        { expiresIn: '-1h' }, // Already expired
+        { expiresIn: '-1h' },
       );
 
       await expect(service.refresh(expiredToken)).rejects.toThrow(UnauthorizedException);
     });
 
     it('should look up user by sub (userId) from the token payload', async () => {
+      mockStoredToken();
       db.client.user.findUnique.mockResolvedValue(TEST_ADMIN);
       const token = generateTestToken({ sub: 'user-specific-id' });
 
@@ -345,12 +368,12 @@ describe('AuthService', () => {
         email: 'db-user@acme.com',
         role: 'VIEWER',
       };
+      mockStoredToken();
       db.client.user.findUnique.mockResolvedValue(dbUser);
       const token = generateTestToken();
 
       const result = await service.refresh(token);
 
-      // Verify the new tokens use the DB user data (not the old token data)
       const jwtService = getJwtService();
       const decoded = jwtService.verify(result.accessToken, { secret: TEST_JWT_SECRET });
       expect(decoded.sub).toBe('user-from-db');
@@ -360,6 +383,7 @@ describe('AuthService', () => {
     });
 
     it('should return two distinct tokens (access != refresh)', async () => {
+      mockStoredToken();
       db.client.user.findUnique.mockResolvedValue(TEST_ADMIN);
       const token = generateTestToken();
 

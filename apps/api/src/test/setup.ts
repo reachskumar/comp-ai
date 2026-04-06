@@ -65,6 +65,8 @@ export function createMockPrismaClient() {
     syncLog: createModelMock(),
     fieldMapping: createModelMock(),
     refreshToken: createModelMock(),
+    tokenBlacklist: createModelMock(),
+    userSession: createModelMock(),
     tenantRole: createModelMock(),
     tenantPage: createModelMock(),
     tenantRolePermission: createModelMock(),
