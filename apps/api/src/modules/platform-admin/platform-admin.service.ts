@@ -201,97 +201,58 @@ export class PlatformAdminService {
   async deleteTenant(id: string) {
     const tenant = await this.getTenant(id);
 
-    // Delete all child records in dependency order within a transaction.
-    // We use raw SQL to bypass RLS policies (platform admin operation)
-    // and delete in the correct FK order to avoid constraint violations.
-    await this.db.client.$transaction(
-      async (tx) => {
-        // Set tenant context so RLS policies allow DELETE operations
-        await (tx as any).$executeRaw`SELECT set_config('app.current_tenant_id', ${id}, true)`;
+    // Strategy: PostgreSQL FK cascades bypass RLS (referential integrity
+    // always bypasses row-level security). So we only need to:
+    //   1. Delete from tables that have tenantId but NO FK to tenants
+    //      (token_blacklist, user_sessions — no @relation to Tenant)
+    //   2. Delete the tenant row itself — all other tables cascade via FK.
+    //
+    // We use a raw connection ($queryRawUnsafe) outside of Prisma's
+    // RLS extension to avoid tenant context issues.
 
-        // Leaf-level tables first (no other tables reference these)
-        // Table names must match @@map() values in schema.prisma exactly
-        // Only include tables that have a "tenantId" column.
-        // Tables without tenantId (import_issues, rules, test_cases, etc.)
-        // are linked via FK with onDelete: Cascade — they auto-delete when
-        // the parent row is deleted.
-        const tablesToDelete = [
-          // Leaf-level with tenantId
-          'tenant_role_permissions',
-          'policy_chunks',
-          'import_ai_analyses',
-          'compensation_letters',
-          'attrition_risk_scores',
-          'policy_conversions',
-          'saved_reports',
-          // Mid-level with tenantId
-          'tenant_pages',
-          'tenant_roles',
-          'field_mappings',
-          'sync_jobs',        // cascade: sync_logs
-          'webhook_endpoints',
-          'write_back_batches', // cascade: write_back_records
-          'ad_hoc_increases',
-          'comp_recommendations',
-          'cycle_budgets',
-          'benefit_enrollments', // cascade: benefit_dependents
-          'enrollment_windows',
-          'life_events',
-          'equity_grants',    // cascade: vesting_events
-          'rewards_statements',
-          'copilot_conversations', // cascade: copilot_messages
-          'simulation_scenarios',
-          'simulation_runs',  // cascade: simulation_results
-          'payroll_runs',     // cascade: payroll_line_items, payroll_anomalies → anomaly_explanations
-          'attrition_analysis_runs',
-          'compliance_scans', // cascade: compliance_findings
-          'pay_equity_reports', // cascade: pay_equity_dimensions
-          'career_ladders',
-          // Higher-level with tenantId
-          'job_levels',
-          'job_families',
-          'salary_bands',
-          'market_data_sources',
-          'exchange_rates',
-          'tenant_currencies',
-          'merit_matrices',
-          'comp_cycles',      // cascade: calibration_sessions
-          'benefit_plans',
-          'equity_plans',
-          'policy_documents', // cascade: policy_chunks (already deleted above)
-          'rule_sets',        // cascade: rules, test_cases
-          'import_jobs',      // cascade: import_issues
-          'integration_connectors',
-          'notifications',
-          'audit_logs',
-          'token_blacklist',
-          'user_sessions',
-          // Users last (cascade: refresh_tokens)
-          'users',
-          'employees',
-        ];
+    try {
+      await this.db.client.$transaction(
+        async (tx) => {
+          // Set tenant context for tables with RLS
+          await (tx as any).$executeRaw`SELECT set_config('app.current_tenant_id', ${id}, true)`;
 
-        for (const table of tablesToDelete) {
-          try {
-            await tx.$executeRawUnsafe(`DELETE FROM "${table}" WHERE "tenantId" = $1`, id);
-          } catch (err) {
-            // Table may not exist yet (migration pending) — log and continue
-            const msg = err instanceof Error ? err.message : String(err);
-            this.logger.warn(`deleteTenant: skip "${table}": ${msg.substring(0, 120)}`);
+          // Tables with tenantId but NO FK cascade from tenants table
+          for (const table of ['token_blacklist', 'user_sessions']) {
+            try {
+              await tx.$executeRawUnsafe(
+                `DELETE FROM "${table}" WHERE "tenantId" = $1`,
+                id,
+              );
+            } catch (e) {
+              // Table may not exist yet
+              this.logger.warn(`deleteTenant: skip ${table}: ${(e as Error).message?.substring(0, 100)}`);
+            }
           }
-        }
 
-        // Finally delete the tenant itself
-        await tx.$executeRawUnsafe(`DELETE FROM "tenants" WHERE "id" = $1`, id);
-      },
-      { timeout: 120_000 }, // 120s timeout for large tenants
-    ).catch((err) => {
-      this.logger.error(
-        `deleteTenant FAILED for ${id}: ${err instanceof Error ? err.message : String(err)}`,
-        err instanceof Error ? err.stack : undefined,
+          // Delete the tenant — PostgreSQL cascades to ALL child tables:
+          // tenants → users → refresh_tokens
+          // tenants → employees → comp_recommendations, attrition_risk_scores, ...
+          // tenants → comp_cycles → cycle_budgets, calibration_sessions, comp_recommendations
+          // tenants → import_jobs → import_issues
+          // tenants → rule_sets → rules, test_cases
+          // tenants → payroll_runs → payroll_line_items, payroll_anomalies → anomaly_explanations
+          // tenants → integration_connectors → sync_jobs → sync_logs, field_mappings, webhook_endpoints
+          // ... and all other FK-cascaded tables
+          const deleted = await tx.$executeRawUnsafe(
+            `DELETE FROM "tenants" WHERE "id" = $1`,
+            id,
+          );
+          if (deleted === 0) {
+            throw new Error(`Tenant ${id} was not deleted — row not found or RLS blocked`);
+          }
+        },
+        { timeout: 120_000 },
       );
-      throw err;
-    });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`deleteTenant FAILED for ${id}: ${msg}`, (err as Error).stack);
+      throw new BadRequestException(`Failed to delete tenant: ${msg}`);
+    }
 
     this.logger.warn(`Tenant DELETED: ${tenant.name} (${tenant.id})`);
     return { deleted: true, id, name: tenant.name };
