@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   ArrowLeft,
@@ -94,7 +94,6 @@ export default function AdminCustomerDetailPage() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [selectedSchema, setSelectedSchema] = useState('');
   const [showSchemaConfirm, setShowSchemaConfirm] = useState(false);
-  const [brandingLoaded, setBrandingLoaded] = useState(false);
   const [schemaChanged, setSchemaChanged] = useState(false);
   const [syncResult, setSyncResult] = useState<{
     roles: number;
@@ -109,14 +108,15 @@ export default function AdminCustomerDetailPage() {
     error?: string;
   } | null>(null);
 
-  if (tenant && !brandingLoaded) {
-    setBranding({
-      subdomain: (tenant.subdomain as string) || '',
-      logoUrl: (tenant.logoUrl as string) || '',
-      primaryColor: (tenant.primaryColor as string) || '',
-    });
-    setBrandingLoaded(true);
-  }
+  useEffect(() => {
+    if (tenant) {
+      setBranding({
+        subdomain: (tenant.subdomain as string) || '',
+        logoUrl: (tenant.logoUrl as string) || '',
+        primaryColor: (tenant.primaryColor as string) || '',
+      });
+    }
+  }, [tenant?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (isLoading)
     return (
@@ -153,13 +153,17 @@ export default function AdminCustomerDetailPage() {
   };
 
   const handleDeleteTenant = async () => {
-    if (deleteConfirmName !== tenant.name) return;
+    if (deleteConfirmName.trim().toLowerCase() !== (tenant.name as string).trim().toLowerCase()) return;
     try {
       await deleteTenant.mutateAsync(id);
-      toast({ title: 'Tenant deleted' });
+      toast({ title: 'Tenant deleted successfully' });
       router.push('/dashboard/admin/customers');
-    } catch {
-      toast({ title: 'Failed to delete tenant', variant: 'destructive' });
+    } catch (e) {
+      toast({
+        title: 'Failed to delete tenant',
+        description: e instanceof Error ? e.message : 'Unknown error',
+        variant: 'destructive',
+      });
     }
   };
 
@@ -588,7 +592,7 @@ export default function AdminCustomerDetailPage() {
                 />
                 <Button
                   variant="destructive"
-                  disabled={deleteConfirmName !== tenant.name || deleteTenant.isPending}
+                  disabled={deleteConfirmName.trim().toLowerCase() !== (tenant.name as string).trim().toLowerCase() || deleteTenant.isPending}
                   onClick={handleDeleteTenant}
                 >
                   {deleteTenant.isPending ? (
