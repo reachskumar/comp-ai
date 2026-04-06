@@ -268,7 +268,6 @@ model User {
   employeeId          String?   @unique // Link to synced Employee record (nullable for platform admins)
   avatarUrl           String?
   failedLoginAttempts Int       @default(0)
-  failedLoginCount    Int       @default(0)
   lockedUntil         DateTime?
   lastLoginAt         DateTime?
   createdAt           DateTime  @default(now())
