@@ -20,8 +20,13 @@ export class EncryptionService {
     if (secret && secret.length >= 32) {
       this.key = Buffer.from(secret.slice(0, 32), 'utf-8');
     } else if (process.env['NODE_ENV'] === 'production') {
-      throw new Error(
-        'BENEFITS_ENCRYPTION_KEY must be set and at least 32 characters in production',
+      // Log critical warning but don't crash — allows the app to start so
+      // the encryption key can be configured via platform settings.
+      this.key = randomBytes(32);
+      this.logger.error(
+        'BENEFITS_ENCRYPTION_KEY is not set in production! ' +
+          'Using a random key — encrypted data will NOT survive restarts. ' +
+          'Set BENEFITS_ENCRYPTION_KEY (>=32 chars) immediately.',
       );
     } else {
       this.key = Buffer.from('benefits-dev-key-32-chars-long!!', 'utf-8');
