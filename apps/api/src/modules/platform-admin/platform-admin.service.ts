@@ -174,44 +174,57 @@ export class PlatformAdminService {
   async deleteTenant(id: string) {
     const tenant = await this.getTenant(id);
 
-    // Strategy: PostgreSQL FK cascades bypass RLS (referential integrity
-    // always bypasses row-level security). So we only need to:
-    //   1. Delete from tables that have tenantId but NO FK to tenants
-    //      (token_blacklist, user_sessions — no @relation to Tenant)
-    //   2. Delete the tenant row itself — all other tables cascade via FK.
-    //
-    // We use a raw connection ($queryRawUnsafe) outside of Prisma's
-    // RLS extension to avoid tenant context issues.
+    // Explicit delete from every table. Uses session_replication_role = 'replica'
+    // to disable FK constraint checks so we can delete in any order.
+    const del = (table: string) =>
+      this.db.client.$executeRawUnsafe(`DELETE FROM "${table}" WHERE "tenantId" = $1`, id);
 
     try {
-      await this.db.client.$transaction(
-        async (tx) => {
-          // Set tenant context so RLS policies allow operations
-          await (tx as any).$executeRaw`SELECT set_config('app.current_tenant_id', ${id}, true)`;
+      // Disable FK checks for this connection
+      await this.db.client.$executeRawUnsafe(`SET session_replication_role = 'replica'`);
 
-          // Delete from tables with tenantId but NO FK to tenants table.
-          // These won't cascade, so must be deleted explicitly.
-          // Use individual try/catch ONLY because the table might not exist yet.
-          for (const table of ['token_blacklist', 'user_sessions']) {
-            await tx.$executeRawUnsafe(
-              `DELETE FROM "${table}" WHERE "tenantId" = $1`,
-              id,
-            ).catch(() => {
-              // Table may not exist in this DB version — safe to skip
-            });
-          }
+      // Delete from ALL tables with tenantId column (order doesn't matter)
+      const tablesWithTenantId = [
+        'tenant_role_permissions', 'tenant_pages', 'tenant_roles',
+        'policy_chunks', 'policy_documents', 'policy_conversions',
+        'import_ai_analyses', 'compensation_letters', 'saved_reports',
+        'copilot_messages', 'copilot_conversations',
+        'write_back_records', 'write_back_batches',
+        'compliance_scans', 'pay_equity_reports',
+        'simulation_scenarios', 'simulation_runs',
+        'attrition_risk_scores', 'attrition_analysis_runs',
+        'rewards_statements', 'equity_grants', 'equity_plans',
+        'life_events', 'enrollment_windows', 'benefit_enrollments', 'benefit_plans',
+        'ad_hoc_increases', 'benefit_dependents',
+        'career_ladders', 'job_levels', 'job_families',
+        'salary_bands', 'market_data_sources', 'merit_matrices',
+        'exchange_rates', 'tenant_currencies',
+        'field_mappings', 'webhook_endpoints', 'sync_jobs',
+        'integration_connectors',
+        'payroll_runs', 'comp_cycles', 'rule_sets', 'import_jobs',
+        'audit_logs', 'notifications',
+        'token_blacklist', 'user_sessions',
+        'users', 'employees',
+      ];
+      for (const table of tablesWithTenantId) {
+        await del(table).catch(() => {}); // table might not exist yet
+      }
 
-          // Delete the tenant row — PostgreSQL FK cascades (onDelete: Cascade)
-          // automatically delete ALL 36+ child tables and their sub-children.
-          // FK cascades bypass RLS per PostgreSQL specification.
-          await tx.$executeRawUnsafe(
-            `DELETE FROM "tenants" WHERE "id" = $1`,
-            id,
-          );
-        },
-        { timeout: 300_000 }, // 5 min for large tenants with deep cascades
-      );
+      // Tables without tenantId — delete via parent FK
+      await this.db.client.$executeRawUnsafe(
+        `DELETE FROM "refresh_tokens" WHERE "userId" IN (SELECT "id" FROM "users" WHERE "tenantId" = $1)`, id,
+      ).catch(() => {});
+      await this.db.client.$executeRawUnsafe(
+        `DELETE FROM "sync_logs" WHERE "syncJobId" IN (SELECT "id" FROM "sync_jobs" WHERE "tenantId" = $1)`, id,
+      ).catch(() => {});
+
+      // Delete the tenant row itself
+      await this.db.client.$executeRawUnsafe(`DELETE FROM "tenants" WHERE "id" = $1`, id);
+
+      // Re-enable FK checks
+      await this.db.client.$executeRawUnsafe(`SET session_replication_role = 'origin'`);
     } catch (err) {
+      await this.db.client.$executeRawUnsafe(`SET session_replication_role = 'origin'`).catch(() => {});
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`deleteTenant FAILED for ${id}: ${msg}`, (err as Error).stack);
       throw new BadRequestException(`Failed to delete tenant: ${msg}`);
