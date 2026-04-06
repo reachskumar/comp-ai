@@ -207,58 +207,47 @@ export class PlatformAdminService {
     await this.db.client.$transaction(
       async (tx) => {
         // Set tenant context so RLS policies allow DELETE operations
-        await tx.$executeRaw`SELECT set_config('app.current_tenant_id', ${id}, true)`;
+        await (tx as any).$executeRaw`SELECT set_config('app.current_tenant_id', ${id}, true)`;
 
         // Leaf-level tables first (no other tables reference these)
         // Table names must match @@map() values in schema.prisma exactly
+        // Only include tables that have a "tenantId" column.
+        // Tables without tenantId (import_issues, rules, test_cases, etc.)
+        // are linked via FK with onDelete: Cascade — they auto-delete when
+        // the parent row is deleted.
         const tablesToDelete = [
-          // Deepest leaves
+          // Leaf-level with tenantId
           'tenant_role_permissions',
           'policy_chunks',
-          'import_issues',
           'import_ai_analyses',
-          'rules',
-          'test_cases',
-          'calibration_sessions',
-          'payroll_line_items',
-          'payroll_anomalies',
-          'benefit_dependents',
           'compensation_letters',
           'attrition_risk_scores',
-          'vesting_events',
-          'copilot_messages',
-          'write_back_records',
-          'simulation_results',
-          'anomaly_explanations',
-          'compliance_findings',
-          'pay_equity_dimensions',
           'policy_conversions',
-          'sync_logs',
           'saved_reports',
-          // Mid-level
+          // Mid-level with tenantId
           'tenant_pages',
           'tenant_roles',
           'field_mappings',
-          'sync_jobs',
+          'sync_jobs',        // cascade: sync_logs
           'webhook_endpoints',
-          'write_back_batches',
+          'write_back_batches', // cascade: write_back_records
           'ad_hoc_increases',
           'comp_recommendations',
           'cycle_budgets',
-          'benefit_enrollments',
+          'benefit_enrollments', // cascade: benefit_dependents
           'enrollment_windows',
           'life_events',
-          'equity_grants',
+          'equity_grants',    // cascade: vesting_events
           'rewards_statements',
-          'copilot_conversations',
+          'copilot_conversations', // cascade: copilot_messages
           'simulation_scenarios',
-          'simulation_runs',
-          'payroll_runs',
+          'simulation_runs',  // cascade: simulation_results
+          'payroll_runs',     // cascade: payroll_line_items, payroll_anomalies → anomaly_explanations
           'attrition_analysis_runs',
-          'compliance_scans',
-          'pay_equity_reports',
+          'compliance_scans', // cascade: compliance_findings
+          'pay_equity_reports', // cascade: pay_equity_dimensions
           'career_ladders',
-          // Higher-level
+          // Higher-level with tenantId
           'job_levels',
           'job_families',
           'salary_bands',
@@ -266,19 +255,18 @@ export class PlatformAdminService {
           'exchange_rates',
           'tenant_currencies',
           'merit_matrices',
-          'comp_cycles',
+          'comp_cycles',      // cascade: calibration_sessions
           'benefit_plans',
           'equity_plans',
-          'policy_documents',
-          'rule_sets',
-          'import_jobs',
+          'policy_documents', // cascade: policy_chunks (already deleted above)
+          'rule_sets',        // cascade: rules, test_cases
+          'import_jobs',      // cascade: import_issues
           'integration_connectors',
           'notifications',
           'audit_logs',
-          'refresh_tokens',
           'token_blacklist',
           'user_sessions',
-          // User and Employee (User references Employee, so delete Users first)
+          // Users last (cascade: refresh_tokens)
           'users',
           'employees',
         ];
@@ -297,7 +285,13 @@ export class PlatformAdminService {
         await tx.$executeRawUnsafe(`DELETE FROM "tenants" WHERE "id" = $1`, id);
       },
       { timeout: 120_000 }, // 120s timeout for large tenants
-    );
+    ).catch((err) => {
+      this.logger.error(
+        `deleteTenant FAILED for ${id}: ${err instanceof Error ? err.message : String(err)}`,
+        err instanceof Error ? err.stack : undefined,
+      );
+      throw err;
+    });
 
     this.logger.warn(`Tenant DELETED: ${tenant.name} (${tenant.id})`);
     return { deleted: true, id, name: tenant.name };
