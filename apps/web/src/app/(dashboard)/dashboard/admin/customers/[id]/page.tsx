@@ -901,7 +901,7 @@ function FullSyncSection({
   tenantId: string;
   hasSchema: boolean;
   syncFull: ReturnType<typeof useAdminSyncTenantFull>;
-  toast: (opts: { title: string; description?: string; variant?: string }) => void;
+  toast: (opts: { title: string; description?: string; variant?: 'default' | 'destructive' }) => void;
 }) {
   const [fullSyncResult, setFullSyncResult] = useState<Record<string, unknown> | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
