@@ -73,14 +73,22 @@ export class AuthService {
   private readonly LOCKOUT_DURATION_MINUTES = 30;
 
   async login(dto: LoginDto) {
-    const user = await this.db.client.user.findFirst({
+    // Find user by email. If multiple users exist with the same email across
+    // tenants, prefer PLATFORM_ADMIN role first, then most recently created.
+    const users = await this.db.client.user.findMany({
       where: { email: dto.email },
       include: {
         tenant: {
-          select: { id: true, name: true, slug: true, settings: true },
+          select: { id: true, name: true, slug: true, settings: true, isActive: true },
         },
       },
+      orderBy: { createdAt: 'asc' },
     });
+    // Prefer platform admin, then active tenant users
+    const user = users.find((u: { role: string }) => u.role === 'PLATFORM_ADMIN')
+      ?? users.find((u: { tenant?: { isActive?: boolean } | null }) => u.tenant?.isActive)
+      ?? users[0]
+      ?? null;
 
     if (!user || !user.passwordHash) {
       throw new UnauthorizedException('Invalid credentials');
