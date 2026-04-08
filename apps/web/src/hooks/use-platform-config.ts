@@ -76,7 +76,7 @@ export function useIntegrationStats() {
   return useQuery({
     queryKey: ['integration-stats'],
     queryFn: () => apiClient.adminGetIntegrationStats(),
-    refetchInterval: 30_000,
+    refetchInterval: 120_000,
   });
 }
 
@@ -84,7 +84,7 @@ export function useConnectionStatus() {
   return useQuery({
     queryKey: ['connection-status'],
     queryFn: () => apiClient.adminGetConnectionStatus(),
-    refetchInterval: 10_000,
+    refetchInterval: 60_000,
   });
 }
 

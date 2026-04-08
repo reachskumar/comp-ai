@@ -258,7 +258,7 @@ export function useSyncHealth() {
   return useQuery({
     queryKey: ['sync-health'],
     queryFn: () => apiClient.bridgeSyncHealth(),
-    refetchInterval: 10_000,
+    refetchInterval: 60_000, // 60s — not a real-time dashboard
   });
 }
 

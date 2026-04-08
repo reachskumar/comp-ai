@@ -591,19 +591,18 @@ export class PlatformAdminService {
   async getTenantOverview(tenantId: string) {
     const tenant = await this.getTenant(tenantId);
 
-    // Wrap all forTenant calls so RLS/query failures return safe defaults
+    // Single forTenant call — all queries in one transaction
     let userCount = 0;
     let employeeCount = 0;
     let roles: { id: string; compportRoleId: string; name: string }[] = [];
     let pages = 0;
     let permissions = 0;
     let lastSync: Record<string, unknown> | null = null;
-    let users: { role: string }[] = [];
+    let roleGroups: { role: string; _count: { role: number } }[] = [];
 
     try {
-      [userCount, employeeCount, roles, pages, permissions, lastSync] = await this.db.forTenant(
-        tenantId,
-        (tx) =>
+      [userCount, employeeCount, roles, pages, permissions, lastSync, roleGroups] =
+        await this.db.forTenant(tenantId, (tx) =>
           Promise.all([
             tx.user.count({ where: { tenantId } }),
             tx.employee.count({ where: { tenantId } }),
@@ -617,38 +616,25 @@ export class PlatformAdminService {
               where: { tenantId },
               orderBy: { createdAt: 'desc' },
               select: {
-                id: true,
-                status: true,
-                entityType: true,
-                totalRecords: true,
-                processedRecords: true,
-                failedRecords: true,
-                startedAt: true,
-                completedAt: true,
-                errorMessage: true,
+                id: true, status: true, entityType: true,
+                totalRecords: true, processedRecords: true, failedRecords: true,
+                startedAt: true, completedAt: true, errorMessage: true,
               },
             }),
+            tx.user.groupBy({
+              by: ['role'],
+              where: { tenantId },
+              _count: { role: true },
+            }),
           ]),
-      );
+        );
     } catch (err) {
-      this.logger.warn(`getTenantOverview: forTenant query failed for ${tenantId}: ${err}`);
-    }
-
-    // Build role distribution: count users per Compport role
-    try {
-      users = await this.db.forTenant(tenantId, (tx) =>
-        tx.user.findMany({
-          where: { tenantId },
-          select: { role: true },
-        }),
-      );
-    } catch (err) {
-      this.logger.warn(`getTenantOverview: user role query failed for ${tenantId}: ${err}`);
+      this.logger.warn(`getTenantOverview failed for ${tenantId}: ${err}`);
     }
 
     const roleCountMap = new Map<string, number>();
-    for (const u of users) {
-      roleCountMap.set(u.role, (roleCountMap.get(u.role) ?? 0) + 1);
+    for (const g of roleGroups) {
+      roleCountMap.set(g.role, g._count.role);
     }
 
     const roleDistribution = roles.map((r) => ({
@@ -1153,29 +1139,13 @@ export class PlatformAdminService {
   // ─── Platform Stats ──────────────────────────────────────
 
   async getStats() {
-    // Tenant table has no RLS — count directly
-    const [totalTenants, activeTenants] = await Promise.all([
+    // Single query using Prisma aggregate — no N+1 loop, no RLS needed
+    const [totalTenants, activeTenants, totalUsers, totalEmployees] = await Promise.all([
       this.db.client.tenant.count(),
       this.db.client.tenant.count({ where: { isActive: true } }),
+      this.db.client.user.count(),
+      this.db.client.employee.count(),
     ]);
-
-    // Users and employees tables have FORCE RLS — must query per-tenant
-    const tenantIds = await this.db.client.tenant.findMany({
-      select: { id: true },
-    });
-
-    let totalUsers = 0;
-    let totalEmployees = 0;
-    for (const { id } of tenantIds) {
-      const [users, employees] = await this.db.forTenant(id, (tx) =>
-        Promise.all([
-          tx.user.count({ where: { tenantId: id } }),
-          tx.employee.count({ where: { tenantId: id } }),
-        ]),
-      );
-      totalUsers += users;
-      totalEmployees += employees;
-    }
 
     return {
       totalTenants,
