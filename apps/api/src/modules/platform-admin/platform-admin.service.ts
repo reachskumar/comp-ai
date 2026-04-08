@@ -174,57 +174,97 @@ export class PlatformAdminService {
   async deleteTenant(id: string) {
     const tenant = await this.getTenant(id);
 
-    // Explicit delete from every table. Uses session_replication_role = 'replica'
-    // to disable FK constraint checks so we can delete in any order.
-    const del = (table: string) =>
-      this.db.client.$executeRawUnsafe(`DELETE FROM "${table}" WHERE "tenantId" = $1`, id);
-
+    // Delete in correct FK dependency order inside a single transaction.
+    // No superuser-only commands — works on Cloud SQL managed PostgreSQL.
     try {
-      // Disable FK checks for this connection
-      await this.db.client.$executeRawUnsafe(`SET session_replication_role = 'replica'`);
+      await this.db.client.$transaction(async (tx) => {
+        // Set RLS context so policies allow the deletes
+        await (tx as any).$executeRaw`SELECT set_config('app.current_tenant_id', ${id}, true)`;
 
-      // Delete from ALL tables with tenantId column (order doesn't matter)
-      const tablesWithTenantId = [
-        'tenant_role_permissions', 'tenant_pages', 'tenant_roles',
-        'policy_chunks', 'policy_documents', 'policy_conversions',
-        'import_ai_analyses', 'compensation_letters', 'saved_reports',
-        'copilot_messages', 'copilot_conversations',
-        'write_back_records', 'write_back_batches',
-        'compliance_scans', 'pay_equity_reports',
-        'simulation_scenarios', 'simulation_runs',
-        'attrition_risk_scores', 'attrition_analysis_runs',
-        'rewards_statements', 'equity_grants', 'equity_plans',
-        'life_events', 'enrollment_windows', 'benefit_enrollments', 'benefit_plans',
-        'ad_hoc_increases', 'benefit_dependents',
-        'career_ladders', 'job_levels', 'job_families',
-        'salary_bands', 'market_data_sources', 'merit_matrices',
-        'exchange_rates', 'tenant_currencies',
-        'field_mappings', 'webhook_endpoints', 'sync_jobs',
-        'integration_connectors',
-        'payroll_runs', 'comp_cycles', 'rule_sets', 'import_jobs',
-        'audit_logs', 'notifications',
-        'token_blacklist', 'user_sessions',
-        'users', 'employees',
-      ];
-      for (const table of tablesWithTenantId) {
-        await del(table).catch(() => {}); // table might not exist yet
-      }
+        const del = (sql: string) => tx.$executeRawUnsafe(sql, id).catch((e: Error) => {
+          this.logger.debug(`deleteTenant skip: ${e.message?.substring(0, 80)}`);
+        });
 
-      // Tables without tenantId — delete via parent FK
-      await this.db.client.$executeRawUnsafe(
-        `DELETE FROM "refresh_tokens" WHERE "userId" IN (SELECT "id" FROM "users" WHERE "tenantId" = $1)`, id,
-      ).catch(() => {});
-      await this.db.client.$executeRawUnsafe(
-        `DELETE FROM "sync_logs" WHERE "syncJobId" IN (SELECT "id" FROM "sync_jobs" WHERE "tenantId" = $1)`, id,
-      ).catch(() => {});
+        // 1. Deepest leaf tables (no other table references these)
+        //    Tables WITHOUT tenantId — delete via parent FK subquery
+        await del(`DELETE FROM "anomaly_explanations" WHERE "anomalyId" IN (SELECT "id" FROM "payroll_anomalies" WHERE "payrollRunId" IN (SELECT "id" FROM "payroll_runs" WHERE "tenantId" = $1))`);
+        await del(`DELETE FROM "pay_equity_dimensions" WHERE "reportId" IN (SELECT "id" FROM "pay_equity_reports" WHERE "tenantId" = $1)`);
+        await del(`DELETE FROM "compliance_findings" WHERE "scanId" IN (SELECT "id" FROM "compliance_scans" WHERE "tenantId" = $1)`);
+        await del(`DELETE FROM "simulation_results" WHERE "simulationRunId" IN (SELECT "id" FROM "simulation_runs" WHERE "tenantId" = $1)`);
+        await del(`DELETE FROM "vesting_events" WHERE "grantId" IN (SELECT "id" FROM "equity_grants" WHERE "tenantId" = $1)`);
+        await del(`DELETE FROM "payroll_line_items" WHERE "payrollRunId" IN (SELECT "id" FROM "payroll_runs" WHERE "tenantId" = $1)`);
+        await del(`DELETE FROM "payroll_anomalies" WHERE "payrollRunId" IN (SELECT "id" FROM "payroll_runs" WHERE "tenantId" = $1)`);
+        await del(`DELETE FROM "cycle_budgets" WHERE "cycleId" IN (SELECT "id" FROM "comp_cycles" WHERE "tenantId" = $1)`);
+        await del(`DELETE FROM "comp_recommendations" WHERE "cycleId" IN (SELECT "id" FROM "comp_cycles" WHERE "tenantId" = $1)`);
+        await del(`DELETE FROM "calibration_sessions" WHERE "cycleId" IN (SELECT "id" FROM "comp_cycles" WHERE "tenantId" = $1)`);
+        await del(`DELETE FROM "rules" WHERE "ruleSetId" IN (SELECT "id" FROM "rule_sets" WHERE "tenantId" = $1)`);
+        await del(`DELETE FROM "test_cases" WHERE "ruleSetId" IN (SELECT "id" FROM "rule_sets" WHERE "tenantId" = $1)`);
+        await del(`DELETE FROM "import_issues" WHERE "importJobId" IN (SELECT "id" FROM "import_jobs" WHERE "tenantId" = $1)`);
+        await del(`DELETE FROM "sync_logs" WHERE "syncJobId" IN (SELECT "id" FROM "sync_jobs" WHERE "tenantId" = $1)`);
+        await del(`DELETE FROM "benefit_dependents" WHERE "enrollmentId" IN (SELECT "id" FROM "benefit_enrollments" WHERE "tenantId" = $1)`);
+        await del(`DELETE FROM "refresh_tokens" WHERE "userId" IN (SELECT "id" FROM "users" WHERE "tenantId" = $1)`);
+        await del(`DELETE FROM "write_back_records" WHERE "batchId" IN (SELECT "id" FROM "write_back_batches" WHERE "tenantId" = $1)`);
+        await del(`DELETE FROM "copilot_messages" WHERE "conversationId" IN (SELECT "id" FROM "copilot_conversations" WHERE "tenantId" = $1)`);
 
-      // Delete the tenant row itself
-      await this.db.client.$executeRawUnsafe(`DELETE FROM "tenants" WHERE "id" = $1`, id);
+        // 2. Tables with tenantId — leaf-level
+        await del(`DELETE FROM "tenant_role_permissions" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "tenant_pages" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "tenant_roles" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "policy_chunks" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "import_ai_analyses" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "compensation_letters" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "attrition_risk_scores" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "policy_conversions" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "saved_reports" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "simulation_scenarios" WHERE "tenantId" = $1`);
 
-      // Re-enable FK checks
-      await this.db.client.$executeRawUnsafe(`SET session_replication_role = 'origin'`);
+        // 3. Mid-level tables
+        await del(`DELETE FROM "copilot_conversations" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "write_back_batches" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "compliance_scans" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "pay_equity_reports" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "simulation_runs" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "attrition_analysis_runs" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "rewards_statements" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "equity_grants" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "equity_plans" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "life_events" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "enrollment_windows" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "benefit_enrollments" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "benefit_plans" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "ad_hoc_increases" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "field_mappings" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "webhook_endpoints" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "sync_jobs" WHERE "tenantId" = $1`);
+
+        // 4. Higher-level tables
+        await del(`DELETE FROM "career_ladders" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "job_levels" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "job_families" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "salary_bands" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "market_data_sources" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "merit_matrices" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "exchange_rates" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "tenant_currencies" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "payroll_runs" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "comp_cycles" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "rule_sets" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "import_jobs" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "policy_documents" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "integration_connectors" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "audit_logs" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "notifications" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "token_blacklist" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "user_sessions" WHERE "tenantId" = $1`);
+
+        // 5. Users and employees last
+        await del(`DELETE FROM "users" WHERE "tenantId" = $1`);
+        await del(`DELETE FROM "employees" WHERE "tenantId" = $1`);
+
+        // 6. Finally the tenant itself
+        await tx.$executeRawUnsafe(`DELETE FROM "tenants" WHERE "id" = $1`, id);
+      }, { timeout: 300_000 });
     } catch (err) {
-      await this.db.client.$executeRawUnsafe(`SET session_replication_role = 'origin'`).catch(() => {});
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`deleteTenant FAILED for ${id}: ${msg}`, (err as Error).stack);
       throw new BadRequestException(`Failed to delete tenant: ${msg}`);
