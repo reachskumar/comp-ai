@@ -99,31 +99,33 @@ export class AuthService {
 
     const isPasswordValid = await bcrypt.compare(dto.password, user.passwordHash);
     if (!isPasswordValid) {
+      // Track failed attempts — use raw SQL to bypass RLS (no tenant context during login)
       const attempts = (user.failedLoginAttempts ?? 0) + 1;
-      const updateData: { failedLoginAttempts: number; lockedUntil?: Date } = {
-        failedLoginAttempts: attempts,
-      };
-
       if (attempts >= this.MAX_FAILED_ATTEMPTS) {
-        updateData.lockedUntil = new Date(Date.now() + this.LOCKOUT_DURATION_MINUTES * 60_000);
+        const lockUntil = new Date(Date.now() + this.LOCKOUT_DURATION_MINUTES * 60_000);
+        await this.db.client.$executeRawUnsafe(
+          `UPDATE "users" SET "failedLoginAttempts" = $1, "lockedUntil" = $2 WHERE "id" = $3`,
+          attempts, lockUntil, user.id,
+        ).catch(() => {});
         this.logger.warn(`Account locked after ${attempts} failed attempts: ${user.email}`);
+      } else {
+        await this.db.client.$executeRawUnsafe(
+          `UPDATE "users" SET "failedLoginAttempts" = $1 WHERE "id" = $2`,
+          attempts, user.id,
+        ).catch(() => {});
       }
-
-      await this.db.client.user.update({
-        where: { id: user.id },
-        data: updateData,
-      });
 
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    // Successful login — reset failed attempts counter
-    if (user.failedLoginAttempts > 0 || user.lockedUntil) {
-      await this.db.client.user.update({
-        where: { id: user.id },
-        data: { failedLoginAttempts: 0, lockedUntil: null, lastLoginAt: new Date() },
-      });
-    }
+    // Successful login — reset failed attempts, update lastLoginAt
+    // Use raw SQL to bypass RLS (no tenant context during login)
+    await this.db.client.$executeRawUnsafe(
+      `UPDATE "users" SET "failedLoginAttempts" = 0, "lockedUntil" = NULL, "lastLoginAt" = NOW() WHERE "id" = $1`,
+      user.id,
+    ).catch(() => {
+      this.logger.warn(`Failed to reset login attempts for ${user.email}`);
+    });
 
     const tokens = await this.generateTokens(user.id, user.tenantId, user.email, user.role);
 

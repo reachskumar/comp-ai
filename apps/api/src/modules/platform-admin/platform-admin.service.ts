@@ -54,8 +54,6 @@ export class PlatformAdminService {
       ];
     }
 
-    // Use Prisma's _count to get user/employee counts in a single query
-    // instead of N+1 forTenant() calls per tenant.
     const [tenants, total] = await Promise.all([
       this.db.client.tenant.findMany({
         where,
@@ -75,13 +73,55 @@ export class PlatformAdminService {
           compportSchema: true,
           createdAt: true,
           updatedAt: true,
-          _count: { select: { users: true, employees: true } },
+          _count: {
+            select: {
+              users: true,
+              employees: true,
+              ruleSets: true,
+              compCycles: true,
+              importJobs: true,
+              integrationConnectors: true,
+              tenantRoles: true,
+            },
+          },
+          // Last sync job status
+          integrationConnectors: {
+            take: 1,
+            orderBy: { lastSyncAt: 'desc' },
+            select: {
+              id: true,
+              status: true,
+              lastSyncAt: true,
+              syncJobs: {
+                take: 1,
+                orderBy: { createdAt: 'desc' },
+                select: { status: true, totalRecords: true, processedRecords: true, completedAt: true },
+              },
+            },
+          },
         },
       }),
       this.db.client.tenant.count({ where }),
     ]);
 
-    return { data: tenants, total, page, limit, totalPages: Math.ceil(total / limit) };
+    // Flatten connector info into a sync summary
+    const data = tenants.map((t) => {
+      const connector = t.integrationConnectors[0];
+      const lastJob = connector?.syncJobs?.[0];
+      return {
+        ...t,
+        integrationConnectors: undefined, // remove raw data
+        syncStatus: connector ? {
+          connected: true,
+          connectorStatus: connector.status,
+          lastSyncAt: connector.lastSyncAt,
+          lastJobStatus: lastJob?.status ?? null,
+          lastJobRecords: lastJob?.totalRecords ?? 0,
+        } : { connected: false, connectorStatus: null, lastSyncAt: null, lastJobStatus: null, lastJobRecords: 0 },
+      };
+    });
+
+    return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 
   async getTenant(id: string) {
