@@ -506,49 +506,12 @@ export default function AdminCustomerDetailPage() {
           <Separator />
 
           {/* Full Data Sync — roles + permissions + employees */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <Label className="text-sm font-medium">Full Data Sync</Label>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  Sync all data: roles, permissions, users, and employees from Compport Cloud SQL.
-                  Delta sync runs automatically every 2 minutes.
-                </p>
-              </div>
-              <Button
-                onClick={async () => {
-                  try {
-                    await syncFull.mutateAsync(id);
-                    toast({ title: 'Full sync completed successfully' });
-                  } catch (e) {
-                    toast({
-                      title: 'Full sync failed',
-                      description: e instanceof Error ? e.message : 'Unknown error',
-                      variant: 'destructive',
-                    });
-                  }
-                }}
-                disabled={syncFull.isPending || !tenant.compportSchema}
-                variant="default"
-                size="sm"
-              >
-                {syncFull.isPending ? (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                ) : (
-                  <RefreshCw className="mr-2 h-4 w-4" />
-                )}
-                {syncFull.isPending ? 'Syncing...' : 'Sync All Data'}
-              </Button>
-            </div>
-
-            <div className="rounded-md bg-muted/50 p-3">
-              <p className="text-xs text-muted-foreground">
-                <strong>Auto-sync:</strong> Delta sync runs every 2 minutes automatically,
-                pulling only changed records. Use this button for a full re-sync when data
-                looks inconsistent or after schema changes.
-              </p>
-            </div>
-          </div>
+          <FullSyncSection
+            tenantId={id}
+            hasSchema={!!tenant.compportSchema}
+            syncFull={syncFull}
+            toast={toast}
+          />
         </CardContent>
       </Card>
 
@@ -926,5 +889,123 @@ function RolePermissionsCard({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function FullSyncSection({
+  tenantId,
+  hasSchema,
+  syncFull,
+  toast,
+}: {
+  tenantId: string;
+  hasSchema: boolean;
+  syncFull: ReturnType<typeof useAdminSyncTenantFull>;
+  toast: (opts: { title: string; description?: string; variant?: string }) => void;
+}) {
+  const [fullSyncResult, setFullSyncResult] = useState<Record<string, unknown> | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
+
+  const handleSync = async () => {
+    setFullSyncResult(null);
+    setSyncError(null);
+    try {
+      const result = await syncFull.mutateAsync(tenantId);
+      setFullSyncResult(result);
+      toast({ title: 'Full sync completed successfully' });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Unknown error';
+      setSyncError(msg);
+      toast({ title: 'Full sync failed', description: msg, variant: 'destructive' });
+    }
+  };
+
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  const roles = fullSyncResult?.roles as Record<string, any> | undefined;
+  const employees = fullSyncResult?.employees as Record<string, any> | undefined;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <div>
+          <Label className="text-sm font-medium">Full Data Sync</Label>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Sync all data: roles, permissions, users, and employees from Compport Cloud SQL.
+          </p>
+        </div>
+        <Button
+          onClick={handleSync}
+          disabled={syncFull.isPending || !hasSchema}
+          variant="default"
+          size="sm"
+        >
+          {syncFull.isPending ? (
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          ) : (
+            <RefreshCw className="mr-2 h-4 w-4" />
+          )}
+          {syncFull.isPending ? 'Syncing...' : 'Sync All Data'}
+        </Button>
+      </div>
+
+      {syncFull.isPending && (
+        <div className="rounded-md border border-blue-500/50 bg-blue-50 dark:bg-blue-950/20 p-4">
+          <div className="flex items-center gap-2 mb-2">
+            <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
+            <p className="text-sm font-medium text-blue-800 dark:text-blue-200">
+              Syncing data from Compport Cloud SQL...
+            </p>
+          </div>
+          <p className="text-xs text-blue-600 dark:text-blue-400">
+            This may take a few minutes for large datasets. Please wait.
+          </p>
+        </div>
+      )}
+
+      {syncError && (
+        <div className="rounded-md border border-destructive/50 bg-destructive/10 p-4">
+          <p className="text-sm font-medium text-destructive">Sync failed</p>
+          <p className="text-xs text-destructive/80 mt-1 font-mono break-all">{syncError}</p>
+        </div>
+      )}
+
+      {fullSyncResult && !syncError && (
+        <div className="rounded-md border border-green-500/50 bg-green-50 dark:bg-green-950/20 p-4 space-y-3">
+          <p className="text-sm font-medium text-green-800 dark:text-green-200">
+            Sync completed successfully
+          </p>
+          <div className="grid grid-cols-3 gap-3">
+            {([
+              [roles?.roles?.synced ?? 0, 'Roles'],
+              [roles?.pages?.synced ?? 0, 'Pages'],
+              [roles?.permissions?.synced ?? 0, 'Permissions'],
+              [roles?.users?.synced ?? 0, 'Users Synced'],
+              [roles?.users?.linked ?? 0, 'Users Linked'],
+              [employees?.synced ?? 0, 'Employees'],
+            ] as [number, string][]).map(([value, label]) => (
+              <div key={label} className="rounded-lg bg-white dark:bg-slate-900 p-3 text-center border">
+                <p className="text-xl font-bold">{value}</p>
+                <p className="text-xs text-muted-foreground">{label}</p>
+              </div>
+            ))}
+          </div>
+          {employees?.durationMs > 0 && (
+            <p className="text-xs text-muted-foreground">
+              Employee sync: {(employees.durationMs / 1000).toFixed(1)}s
+              {employees?.skipped > 0 && ` | ${employees.skipped} skipped`}
+              {employees?.errors > 0 && ` | ${employees.errors} errors`}
+            </p>
+          )}
+        </div>
+      )}
+
+      <div className="rounded-md bg-muted/50 p-3">
+        <p className="text-xs text-muted-foreground">
+          <strong>Auto-sync:</strong> Delta sync runs every 2 minutes automatically,
+          pulling only changed records. Use this button for a full re-sync when data
+          looks inconsistent or after schema changes.
+        </p>
+      </div>
+    </div>
   );
 }
