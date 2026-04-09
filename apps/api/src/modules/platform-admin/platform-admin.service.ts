@@ -70,38 +70,26 @@ export class PlatformAdminService {
       this.db.client.tenant.count({ where }),
     ]);
 
-    // Get counts for all listed tenants via raw SQL (bypasses RLS)
-    const tenantIds = tenants.map((t) => t.id);
-    const countsMap = new Map<string, { users: number; employees: number; roles: number; connectors: number }>();
+    // Get counts per tenant using forTenant (RLS requires tenant context)
+    const countsResults = await Promise.all(
+      tenants.map((t) =>
+        this.db.forTenant(t.id, (tx) =>
+          Promise.all([
+            tx.user.count({ where: { tenantId: t.id } }),
+            tx.employee.count({ where: { tenantId: t.id } }),
+            tx.tenantRole.count({ where: { tenantId: t.id } }),
+            tx.integrationConnector.count({ where: { tenantId: t.id } }),
+          ]),
+        ).catch(() => [0, 0, 0, 0] as [number, number, number, number]),
+      ),
+    );
 
-    if (tenantIds.length > 0) {
-      const counts = await this.db.client.$queryRawUnsafe<
-        { tenantId: string; users: bigint; employees: bigint; roles: bigint; connectors: bigint }[]
-      >(`
-        SELECT t."id" AS "tenantId",
-          (SELECT COUNT(*) FROM "users" u WHERE u."tenantId" = t."id") AS users,
-          (SELECT COUNT(*) FROM "employees" e WHERE e."tenantId" = t."id") AS employees,
-          (SELECT COUNT(*) FROM "tenant_roles" tr WHERE tr."tenantId" = t."id") AS roles,
-          (SELECT COUNT(*) FROM "integration_connectors" ic WHERE ic."tenantId" = t."id") AS connectors
-        FROM "tenants" t WHERE t."id" = ANY($1)
-      `, tenantIds);
-
-      for (const c of counts) {
-        countsMap.set(c.tenantId, {
-          users: Number(c.users),
-          employees: Number(c.employees),
-          roles: Number(c.roles),
-          connectors: Number(c.connectors),
-        });
-      }
-    }
-
-    const data = tenants.map((t) => {
-      const c = countsMap.get(t.id) ?? { users: 0, employees: 0, roles: 0, connectors: 0 };
+    const data = tenants.map((t, i) => {
+      const [users, employees, roles, connectors] = countsResults[i]!;
       return {
         ...t,
-        _count: c,
-        syncStatus: c.connectors > 0
+        _count: { users, employees, tenantRoles: roles, integrationConnectors: connectors },
+        syncStatus: connectors > 0
           ? { connected: true, connectorStatus: 'ACTIVE', lastSyncAt: null, lastJobStatus: null, lastJobRecords: 0 }
           : { connected: false, connectorStatus: null, lastSyncAt: null, lastJobStatus: null, lastJobRecords: 0 },
       };
@@ -1216,26 +1204,40 @@ export class PlatformAdminService {
   // ─── Platform Stats ──────────────────────────────────────
 
   async getStats() {
-    // Raw SQL bypasses RLS — platform admin needs cross-tenant counts
-    const [result] = await this.db.client.$queryRawUnsafe<{
-      tenants: bigint; active: bigint; users: bigint; employees: bigint;
-    }[]>(`
-      SELECT
-        (SELECT COUNT(*) FROM "tenants") AS tenants,
-        (SELECT COUNT(*) FROM "tenants" WHERE "isActive" = true) AS active,
-        (SELECT COUNT(*) FROM "users") AS users,
-        (SELECT COUNT(*) FROM "employees") AS employees
-    `);
+    // Tenant counts (no RLS on tenants table)
+    const [totalTenants, activeTenants] = await Promise.all([
+      this.db.client.tenant.count(),
+      this.db.client.tenant.count({ where: { isActive: true } }),
+    ]);
 
-    const totalTenants = Number(result?.tenants ?? 0);
-    const activeTenants = Number(result?.active ?? 0);
+    // User/employee counts need per-tenant aggregation due to FORCE RLS
+    const tenantIds = await this.db.client.tenant.findMany({ select: { id: true } });
+    let totalUsers = 0;
+    let totalEmployees = 0;
+
+    // Batch all tenants in parallel (fast — each is a single count query)
+    const results = await Promise.all(
+      tenantIds.map((t) =>
+        this.db.forTenant(t.id, (tx) =>
+          Promise.all([
+            tx.user.count({ where: { tenantId: t.id } }),
+            tx.employee.count({ where: { tenantId: t.id } }),
+          ]),
+        ).catch(() => [0, 0] as [number, number]),
+      ),
+    );
+
+    for (const [users, employees] of results) {
+      totalUsers += users;
+      totalEmployees += employees;
+    }
 
     return {
       totalTenants,
       activeTenants,
       suspendedTenants: totalTenants - activeTenants,
-      totalUsers: Number(result?.users ?? 0),
-      totalEmployees: Number(result?.employees ?? 0),
+      totalUsers,
+      totalEmployees,
     };
   }
 
