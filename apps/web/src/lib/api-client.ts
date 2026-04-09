@@ -143,7 +143,14 @@ class ApiClient {
   }
 
   // Auth endpoints
-  async login(email: string, password: string) {
+  async login(email: string, password: string, tenantSlug?: string) {
+    // Detect tenant from subdomain if not provided
+    const slug = tenantSlug ?? (typeof window !== 'undefined'
+      ? window.location.hostname.split('.')[0]
+      : undefined);
+    // Only send tenantSlug if it looks like a real subdomain (not "compportiq", "localhost", etc.)
+    const isSubdomain = slug && !['compportiq', 'localhost', 'www', 'app'].includes(slug);
+
     const result = await this.fetch<{
       accessToken: string;
       refreshToken: string;
@@ -156,7 +163,7 @@ class ApiClient {
       } | null;
     }>('/api/v1/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email, password, ...(isSubdomain ? { tenantSlug: slug } : {}) }),
     });
     // Fetch CSRF token now that we're authenticated
     await this.fetchCsrfToken();

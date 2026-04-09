@@ -73,10 +73,14 @@ export class AuthService {
   private readonly LOCKOUT_DURATION_MINUTES = 30;
 
   async login(dto: LoginDto) {
-    // Find user by email. If multiple users exist with the same email across
-    // tenants, prefer PLATFORM_ADMIN role first, then most recently created.
+    // Build query — if tenantSlug is provided (from subdomain), scope to that tenant
+    const where: Record<string, unknown> = { email: dto.email };
+    if (dto.tenantSlug) {
+      where['tenant'] = { slug: { startsWith: dto.tenantSlug } };
+    }
+
     const users = await this.db.client.user.findMany({
-      where: { email: dto.email },
+      where,
       include: {
         tenant: {
           select: { id: true, name: true, slug: true, settings: true, isActive: true },
@@ -84,11 +88,14 @@ export class AuthService {
       },
       orderBy: { createdAt: 'asc' },
     });
-    // Prefer platform admin, then active tenant users
-    const user = users.find((u: { role: string }) => u.role === 'PLATFORM_ADMIN')
-      ?? users.find((u: { tenant?: { isActive?: boolean } | null }) => u.tenant?.isActive)
-      ?? users[0]
-      ?? null;
+
+    // If no tenantSlug filter, prefer platform admin for ambiguous logins
+    const user = dto.tenantSlug
+      ? (users.find((u: { tenant?: { isActive?: boolean } | null }) => u.tenant?.isActive) ?? users[0] ?? null)
+      : (users.find((u: { role: string }) => u.role === 'PLATFORM_ADMIN')
+        ?? users.find((u: { tenant?: { isActive?: boolean } | null }) => u.tenant?.isActive)
+        ?? users[0]
+        ?? null);
 
     if (!user || !user.passwordHash) {
       throw new UnauthorizedException('Invalid credentials');
