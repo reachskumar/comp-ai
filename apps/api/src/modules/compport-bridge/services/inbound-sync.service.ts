@@ -6,7 +6,7 @@ import { CredentialVaultService } from '../../integrations/services/credential-v
 import { FieldMappingService } from '../../integrations/services/field-mapping.service';
 import { CloudSqlEmployeeRowSchema } from '../schemas/compport-data.schemas';
 
-const BATCH_SIZE = 1000;
+const BATCH_SIZE = 5000;
 
 /** Common timestamp column names in Compport MySQL schemas */
 const TIMESTAMP_COLUMNS = ['updated_at', 'modified_date', 'modified_at', 'last_modified'];
@@ -652,6 +652,8 @@ export class InboundSyncService {
         break;
       }
 
+      // Parse and map all rows in this batch
+      const batch: { employeeCode: string; data: Record<string, unknown> }[] = [];
       for (const row of rows) {
         try {
           const parsed = CloudSqlEmployeeRowSchema.safeParse(row);
@@ -669,13 +671,31 @@ export class InboundSyncService {
             continue;
           }
 
-          const mappedData = this.defaultMapping(validRow, lookups);
-          await this.upsertEmployee(tenantId, employeeId, mappedData);
-          synced++;
+          batch.push({ employeeCode: employeeId, data: this.defaultMapping(validRow, lookups) });
         } catch (err) {
           errors++;
           const message = err instanceof Error ? err.message : 'Unknown error';
-          this.logger.warn(`[tenant-sync] Failed to sync employee: ${message.substring(0, 200)}`);
+          this.logger.warn(`[tenant-sync] Failed to parse employee: ${message.substring(0, 200)}`);
+        }
+      }
+
+      // Upsert entire batch in a single transaction
+      if (batch.length > 0) {
+        try {
+          await this.db.forTenant(tenantId, async (tx) => {
+            for (const { employeeCode, data } of batch) {
+              await tx.employee.upsert({
+                where: { tenantId_employeeCode: { tenantId, employeeCode } },
+                create: { tenantId, employeeCode, ...data } as never,
+                update: data as never,
+              });
+            }
+          });
+          synced += batch.length;
+        } catch (err) {
+          errors += batch.length;
+          const message = err instanceof Error ? err.message : 'Unknown error';
+          this.logger.error(`[tenant-sync] Batch upsert failed: ${message.substring(0, 200)}`);
         }
       }
 
