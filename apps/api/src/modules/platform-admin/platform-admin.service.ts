@@ -159,6 +159,29 @@ export class PlatformAdminService {
       },
     });
     this.logger.log(`Tenant created: ${tenant.name} (${tenant.id})`);
+
+    // Auto-create integration connector if a Compport schema is provided
+    if (dto.compportSchema) {
+      await this.db.client.integrationConnector.create({
+        data: {
+          tenantId: tenant.id,
+          name: `Compport - ${dto.name}`,
+          connectorType: 'COMPPORT_CLOUDSQL',
+          status: 'ACTIVE',
+          syncDirection: 'INBOUND',
+          syncSchedule: 'DAILY',
+          conflictStrategy: 'SOURCE_PRIORITY',
+          config: {
+            cloudSqlSchema: dto.compportSchema,
+            schemaName: dto.compportSchema,
+          },
+        },
+      }).catch((err) => {
+        this.logger.warn(`Failed to create connector for ${tenant.name}: ${err}`);
+      });
+      this.logger.log(`Connector created for ${tenant.name} (schema: ${dto.compportSchema})`);
+    }
+
     return tenant;
   }
 
@@ -176,6 +199,34 @@ export class PlatformAdminService {
 
     const updated = await this.db.client.tenant.update({ where: { id }, data });
     this.logger.log(`Tenant updated: ${updated.name} (${updated.id})`);
+
+    // Auto-create connector if schema was just set and no connector exists
+    if (dto.compportSchema) {
+      const existingConnector = await this.db.client.integrationConnector.findFirst({
+        where: { tenantId: id, connectorType: 'COMPPORT_CLOUDSQL' },
+      });
+      if (!existingConnector) {
+        await this.db.client.integrationConnector.create({
+          data: {
+            tenantId: id,
+            name: `Compport - ${updated.name}`,
+            connectorType: 'COMPPORT_CLOUDSQL',
+            status: 'ACTIVE',
+            syncDirection: 'INBOUND',
+            syncSchedule: 'DAILY',
+            conflictStrategy: 'SOURCE_PRIORITY',
+            config: {
+              cloudSqlSchema: dto.compportSchema,
+              schemaName: dto.compportSchema,
+            },
+          },
+        }).catch((err) => {
+          this.logger.warn(`Failed to auto-create connector: ${err}`);
+        });
+        this.logger.log(`Auto-created connector for ${updated.name}`);
+      }
+    }
+
     return updated;
   }
 
