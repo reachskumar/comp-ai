@@ -61,63 +61,49 @@ export class PlatformAdminService {
         take: limit,
         orderBy: { createdAt: 'desc' },
         select: {
-          id: true,
-          name: true,
-          slug: true,
-          subdomain: true,
-          customDomain: true,
-          logoUrl: true,
-          primaryColor: true,
-          isActive: true,
-          plan: true,
-          compportSchema: true,
-          createdAt: true,
-          updatedAt: true,
-          _count: {
-            select: {
-              users: true,
-              employees: true,
-              ruleSets: true,
-              compCycles: true,
-              importJobs: true,
-              integrationConnectors: true,
-              tenantRoles: true,
-            },
-          },
-          // Last sync job status
-          integrationConnectors: {
-            take: 1,
-            orderBy: { lastSyncAt: 'desc' },
-            select: {
-              id: true,
-              status: true,
-              lastSyncAt: true,
-              syncJobs: {
-                take: 1,
-                orderBy: { createdAt: 'desc' },
-                select: { status: true, totalRecords: true, processedRecords: true, completedAt: true },
-              },
-            },
-          },
+          id: true, name: true, slug: true, subdomain: true,
+          customDomain: true, logoUrl: true, primaryColor: true,
+          isActive: true, plan: true, compportSchema: true,
+          createdAt: true, updatedAt: true,
         },
       }),
       this.db.client.tenant.count({ where }),
     ]);
 
-    // Flatten connector info into a sync summary
+    // Get counts for all listed tenants via raw SQL (bypasses RLS)
+    const tenantIds = tenants.map((t) => t.id);
+    const countsMap = new Map<string, { users: number; employees: number; roles: number; connectors: number }>();
+
+    if (tenantIds.length > 0) {
+      const counts = await this.db.client.$queryRawUnsafe<
+        { tenantId: string; users: bigint; employees: bigint; roles: bigint; connectors: bigint }[]
+      >(`
+        SELECT t."id" AS "tenantId",
+          (SELECT COUNT(*) FROM "users" u WHERE u."tenantId" = t."id") AS users,
+          (SELECT COUNT(*) FROM "employees" e WHERE e."tenantId" = t."id") AS employees,
+          (SELECT COUNT(*) FROM "tenant_roles" tr WHERE tr."tenantId" = t."id") AS roles,
+          (SELECT COUNT(*) FROM "integration_connectors" ic WHERE ic."tenantId" = t."id") AS connectors
+        FROM "tenants" t WHERE t."id" = ANY($1)
+      `, tenantIds);
+
+      for (const c of counts) {
+        countsMap.set(c.tenantId, {
+          users: Number(c.users),
+          employees: Number(c.employees),
+          roles: Number(c.roles),
+          connectors: Number(c.connectors),
+        });
+      }
+    }
+
     const data = tenants.map((t) => {
-      const connector = t.integrationConnectors[0];
-      const lastJob = connector?.syncJobs?.[0];
+      const c = countsMap.get(t.id) ?? { users: 0, employees: 0, roles: 0, connectors: 0 };
       return {
         ...t,
-        integrationConnectors: undefined, // remove raw data
-        syncStatus: connector ? {
-          connected: true,
-          connectorStatus: connector.status,
-          lastSyncAt: connector.lastSyncAt,
-          lastJobStatus: lastJob?.status ?? null,
-          lastJobRecords: lastJob?.totalRecords ?? 0,
-        } : { connected: false, connectorStatus: null, lastSyncAt: null, lastJobStatus: null, lastJobRecords: 0 },
+        _count: c,
+        syncStatus: c.connectors > 0
+          ? { connected: true, connectorStatus: 'ACTIVE', lastSyncAt: null, lastJobStatus: null, lastJobRecords: 0 }
+          : { connected: false, connectorStatus: null, lastSyncAt: null, lastJobStatus: null, lastJobRecords: 0 },
       };
     });
 
@@ -125,19 +111,27 @@ export class PlatformAdminService {
   }
 
   async getTenant(id: string) {
-    // Use Prisma _count for a single efficient query (no RLS/forTenant needed
-    // because tenant table has no RLS and _count joins through FK relations)
-    const tenant = await this.db.client.tenant.findUnique({
-      where: { id },
-      include: {
-        _count: {
-          select: { users: true, employees: true, compCycles: true, importJobs: true },
-        },
-      },
-    });
+    const tenant = await this.db.client.tenant.findUnique({ where: { id } });
     if (!tenant) throw new NotFoundException(`Tenant ${id} not found`);
 
-    return tenant;
+    // Count via forTenant so RLS context is set (Prisma _count bypasses
+    // RLS on the parent but child table JOINs still hit FORCE RLS)
+    let _count = { users: 0, employees: 0, compCycles: 0, importJobs: 0 };
+    try {
+      const [users, employees, compCycles, importJobs] = await this.db.forTenant(id, (tx) =>
+        Promise.all([
+          tx.user.count({ where: { tenantId: id } }),
+          tx.employee.count({ where: { tenantId: id } }),
+          tx.compCycle.count({ where: { tenantId: id } }),
+          tx.importJob.count({ where: { tenantId: id } }),
+        ]),
+      );
+      _count = { users, employees, compCycles, importJobs };
+    } catch {
+      this.logger.warn(`getTenant counts failed for ${id}`);
+    }
+
+    return { ...tenant, _count };
   }
 
   async createTenant(dto: CreateTenantDto) {
@@ -1222,20 +1216,26 @@ export class PlatformAdminService {
   // ─── Platform Stats ──────────────────────────────────────
 
   async getStats() {
-    // Single query using Prisma aggregate — no N+1 loop, no RLS needed
-    const [totalTenants, activeTenants, totalUsers, totalEmployees] = await Promise.all([
-      this.db.client.tenant.count(),
-      this.db.client.tenant.count({ where: { isActive: true } }),
-      this.db.client.user.count(),
-      this.db.client.employee.count(),
-    ]);
+    // Raw SQL bypasses RLS — platform admin needs cross-tenant counts
+    const [result] = await this.db.client.$queryRawUnsafe<{
+      tenants: bigint; active: bigint; users: bigint; employees: bigint;
+    }[]>(`
+      SELECT
+        (SELECT COUNT(*) FROM "tenants") AS tenants,
+        (SELECT COUNT(*) FROM "tenants" WHERE "isActive" = true) AS active,
+        (SELECT COUNT(*) FROM "users") AS users,
+        (SELECT COUNT(*) FROM "employees") AS employees
+    `);
+
+    const totalTenants = Number(result?.tenants ?? 0);
+    const activeTenants = Number(result?.active ?? 0);
 
     return {
       totalTenants,
       activeTenants,
       suspendedTenants: totalTenants - activeTenants,
-      totalUsers,
-      totalEmployees,
+      totalUsers: Number(result?.users ?? 0),
+      totalEmployees: Number(result?.employees ?? 0),
     };
   }
 
