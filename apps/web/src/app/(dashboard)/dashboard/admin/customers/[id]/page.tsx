@@ -991,9 +991,9 @@ function FullSyncSection({
           </div>
           {(employees?.durationMs ?? 0) > 0 && (
             <p className="text-xs text-muted-foreground">
-              Employee sync: {(employees.durationMs / 1000).toFixed(1)}s
-              {employees?.skipped > 0 && ` | ${employees.skipped} skipped`}
-              {employees?.errors > 0 && ` | ${employees.errors} errors`}
+              Employee sync: {((employees?.durationMs ?? 0) / 1000).toFixed(1)}s
+              {(employees?.skipped ?? 0) > 0 && ` | ${employees!.skipped} skipped`}
+              {(employees?.errors ?? 0) > 0 && ` | ${employees!.errors} errors`}
             </p>
           )}
         </div>
