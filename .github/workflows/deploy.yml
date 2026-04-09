@@ -129,7 +129,7 @@ jobs:
             --task-timeout=300s \
             --memory=1Gi \
             --command="sh" \
-            --args="-c,cd /app/packages/database && node_modules/.bin/prisma migrate deploy" \
+            --args="-c,cd /app/packages/database && node_modules/.bin/prisma migrate resolve --rolled-back 20260409100000_create_missing_connectors 2>/dev/null; node_modules/.bin/prisma migrate deploy" \
             --quiet
 
           gcloud run jobs execute migrate-${{ steps.tag.outputs.TAG }} \
