@@ -162,24 +162,7 @@ export class PlatformAdminService {
 
     // Auto-create integration connector if a Compport schema is provided
     if (dto.compportSchema) {
-      await this.db.client.integrationConnector.create({
-        data: {
-          tenantId: tenant.id,
-          name: `Compport - ${dto.name}`,
-          connectorType: 'COMPPORT_CLOUDSQL',
-          status: 'ACTIVE',
-          syncDirection: 'INBOUND',
-          syncSchedule: 'DAILY',
-          conflictStrategy: 'SOURCE_PRIORITY',
-          config: {
-            cloudSqlSchema: dto.compportSchema,
-            schemaName: dto.compportSchema,
-          },
-        },
-      }).catch((err) => {
-        this.logger.warn(`Failed to create connector for ${tenant.name}: ${err}`);
-      });
-      this.logger.log(`Connector created for ${tenant.name} (schema: ${dto.compportSchema})`);
+      await this.ensureConnectorExists(tenant.id, dto.name, dto.compportSchema);
     }
 
     return tenant;
@@ -202,29 +185,7 @@ export class PlatformAdminService {
 
     // Auto-create connector if schema was just set and no connector exists
     if (dto.compportSchema) {
-      const existingConnector = await this.db.client.integrationConnector.findFirst({
-        where: { tenantId: id, connectorType: 'COMPPORT_CLOUDSQL' },
-      });
-      if (!existingConnector) {
-        await this.db.client.integrationConnector.create({
-          data: {
-            tenantId: id,
-            name: `Compport - ${updated.name}`,
-            connectorType: 'COMPPORT_CLOUDSQL',
-            status: 'ACTIVE',
-            syncDirection: 'INBOUND',
-            syncSchedule: 'DAILY',
-            conflictStrategy: 'SOURCE_PRIORITY',
-            config: {
-              cloudSqlSchema: dto.compportSchema,
-              schemaName: dto.compportSchema,
-            },
-          },
-        }).catch((err) => {
-          this.logger.warn(`Failed to auto-create connector: ${err}`);
-        });
-        this.logger.log(`Auto-created connector for ${updated.name}`);
-      }
+      await this.ensureConnectorExists(id, updated.name, dto.compportSchema);
     }
 
     return updated;
@@ -444,6 +405,37 @@ export class PlatformAdminService {
    * Primary: DB_HOST / DB_USER / DB_PWD (production Cloud Run)
    * Fallback: COMPPORT_CLOUDSQL_HOST / USER / PASSWORD (legacy)
    */
+  /** Create a COMPPORT_CLOUDSQL connector for a tenant if one doesn't exist. Uses forTenant to satisfy RLS. */
+  private async ensureConnectorExists(tenantId: string, tenantName: string, schema: string) {
+    try {
+      const exists = await this.db.forTenant(tenantId, (tx) =>
+        tx.integrationConnector.findFirst({
+          where: { tenantId, connectorType: 'COMPPORT_CLOUDSQL' },
+          select: { id: true },
+        }),
+      );
+      if (!exists) {
+        await this.db.forTenant(tenantId, (tx) =>
+          tx.integrationConnector.create({
+            data: {
+              tenantId,
+              name: `Compport - ${tenantName}`,
+              connectorType: 'COMPPORT_CLOUDSQL',
+              status: 'ACTIVE',
+              syncDirection: 'INBOUND',
+              syncSchedule: 'DAILY',
+              conflictStrategy: 'SOURCE_PRIORITY',
+              config: { cloudSqlSchema: schema, schemaName: schema },
+            },
+          }),
+        );
+        this.logger.log(`Connector created for ${tenantName} (schema: ${schema})`);
+      }
+    } catch (err) {
+      this.logger.warn(`Failed to create connector for ${tenantName}: ${err}`);
+    }
+  }
+
   private getMySqlConfig() {
     const host =
       this.configService.get('DB_HOST', '') || this.configService.get('COMPPORT_CLOUDSQL_HOST', '');
