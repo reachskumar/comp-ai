@@ -112,10 +112,18 @@ export async function setTenantContext(
  * });
  * ```
  */
+export interface TenantScopeOptions {
+  /** Maximum time the transaction may run, in ms. Defaults to Prisma's 5000ms. */
+  timeout?: number;
+  /** Maximum time to wait to start the transaction, in ms. Defaults to Prisma's 2000ms. */
+  maxWait?: number;
+}
+
 export async function withTenantScope<T>(
   client: any,
   tenantId: string,
   callback: (tx: Prisma.TransactionClient) => Promise<T>,
+  options?: TenantScopeOptions,
 ): Promise<T> {
   if (!tenantId || typeof tenantId !== 'string') {
     throw new Error(
@@ -123,8 +131,13 @@ export async function withTenantScope<T>(
     );
   }
 
-  return client.$transaction(async (tx: Prisma.TransactionClient) => {
-    await setTenantContext(tx, tenantId);
-    return callback(tx);
-  });
+  return client.$transaction(
+    async (tx: Prisma.TransactionClient) => {
+      await setTenantContext(tx, tenantId);
+      return callback(tx);
+    },
+    options?.timeout || options?.maxWait
+      ? { timeout: options.timeout, maxWait: options.maxWait }
+      : undefined,
+  );
 }

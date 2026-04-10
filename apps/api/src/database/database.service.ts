@@ -4,6 +4,7 @@ import {
   createPrismaClient,
   PrismaClient,
   withTenantScope,
+  type TenantScopeOptions,
   type Prisma,
 } from '@compensation/database';
 
@@ -62,11 +63,12 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   async forTenant<T>(
     tenantId: string,
     callback: (tx: Prisma.TransactionClient) => Promise<T>,
+    options?: TenantScopeOptions,
   ): Promise<T> {
     if (!tenantId) {
       throw new Error('forTenant requires a non-empty tenantId');
     }
-    return withTenantScope(this._client, tenantId, callback);
+    return withTenantScope(this._client, tenantId, callback, options);
   }
 
   async isHealthy(): Promise<boolean> {

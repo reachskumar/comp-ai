@@ -7,6 +7,12 @@ import { FieldMappingService } from '../../integrations/services/field-mapping.s
 import { CloudSqlEmployeeRowSchema } from '../schemas/compport-data.schemas';
 
 const BATCH_SIZE = 5000;
+/** Per-Prisma-tx upsert chunk size. Smaller than BATCH_SIZE so each transaction
+ *  finishes well within the per-tx timeout. */
+const UPSERT_TX_CHUNK = 500;
+/** Prisma transaction timeout for bulk upserts (5 minutes). The default 5s is
+ *  way too low for batched upserts of hundreds of rows. */
+const UPSERT_TX_TIMEOUT_MS = 5 * 60 * 1000;
 
 /** Common timestamp column names in Compport MySQL schemas */
 const TIMESTAMP_COLUMNS = ['updated_at', 'modified_date', 'modified_at', 'last_modified'];
@@ -679,23 +685,34 @@ export class InboundSyncService {
         }
       }
 
-      // Upsert entire batch in a single transaction
+      // Upsert in smaller chunks per transaction so each tx finishes well
+      // within the Prisma transaction timeout. Default 5000ms is way too low
+      // for hundreds of upserts; we explicitly bump the timeout for safety.
       if (batch.length > 0) {
-        try {
-          await this.db.forTenant(tenantId, async (tx) => {
-            for (const { employeeCode, data } of batch) {
-              await tx.employee.upsert({
-                where: { tenantId_employeeCode: { tenantId, employeeCode } },
-                create: { tenantId, employeeCode, ...data } as never,
-                update: data as never,
-              });
-            }
-          });
-          synced += batch.length;
-        } catch (err) {
-          errors += batch.length;
-          const message = err instanceof Error ? err.message : 'Unknown error';
-          this.logger.error(`[tenant-sync] Batch upsert failed: ${message.substring(0, 200)}`);
+        for (let i = 0; i < batch.length; i += UPSERT_TX_CHUNK) {
+          const chunk = batch.slice(i, i + UPSERT_TX_CHUNK);
+          try {
+            await this.db.forTenant(
+              tenantId,
+              async (tx) => {
+                for (const { employeeCode, data } of chunk) {
+                  await tx.employee.upsert({
+                    where: { tenantId_employeeCode: { tenantId, employeeCode } },
+                    create: { tenantId, employeeCode, ...data } as never,
+                    update: data as never,
+                  });
+                }
+              },
+              { timeout: UPSERT_TX_TIMEOUT_MS, maxWait: 30_000 },
+            );
+            synced += chunk.length;
+          } catch (err) {
+            errors += chunk.length;
+            const message = err instanceof Error ? err.message : 'Unknown error';
+            this.logger.error(
+              `[tenant-sync] Batch upsert failed (chunk ${i}-${i + chunk.length}): ${message.substring(0, 200)}`,
+            );
+          }
         }
       }
 

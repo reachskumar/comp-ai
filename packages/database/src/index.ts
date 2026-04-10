@@ -21,6 +21,7 @@ export {
 
 // Re-export RLS (Row-Level Security) utilities for tenant isolation
 export { createRlsExtension, setTenantContext, withTenantScope } from './rls-extension.js';
+export type { TenantScopeOptions } from './rls-extension.js';
 
 export interface PoolConfig {
   /** Minimum number of connections in the pool (default: 2) */

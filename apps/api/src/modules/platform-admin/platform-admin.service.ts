@@ -955,6 +955,34 @@ export class PlatformAdminService {
       );
     }
 
+    // Reject if there's already a running full_sync for this tenant.
+    // Concurrent runs cause Postgres deadlocks on the employee table.
+    const existingRunning = await this.db.forTenant(tenantId, (tx) =>
+      tx.syncJob.findFirst({
+        where: {
+          tenantId,
+          entityType: 'full_sync',
+          status: { in: ['PENDING', 'RUNNING'] },
+        },
+        select: { id: true, startedAt: true },
+        orderBy: { createdAt: 'desc' },
+      }),
+    );
+    if (existingRunning) {
+      // If the job is "stuck" (started > 30 min ago), mark it failed and start fresh.
+      const STUCK_THRESHOLD_MS = 30 * 60 * 1000;
+      const startedAt = existingRunning.startedAt?.getTime() ?? 0;
+      const isStuck = startedAt && Date.now() - startedAt > STUCK_THRESHOLD_MS;
+      if (isStuck) {
+        await this.markJobFailed(tenantId, existingRunning.id, 'Stuck — superseded by new sync');
+      } else {
+        this.logger.log(
+          `[sync-full] Reusing in-flight job ${existingRunning.id} for ${tenant.name}`,
+        );
+        return { jobId: existingRunning.id, status: 'RUNNING' };
+      }
+    }
+
     // Find or create the COMPPORT_CLOUDSQL connector (SyncJob requires connectorId)
     await this.ensureConnectorExists(tenantId, tenant.name, tenant.compportSchema);
     const connector = await this.db.forTenant(tenantId, (tx) =>
