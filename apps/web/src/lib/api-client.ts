@@ -479,16 +479,37 @@ class ApiClient {
 
   async adminSyncTenantFull(id: string) {
     // sync-full uses NDJSON streaming. Read all lines and return last "complete" message.
-    const url = `${(this as any).baseUrl || ''}/api/v1/platform-admin/tenants/${id}/sync-full`;
-    const token = this.getToken();
-    const headers: Record<string, string> = {};
-    if (token) headers['Authorization'] = `Bearer ${token}`;
+    // We can't use this.fetch() because it parses JSON; we need raw streaming.
+    // But we still need to handle 401 → refresh token → retry, like this.fetch does.
+    const url = `${API_BASE_URL}/api/v1/platform-admin/tenants/${id}/sync-full`;
 
-    const res = await fetch(`${API_BASE_URL}/api/v1/platform-admin/tenants/${id}/sync-full`, {
-      method: 'POST',
-      headers,
-      credentials: 'include',
-    });
+    const doFetch = async (): Promise<Response> => {
+      const token = this.getToken();
+      const headers: Record<string, string> = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      return fetch(url, {
+        method: 'POST',
+        headers,
+        credentials: 'include',
+      });
+    };
+
+    let res = await doFetch();
+
+    // If 401, try refreshing the token and retry once
+    if (res.status === 401) {
+      const refreshed = await this.refreshAccessToken();
+      if (refreshed) {
+        res = await doFetch();
+      } else {
+        this.clearTokens();
+        if (typeof window !== 'undefined') {
+          window.location.href = '/login';
+        }
+        throw new Error('Session expired. Please log in again.');
+      }
+    }
+
     if (!res.ok) throw new Error(`Sync failed: ${res.status}`);
 
     const text = await res.text();
