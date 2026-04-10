@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   ArrowLeft,
@@ -44,6 +44,7 @@ import {
   useCompportTenants,
   useAdminSyncTenantRoles,
   useAdminSyncTenantFull,
+  useAdminSyncJob,
   useAdminTestTenantConnection,
 } from '@/hooks/use-admin';
 import Link from 'next/link';
@@ -903,26 +904,50 @@ function FullSyncSection({
   syncFull: ReturnType<typeof useAdminSyncTenantFull>;
   toast: (opts: { title: string; description?: string; variant?: 'default' | 'destructive' }) => void;
 }) {
-  const [fullSyncResult, setFullSyncResult] = useState<Record<string, unknown> | null>(null);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
 
-  const handleSync = async () => {
-    setFullSyncResult(null);
-    setSyncError(null);
-    try {
-      const result = await syncFull.mutateAsync(tenantId);
-      setFullSyncResult(result);
+  // Poll the job while it's running
+  const job = useAdminSyncJob(tenantId, activeJobId, !!activeJobId);
+
+  // Notify on terminal state transitions
+  const lastNotifiedRef = useRef<string | null>(null);
+  const status = job.data?.status;
+  const errorMessage = job.data?.errorMessage;
+  useEffect(() => {
+    if (!status || !activeJobId) return;
+    const key = `${activeJobId}:${status}`;
+    if (lastNotifiedRef.current === key) return;
+    if (status === 'COMPLETED') {
+      lastNotifiedRef.current = key;
       toast({ title: 'Full sync completed successfully' });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Unknown error';
+    } else if (status === 'FAILED') {
+      lastNotifiedRef.current = key;
+      const msg = errorMessage || 'Unknown error';
       setSyncError(msg);
       toast({ title: 'Full sync failed', description: msg, variant: 'destructive' });
     }
+  }, [status, errorMessage, activeJobId, toast]);
+
+  const handleSync = async () => {
+    setSyncError(null);
+    setActiveJobId(null);
+    lastNotifiedRef.current = null;
+    try {
+      const { jobId } = await syncFull.mutateAsync(tenantId);
+      setActiveJobId(jobId);
+      toast({ title: 'Sync started', description: 'Running in the background. Progress shown below.' });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Unknown error';
+      setSyncError(msg);
+      toast({ title: 'Failed to start sync', description: msg, variant: 'destructive' });
+    }
   };
 
-  /* eslint-disable @typescript-eslint/no-explicit-any */
-  const roles = fullSyncResult?.roles as Record<string, any> | undefined;
-  const employees = fullSyncResult?.employees as Record<string, any> | undefined;
+  const isRunning = status === 'PENDING' || status === 'RUNNING' || syncFull.isPending;
+  const isCompleted = status === 'COMPLETED';
+  const meta = (job.data?.metadata as Record<string, unknown> | undefined) ?? {};
+  const num = (k: string) => (typeof meta[k] === 'number' ? (meta[k] as number) : 0);
 
   return (
     <div className="space-y-3">
@@ -935,20 +960,20 @@ function FullSyncSection({
         </div>
         <Button
           onClick={handleSync}
-          disabled={syncFull.isPending || !hasSchema}
+          disabled={isRunning || !hasSchema}
           variant="default"
           size="sm"
         >
-          {syncFull.isPending ? (
+          {isRunning ? (
             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
           ) : (
             <RefreshCw className="mr-2 h-4 w-4" />
           )}
-          {syncFull.isPending ? 'Syncing...' : 'Sync All Data'}
+          {isRunning ? 'Syncing...' : 'Sync All Data'}
         </Button>
       </div>
 
-      {syncFull.isPending && (
+      {isRunning && (
         <div className="rounded-md border border-blue-500/50 bg-blue-50 dark:bg-blue-950/20 p-4">
           <div className="flex items-center gap-2 mb-2">
             <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
@@ -957,31 +982,32 @@ function FullSyncSection({
             </p>
           </div>
           <p className="text-xs text-blue-600 dark:text-blue-400">
-            This may take a few minutes for large datasets. Please wait.
+            Running in the background. You can leave this page and come back —
+            the sync will keep going. For large tenants this may take several minutes.
           </p>
         </div>
       )}
 
-      {syncError && (
+      {syncError && !isRunning && (
         <div className="rounded-md border border-destructive/50 bg-destructive/10 p-4">
           <p className="text-sm font-medium text-destructive">Sync failed</p>
           <p className="text-xs text-destructive/80 mt-1 font-mono break-all">{syncError}</p>
         </div>
       )}
 
-      {fullSyncResult && !syncError && (
+      {isCompleted && (
         <div className="rounded-md border border-green-500/50 bg-green-50 dark:bg-green-950/20 p-4 space-y-3">
           <p className="text-sm font-medium text-green-800 dark:text-green-200">
             Sync completed successfully
           </p>
           <div className="grid grid-cols-3 gap-3">
             {([
-              [roles?.roles?.synced ?? 0, 'Roles'],
-              [roles?.pages?.synced ?? 0, 'Pages'],
-              [roles?.permissions?.synced ?? 0, 'Permissions'],
-              [roles?.users?.synced ?? 0, 'Users Synced'],
-              [roles?.users?.linked ?? 0, 'Users Linked'],
-              [employees?.synced ?? 0, 'Employees'],
+              [num('roles'), 'Roles'],
+              [num('pages'), 'Pages'],
+              [num('permissions'), 'Permissions'],
+              [num('users'), 'Users'],
+              [num('employees'), 'Employees'],
+              [num('employeeErrors'), 'Errors'],
             ] as [number, string][]).map(([value, label]) => (
               <div key={label} className="rounded-lg bg-white dark:bg-slate-900 p-3 text-center border">
                 <p className="text-xl font-bold">{value}</p>
@@ -989,13 +1015,6 @@ function FullSyncSection({
               </div>
             ))}
           </div>
-          {(employees?.durationMs ?? 0) > 0 && (
-            <p className="text-xs text-muted-foreground">
-              Employee sync: {((employees?.durationMs ?? 0) / 1000).toFixed(1)}s
-              {(employees?.skipped ?? 0) > 0 && ` | ${employees!.skipped} skipped`}
-              {(employees?.errors ?? 0) > 0 && ` | ${employees!.errors} errors`}
-            </p>
-          )}
         </div>
       )}
 

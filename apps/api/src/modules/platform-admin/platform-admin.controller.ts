@@ -7,10 +7,8 @@ import {
   Body,
   Param,
   Query,
-  Res,
   Request,
   UseGuards,
-  Logger,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth';
@@ -23,8 +21,6 @@ import { CreateTenantDto, UpdateTenantDto, CreateTenantUserDto, OnboardTenantDto
 @UseGuards(JwtAuthGuard, PlatformAdminGuard)
 @Controller('platform-admin')
 export class PlatformAdminController {
-  private readonly logger = new Logger(PlatformAdminController.name);
-
   constructor(private readonly service: PlatformAdminService) {}
 
   // ─── Compport Tenant Discovery ───────────────────────────
@@ -152,38 +148,17 @@ export class PlatformAdminController {
 
   @Post('tenants/:id/sync-full')
   @ApiOperation({
-    summary: 'Full sync: roles, pages, permissions, users, and employees from Compport Cloud SQL',
+    summary:
+      'Start a full sync (roles, permissions, users, employees). Returns immediately with a jobId — UI polls /sync-jobs/:jobId for progress.',
   })
-  async syncTenantFull(@Param('id') id: string, @Res() reply: any) {
-    // Use chunked transfer encoding to keep the HTTP connection alive.
-    // Cloud Run kills background tasks when no active request is open.
-    // Fastify: use reply.raw (Node http.ServerResponse) for streaming.
-    const raw = reply.raw;
-    raw.setHeader('Content-Type', 'application/x-ndjson');
-    raw.setHeader('Transfer-Encoding', 'chunked');
-    raw.flushHeaders();
+  async syncTenantFull(@Param('id') id: string) {
+    return this.service.startTenantFullSync(id);
+  }
 
-    // Send a keep-alive ping every 30s so load balancers don't time out
-    const keepAlive = setInterval(() => {
-      try {
-        raw.write(JSON.stringify({ type: 'ping', ts: new Date().toISOString() }) + '\n');
-      } catch {
-        /* connection closed */
-      }
-    }, 30_000);
-
-    try {
-      raw.write(JSON.stringify({ type: 'started', tenantId: id }) + '\n');
-      const result = await this.service.syncTenantFull(id);
-      raw.write(JSON.stringify({ type: 'complete', ...result }) + '\n');
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`sync-full failed for tenant ${id}: ${message}`);
-      raw.write(JSON.stringify({ type: 'error', message }) + '\n');
-    } finally {
-      clearInterval(keepAlive);
-      raw.end();
-    }
+  @Get('tenants/:id/sync-jobs/:jobId')
+  @ApiOperation({ summary: 'Poll a single sync job by id' })
+  getSyncJob(@Param('id') id: string, @Param('jobId') jobId: string) {
+    return this.service.getSyncJob(id, jobId);
   }
 
   @Post('tenants/:id/test-connection')

@@ -939,10 +939,14 @@ export class PlatformAdminService {
   }
 
   /**
-   * Full sync: roles, pages, permissions, users, AND employees.
-   * This is the complete sync that should be triggered from the admin UI.
+   * Start a full sync asynchronously. Creates a SyncJob row, kicks off the
+   * actual sync work in the background, and returns the jobId immediately.
+   *
+   * The UI polls /sync-status to track progress. This avoids long-running HTTP
+   * connections that hit Cloud Run's 900s timeout or get killed by browser /
+   * load-balancer buffering.
    */
-  async syncTenantFull(tenantId: string) {
+  async startTenantFullSync(tenantId: string): Promise<{ jobId: string; status: string }> {
     const tenant = await this.getTenant(tenantId);
 
     if (!tenant.compportSchema) {
@@ -951,10 +955,60 @@ export class PlatformAdminService {
       );
     }
 
+    // Find or create the COMPPORT_CLOUDSQL connector (SyncJob requires connectorId)
+    await this.ensureConnectorExists(tenantId, tenant.name, tenant.compportSchema);
+    const connector = await this.db.forTenant(tenantId, (tx) =>
+      tx.integrationConnector.findFirst({
+        where: { tenantId, connectorType: 'COMPPORT_CLOUDSQL' },
+        select: { id: true },
+      }),
+    );
+    if (!connector) {
+      throw new BadRequestException(`No COMPPORT_CLOUDSQL connector for tenant "${tenant.name}"`);
+    }
+
+    // Create the SyncJob in RUNNING state. UI polls this row.
+    const job = await this.db.forTenant(tenantId, (tx) =>
+      tx.syncJob.create({
+        data: {
+          tenantId,
+          connectorId: connector.id,
+          direction: 'INBOUND',
+          entityType: 'full_sync',
+          status: 'RUNNING',
+          startedAt: new Date(),
+          metadata: { type: 'full', source: 'platform-admin' } as never,
+        },
+      }),
+    );
+
+    this.logger.log(`[sync-full] Started job ${job.id} for ${tenant.name}`);
+
+    // Fire and forget. cpu-throttling=false + minScale=1 keeps the instance
+    // alive so the background work continues after the HTTP response is sent.
+    void this.runFullSyncBackground(tenantId, job.id).catch((err) => {
+      this.logger.error(`[sync-full] Background job ${job.id} crashed: ${err}`);
+    });
+
+    return { jobId: job.id, status: 'RUNNING' };
+  }
+
+  /**
+   * The actual sync work. Runs in the background, updates the SyncJob row
+   * with progress and final status. NEVER throws — failures are recorded.
+   */
+  private async runFullSyncBackground(tenantId: string, jobId: string): Promise<void> {
+    const tenant = await this.getTenant(tenantId).catch(() => null);
+    if (!tenant || !tenant.compportSchema) {
+      await this.markJobFailed(tenantId, jobId, 'Tenant or compportSchema missing');
+      return;
+    }
+
     // Use an ISOLATED Cloud SQL instance so concurrent requests
     // (e.g. tenant list, sync-roles) don't clobber our connection pool.
     const isolatedSql = CompportCloudSqlService.createIsolated();
     const mysqlConfig = this.getMySqlConfig();
+
     try {
       await isolatedSql.connect({
         host: mysqlConfig.host!,
@@ -967,7 +1021,7 @@ export class PlatformAdminService {
         sslKey: mysqlConfig.sslKey,
       });
 
-      this.logger.log(`[sync-full] Isolated Cloud SQL connected for ${tenant.name}`);
+      this.logger.log(`[sync-full] Isolated Cloud SQL connected for ${tenant.name} (job ${jobId})`);
 
       // Step 1: Sync roles, pages, permissions, and users
       const roleResult = await this.inboundSyncService.syncRolesAndPermissions(
@@ -1013,17 +1067,92 @@ export class PlatformAdminService {
           `users=${roleResult.users.synced}, employees=${employeeResult.synced}`,
       );
 
-      return {
-        tenantId,
-        tenantName: tenant.name,
-        compportSchema: tenant.compportSchema,
-        roles: roleResult,
-        employees: employeeResult,
-      };
+      // Mark job as completed with final counts in metadata
+      await this.db.forTenant(tenantId, (tx) =>
+        tx.syncJob.update({
+          where: { id: jobId },
+          data: {
+            status: 'COMPLETED',
+            completedAt: new Date(),
+            totalRecords:
+              roleResult.roles.synced +
+              roleResult.pages.synced +
+              roleResult.permissions.synced +
+              roleResult.users.synced +
+              employeeResult.synced,
+            processedRecords:
+              roleResult.roles.synced +
+              roleResult.pages.synced +
+              roleResult.permissions.synced +
+              roleResult.users.synced +
+              employeeResult.synced,
+            metadata: {
+              type: 'full',
+              source: 'platform-admin',
+              roles: roleResult.roles.synced,
+              pages: roleResult.pages.synced,
+              permissions: roleResult.permissions.synced,
+              users: roleResult.users.synced,
+              employees: employeeResult.synced,
+              employeeErrors: employeeResult.errors,
+            } as never,
+          },
+        }),
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`[sync-full] Job ${jobId} failed: ${message}`);
+      await this.markJobFailed(tenantId, jobId, message);
     } finally {
-      await isolatedSql.disconnect();
+      await isolatedSql.disconnect().catch(() => {});
       this.logger.log(`[sync-full] Isolated Cloud SQL disconnected for ${tenant.name}`);
     }
+  }
+
+  private async markJobFailed(tenantId: string, jobId: string, message: string): Promise<void> {
+    try {
+      await this.db.forTenant(tenantId, (tx) =>
+        tx.syncJob.update({
+          where: { id: jobId },
+          data: {
+            status: 'FAILED',
+            completedAt: new Date(),
+            errorMessage: message.substring(0, 500),
+          },
+        }),
+      );
+    } catch (err) {
+      this.logger.error(`[sync-full] Failed to mark job ${jobId} as FAILED: ${err}`);
+    }
+  }
+
+  /**
+   * Get a single sync job's status (used for polling from the UI).
+   */
+  async getSyncJob(tenantId: string, jobId: string) {
+    await this.getTenant(tenantId);
+    const job = await this.db.forTenant(tenantId, (tx) =>
+      tx.syncJob.findFirst({
+        where: { id: jobId, tenantId },
+        select: {
+          id: true,
+          status: true,
+          entityType: true,
+          totalRecords: true,
+          processedRecords: true,
+          failedRecords: true,
+          startedAt: true,
+          completedAt: true,
+          errorMessage: true,
+          metadata: true,
+          createdAt: true,
+        },
+      }),
+    );
+    if (!job) {
+      throw new NotFoundException(`Sync job ${jobId} not found`);
+    }
+    return job;
   }
 
   /**

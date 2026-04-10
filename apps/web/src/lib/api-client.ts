@@ -478,52 +478,29 @@ class ApiClient {
   }
 
   async adminSyncTenantFull(id: string) {
-    // sync-full uses NDJSON streaming. Read all lines and return last "complete" message.
-    // We can't use this.fetch() because it parses JSON; we need raw streaming.
-    // But we still need to handle 401 → refresh token → retry, like this.fetch does.
-    const url = `${API_BASE_URL}/api/v1/platform-admin/tenants/${id}/sync-full`;
+    // Fire-and-forget. Returns a jobId immediately; the UI polls
+    // adminGetSyncJob() to track progress. Avoids long-running HTTP requests
+    // that hit Cloud Run's 900s timeout or get killed by browser buffering.
+    return this.fetch<{ jobId: string; status: string }>(
+      `/api/v1/platform-admin/tenants/${id}/sync-full`,
+      { method: 'POST' },
+    );
+  }
 
-    const doFetch = async (): Promise<Response> => {
-      const token = this.getToken();
-      const headers: Record<string, string> = {};
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-      return fetch(url, {
-        method: 'POST',
-        headers,
-        credentials: 'include',
-      });
-    };
-
-    let res = await doFetch();
-
-    // If 401, try refreshing the token and retry once
-    if (res.status === 401) {
-      const refreshed = await this.refreshAccessToken();
-      if (refreshed) {
-        res = await doFetch();
-      } else {
-        this.clearTokens();
-        if (typeof window !== 'undefined') {
-          window.location.href = '/login';
-        }
-        throw new Error('Session expired. Please log in again.');
-      }
-    }
-
-    if (!res.ok) throw new Error(`Sync failed: ${res.status}`);
-
-    const text = await res.text();
-    const lines = text.trim().split('\n').filter(Boolean);
-    for (let i = lines.length - 1; i >= 0; i--) {
-      try {
-        const msg = JSON.parse(lines[i]!);
-        if (msg.type === 'complete') return msg as { type: string; [k: string]: unknown };
-        if (msg.type === 'error') throw new Error(msg.message || 'Sync failed');
-      } catch (e) {
-        if (e instanceof Error && e.message.includes('Sync failed')) throw e;
-      }
-    }
-    throw new Error('Sync completed but no result received');
+  async adminGetSyncJob(tenantId: string, jobId: string) {
+    return this.fetch<{
+      id: string;
+      status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+      entityType: string;
+      totalRecords: number;
+      processedRecords: number;
+      failedRecords: number;
+      startedAt: string | null;
+      completedAt: string | null;
+      errorMessage: string | null;
+      metadata: Record<string, unknown>;
+      createdAt: string;
+    }>(`/api/v1/platform-admin/tenants/${tenantId}/sync-jobs/${jobId}`);
   }
 
   async adminTestTenantConnection(id: string) {

@@ -199,10 +199,34 @@ export function useAdminSyncTenantRoles() {
 }
 
 export function useAdminSyncTenantFull() {
-  const qc = useQueryClient();
+  // Starts the sync, returns { jobId, status: 'RUNNING' } immediately.
+  // The actual sync runs in the background; UI polls useAdminSyncJob(jobId).
   return useMutation({
     mutationFn: (tenantId: string) => apiClient.adminSyncTenantFull(tenantId),
-    onSuccess: (_d, tenantId) => invalidateTenantQueries(qc, tenantId),
+  });
+}
+
+export function useAdminSyncJob(
+  tenantId: string | null,
+  jobId: string | null,
+  enabled: boolean = true,
+) {
+  const qc = useQueryClient();
+  return useQuery({
+    queryKey: ['admin-sync-job', tenantId, jobId],
+    queryFn: () => apiClient.adminGetSyncJob(tenantId!, jobId!),
+    enabled: !!tenantId && !!jobId && enabled,
+    // Poll every 3 seconds while the job is running
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      if (status === 'COMPLETED' || status === 'FAILED' || status === 'CANCELLED') {
+        // Stop polling — and refresh tenant data so counts update
+        if (tenantId) invalidateTenantQueries(qc, tenantId);
+        return false;
+      }
+      return 3000;
+    },
+    refetchIntervalInBackground: true,
   });
 }
 
