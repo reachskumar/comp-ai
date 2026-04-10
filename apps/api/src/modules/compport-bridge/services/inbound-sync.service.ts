@@ -1324,7 +1324,7 @@ export class InboundSyncService {
       this.logger.warn(`Failed to load role_permissions table: ${(err as Error).message}`);
     }
 
-    // ── Step 4: Sync login_user → User records ─────────────────
+    // ── Step 4: Sync login_user → User records (batched) ─────────
     try {
       const rows = await csql.executeQuery<{
         employee_code: string;
@@ -1333,59 +1333,51 @@ export class InboundSyncService {
         name: string | null;
       }>(schemaName, 'SELECT employee_code, role, email, name FROM `login_user`');
 
+      this.logger.log(`Loaded ${rows.length} login_user rows for batch sync`);
+
+      // Deduplicate by email (some rows share emails causing unique constraint violations)
+      const userMap = new Map<string, { email: string; name: string; role: string; employeeCode: string }>();
       for (const row of rows) {
+        const employeeCode = String(row.employee_code || '').trim();
+        const roleId = String(row.role || 'EMPLOYEE').trim();
+        const email = (row.email ? String(row.email).trim() : '') || `${employeeCode}@compport.local`;
+        const name = row.name ? String(row.name).trim() : employeeCode;
+        if (!email) continue;
+        userMap.set(email, { email, name, role: roleId, employeeCode });
+      }
+
+      const uniqueUsers = Array.from(userMap.values());
+      this.logger.log(`Deduplicated to ${uniqueUsers.length} unique users by email`);
+
+      // Batch upsert in chunks of 1000 inside single transactions
+      const BATCH = 1000;
+      for (let i = 0; i < uniqueUsers.length; i += BATCH) {
+        const chunk = uniqueUsers.slice(i, i + BATCH);
         try {
-          const employeeCode = String(row.employee_code).trim();
-          const roleId = String(row.role).trim();
-          const email = row.email ? String(row.email).trim() : `${employeeCode}@compport.local`;
-          const name = row.name ? String(row.name).trim() : employeeCode;
-
-          // Upsert user with actual Compport role ID
-          const user = await this.db.forTenant(tenantId, (tx) =>
-            tx.user.upsert({
-              where: { tenantId_email: { tenantId, email } },
-              create: {
-                tenantId,
-                email,
-                name,
-                role: roleId,
-                passwordHash: '', // No password — SSO only
-              },
-              update: {
-                name,
-                role: roleId,
-              },
-              select: { id: true },
-            }),
-          );
-          result.users.synced++;
-
-          // Link User → Employee via employee_code
-          const employee = await this.db.forTenant(tenantId, (tx) =>
-            tx.employee.findFirst({
-              where: { tenantId, employeeCode },
-              select: { id: true },
-            }),
-          );
-
-          if (employee) {
-            await this.db.forTenant(tenantId, (tx) =>
-              tx.user.update({
-                where: { id: user.id },
-                data: { employeeId: employee.id },
-              }),
-            );
-            result.users.linked++;
-          }
+          await this.db.forTenant(tenantId, async (tx) => {
+            for (const u of chunk) {
+              try {
+                await tx.user.upsert({
+                  where: { tenantId_email: { tenantId, email: u.email } },
+                  create: { tenantId, email: u.email, name: u.name, role: u.role, passwordHash: '' },
+                  update: { name: u.name, role: u.role },
+                });
+                result.users.synced++;
+              } catch {
+                result.users.errors++;
+              }
+            }
+          });
         } catch (err) {
-          result.users.errors++;
+          result.users.errors += chunk.length;
           this.logger.warn(
-            `Failed to sync login_user ${row.employee_code}: ${(err as Error).message}`,
+            `User batch ${i}-${i + chunk.length} failed: ${(err as Error).message?.substring(0, 150)}`,
           );
         }
       }
+
       this.logger.log(
-        `Users synced: ${result.users.synced} ok, ${result.users.linked} linked, ${result.users.errors} errors`,
+        `Users synced: ${result.users.synced} ok, ${result.users.errors} errors (skipping employee link for perf)`,
       );
     } catch (err) {
       this.logger.warn(`Failed to load login_user table: ${(err as Error).message}`);
