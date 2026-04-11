@@ -474,7 +474,10 @@ model Employee {
   user                  User?      // Back-reference: the auth user linked to this employee
 
   @@unique([tenantId, employeeCode])
-  @@unique([tenantId, email])
+  // NOTE: removed @@unique([tenantId, email]) — see migration
+  // 20260411140000_drop_employee_email_unique. Email is denormalized
+  // from User.email and the duplicates from real source systems were
+  // blocking 100% sync coverage.
   @@index([tenantId])
   @@index([tenantId, department])
   @@index([managerId])

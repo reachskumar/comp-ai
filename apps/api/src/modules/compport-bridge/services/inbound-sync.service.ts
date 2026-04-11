@@ -998,11 +998,37 @@ export class InboundSyncService {
             );
             synced += chunk.length;
           } catch (err) {
-            errors += chunk.length;
+            // Per-row recovery: when the batched transaction fails,
+            // retry each row in its own transaction so a single bad
+            // row never kills the other 499. This is the slow path
+            // (~1 tx per row instead of ~1 tx per 500), but only
+            // fires on the rare chunks that fail in the fast path.
             const message = err instanceof Error ? err.message : 'Unknown error';
-            this.logger.error(
-              `[tenant-sync] Batch upsert failed (chunk ${i}-${i + chunk.length}): ${message.substring(0, 200)}`,
+            this.logger.warn(
+              `[tenant-sync] Chunk ${i}-${i + chunk.length} failed (${message.substring(0, 100)}); falling back to per-row retry`,
             );
+            for (const { employeeCode, data } of chunk) {
+              try {
+                await this.db.forTenant(
+                  tenantId,
+                  async (tx) => {
+                    await tx.employee.upsert({
+                      where: { tenantId_employeeCode: { tenantId, employeeCode } },
+                      create: { tenantId, employeeCode, ...data } as never,
+                      update: data as never,
+                    });
+                  },
+                  { timeout: 30_000, maxWait: 10_000 },
+                );
+                synced++;
+              } catch (rowErr) {
+                errors++;
+                const rowMsg = rowErr instanceof Error ? rowErr.message : 'Unknown';
+                this.logger.error(
+                  `[tenant-sync] Row failed (employeeCode=${employeeCode}): ${rowMsg.substring(0, 200)}`,
+                );
+              }
+            }
           }
 
           // Live progress: update processedRecords on the SyncJob row so

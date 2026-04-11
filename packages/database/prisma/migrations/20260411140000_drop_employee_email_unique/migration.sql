@@ -1,0 +1,16 @@
+-- Drop the @@unique([tenantId, email]) constraint on employees.
+--
+-- Rationale: Employee.email is a denormalized snapshot of User.email
+-- (the auth user that owns this employee record). The real identity
+-- of an Employee is (tenantId, employeeCode) — that's the index we
+-- actually upsert against during sync. The email unique constraint
+-- adds no business value but causes mass sync failures when source
+-- systems share emails across employees (shared admin/intern accounts,
+-- placeholder emails for employees with no real address, etc.).
+--
+-- Without this constraint, we can hit 100% sync coverage. Tenant
+-- isolation is still enforced by the (tenantId, employeeCode) unique
+-- index plus FORCE RLS at the row level.
+--
+-- The index name follows Prisma's auto-generated convention.
+DROP INDEX IF EXISTS "employees_tenantId_email_key";
