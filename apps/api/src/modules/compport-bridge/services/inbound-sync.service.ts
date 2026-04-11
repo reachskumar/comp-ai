@@ -648,11 +648,11 @@ export class InboundSyncService {
     // Get total row count up front so the UI can show a real percentage.
     if (jobId) {
       try {
-        const [{ c }] = await sql.executeQuery<{ c: number }>(
+        const countRows = await sql.executeQuery<{ c: number | string }>(
           schemaName,
           `SELECT COUNT(*) AS c FROM \`${tableName}\``,
         );
-        const total = Number(c) || 0;
+        const total = Number(countRows[0]?.c ?? 0) || 0;
         await this.db
           .forTenant(tenantId, (tx) =>
             tx.syncJob.update({
