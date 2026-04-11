@@ -1412,7 +1412,7 @@ export class PlatformAdminService {
       const tables = rawTables.map((r) => {
         const name = String(r.TABLE_NAME);
         const exactCount = exactCounts.get(name);
-        const rowCount = exactCount ?? Number(r.TABLE_ROWS ?? 0) || 0;
+        const rowCount = exactCount ?? (Number(r.TABLE_ROWS ?? 0) || 0);
         const synced = syncedTableMap[name];
         const coverage =
           synced && rowCount > 0 ? Math.round((synced.count / rowCount) * 100) : null;
