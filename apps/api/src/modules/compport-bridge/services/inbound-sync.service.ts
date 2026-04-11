@@ -1148,70 +1148,114 @@ export class InboundSyncService {
       if (e.employeeCode) codeToId.set(e.employeeCode, e.id);
     }
 
-    // Step 3: dedupe by user email (the User table is already deduped
-    // by email, so multiple login_user rows can map to the same User).
-    // First pair wins — that's the same logic the user sync uses
-    // (Map.set lets later writes overwrite, so behaviour is consistent).
+    // Step 3: dedupe BOTH by email AND by employeeId.
+    //
+    // - Email dedupe: the User table has @@unique([tenantId, email]), so
+    //   multiple login_user rows can collapse to one User row. Pick first.
+    //
+    // - employeeId dedupe: User.employeeId is @unique. For a given Employee
+    //   only ONE User can ever be linked. If two distinct user emails map
+    //   to the same Employee (e.g. shared admin accounts in BFL), only the
+    //   first link succeeds — the second hits the unique constraint and
+    //   aborts the surrounding transaction.
+    //
+    // Doing both deduplications up front means the actual UPDATE loop has
+    // exactly one (email, employeeId) pair per Employee, so there's nothing
+    // left for Postgres to reject.
     const emailToEmployeeId = new Map<string, string>();
+    const claimedEmployeeIds = new Set<string>();
     let notFound = 0;
+    let multiUserDropped = 0;
     for (const { employeeCode, userEmail } of pairs) {
       const employeeId = codeToId.get(employeeCode);
       if (!employeeId) {
         notFound++;
         continue;
       }
-      // Only set if not already mapped — preserves first-pair-wins semantics
-      if (!emailToEmployeeId.has(userEmail)) {
-        emailToEmployeeId.set(userEmail, employeeId);
+      if (emailToEmployeeId.has(userEmail)) continue; // already mapped this email
+      if (claimedEmployeeIds.has(employeeId)) {
+        // Two distinct emails want this Employee — first wins, drop the rest
+        multiUserDropped++;
+        continue;
       }
+      emailToEmployeeId.set(userEmail, employeeId);
+      claimedEmployeeIds.add(employeeId);
     }
 
     this.logger.log(
       `[link] Loaded ${codeToId.size} employees, ${pairs.length} login_user pairs, ` +
-        `${emailToEmployeeId.size} unique user emails to link`,
+        `${emailToEmployeeId.size} unique pairs to link ` +
+        `(notFound=${notFound}, multiUserDropped=${multiUserDropped})`,
     );
 
-    // Step 4: apply updates in chunks. We use updateMany with OR'd
-    // (email, employeeId) tuples — but Prisma can't express that
-    // efficiently, so we just iterate per email but inside a single
-    // transaction per chunk for throughput.
+    // Step 4: bulk UPDATE in chunks via raw SQL.
+    //
+    // Why raw SQL instead of Prisma updateMany: we already deduped to one
+    // (email, employeeId) per Employee in step 3, so the unique index
+    // can no longer trip. The remaining concern is throughput — Prisma
+    // updateMany executes one statement per row, slow for 123K rows.
+    // A single raw UPDATE … FROM (VALUES …) handles a whole chunk in
+    // one round-trip.
+    //
+    // We chunk to keep parameter counts reasonable (Postgres caps at
+    // ~32K parameters per statement; 1000 rows × 2 params = 2000).
     let linked = 0;
     let conflicts = 0;
     const updates = Array.from(emailToEmployeeId.entries());
-    const BATCH = 500;
+    const CHUNK = 1000;
 
-    for (let i = 0; i < updates.length; i += BATCH) {
-      const chunk = updates.slice(i, i + BATCH);
+    for (let i = 0; i < updates.length; i += CHUNK) {
+      const chunk = updates.slice(i, i + CHUNK);
+      // Build VALUES list: ($1, $2), ($3, $4), …
+      const valuesSql = chunk.map((_, idx) => `($${idx * 2 + 1}, $${idx * 2 + 2})`).join(', ');
+      const params: string[] = [];
+      for (const [email, employeeId] of chunk) {
+        params.push(email, employeeId);
+      }
+      // tenantId param goes at the end
+      params.push(tenantId);
+      const tenantParamIdx = params.length;
+
       try {
         await this.db.forTenant(
           tenantId,
           async (tx) => {
-            for (const [email, employeeId] of chunk) {
-              try {
-                const result = await tx.user.updateMany({
+            const result = await tx.$executeRawUnsafe<number>(
+              `UPDATE "users" u
+                  SET "employeeId" = v.employee_id
+                 FROM (VALUES ${valuesSql}) AS v(email, employee_id)
+                WHERE u."email" = v.email
+                  AND u."tenantId" = $${tenantParamIdx}
+                  AND u."employeeId" IS NULL`,
+              ...params,
+            );
+            // $executeRawUnsafe returns number of rows affected
+            linked += Number(result) || 0;
+          },
+          { timeout: 60_000, maxWait: 10_000 },
+        );
+      } catch (e) {
+        conflicts++;
+        const msg = (e as Error).message?.substring(0, 150);
+        this.logger.warn(`[link] Chunk ${i}-${i + chunk.length} failed: ${msg}`);
+        // Per-row recovery for chunks that fail (e.g. one row hits a
+        // last-minute concurrent insert that violates the unique index)
+        for (const [email, employeeId] of chunk) {
+          try {
+            const r = await this.db.forTenant(
+              tenantId,
+              (tx) =>
+                tx.user.updateMany({
                   where: { tenantId, email, employeeId: null },
                   data: { employeeId },
-                });
-                if (result.count > 0) linked += result.count;
-              } catch (e) {
-                // User.employeeId is @unique. If two users share the
-                // same employeeCode (e.g. shared test accounts) the
-                // second link fails — count and skip.
-                conflicts++;
-                if (conflicts <= 5) {
-                  this.logger.warn(
-                    `[link] Conflict linking email=${email} → employeeId=${employeeId}: ${(e as Error).message?.substring(0, 100)}`,
-                  );
-                }
-              }
-            }
-          },
-          { timeout: UPSERT_TX_TIMEOUT_MS, maxWait: 30_000 },
-        );
-      } catch (err) {
-        this.logger.warn(
-          `[link] Batch ${i}-${i + chunk.length} failed: ${(err as Error).message?.substring(0, 200)}`,
-        );
+                }),
+              { timeout: 5_000, maxWait: 2_000 },
+            );
+            if (r.count > 0) linked += r.count;
+          } catch {
+            /* per-row failure already counted in chunk-level conflicts */
+          }
+        }
       }
     }
 
