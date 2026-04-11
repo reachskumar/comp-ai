@@ -1070,7 +1070,13 @@ export class PlatformAdminService {
       await this.updateJobPhase(tenantId, jobId, 'employees');
 
       // Step 2: Sync employees — auto-detect table (employee_master → login_user → employees)
-      let employeeResult: { synced: number; skipped: number; errors: number; durationMs: number };
+      let employeeResult: {
+        synced: number;
+        skipped: number;
+        errors: number;
+        durationMs: number;
+        syncedCodes: Set<string>;
+      };
       const candidateTables = ['employee_master', 'login_user', 'employees'];
       let syncError: Error | null = null;
 
@@ -1098,8 +1104,35 @@ export class PlatformAdminService {
       }
 
       if (syncError || !employeeResult!) {
-        employeeResult = { synced: 0, skipped: 0, errors: 1, durationMs: 0 };
+        employeeResult = {
+          synced: 0,
+          skipped: 0,
+          errors: 1,
+          durationMs: 0,
+          syncedCodes: new Set(),
+        };
         this.logger.error(`[sync-full] All employee table candidates failed for ${tenant.name}`);
+      }
+
+      // Bug B: prune ghost rows from previous broken syncs. Only run when
+      // the sync wrote a non-trivial number of rows — otherwise we'd risk
+      // wiping the tenant after a partial failure.
+      let pruneResult = { deleted: 0 };
+      if (employeeResult.syncedCodes.size > 100) {
+        try {
+          pruneResult = await this.inboundSyncService.pruneStaleEmployees(
+            tenantId,
+            employeeResult.syncedCodes,
+          );
+        } catch (err) {
+          this.logger.warn(
+            `[sync-full] Stale-row prune failed: ${(err as Error).message?.substring(0, 200)}`,
+          );
+        }
+      } else {
+        this.logger.warn(
+          `[sync-full] Skipping stale-row prune (only ${employeeResult.syncedCodes.size} rows synced)`,
+        );
       }
 
       // BLOCKER 4: link Users → Employees now that both are synced.
@@ -1126,7 +1159,7 @@ export class PlatformAdminService {
         `[sync-full] Complete for ${tenant.name}: roles=${roleResult.roles.synced}, ` +
           `pages=${roleResult.pages.synced}, permissions=${roleResult.permissions.synced}, ` +
           `users=${roleResult.users.synced}, employees=${employeeResult.synced}, ` +
-          `linked=${linkResult.linked}/${linkResult.candidates}`,
+          `pruned=${pruneResult.deleted}, linked=${linkResult.linked}/${linkResult.candidates}`,
       );
 
       // Mark job as completed with final counts in metadata
@@ -1157,6 +1190,7 @@ export class PlatformAdminService {
               users: roleResult.users.synced,
               employees: employeeResult.synced,
               employeeErrors: employeeResult.errors,
+              staleEmployeesPruned: pruneResult.deleted,
               usersLinkedToEmployees: linkResult.linked,
               usersUnlinked: linkResult.notFound,
               userLinkCandidates: linkResult.candidates,
@@ -1437,20 +1471,49 @@ export class PlatformAdminService {
         [tenant.compportSchema],
       );
 
-      // 2) For the tables we actually sync, get an EXACT count (information_schema
-      //    estimates are often wrong for InnoDB). We cap the exact counts to the
-      //    tables that matter for sync comparisons.
-      const exactCountCandidates = [
+      // 2) For the tables we actually sync, get an EXACT count
+      //    (INFORMATION_SCHEMA.TABLE_ROWS is just an estimate for InnoDB).
+      //    Real Compport schemas use these names — we tried alternates
+      //    in the past but they returned 0 for BFL because the wrong name
+      //    was hard-coded. Now we ALSO read from the connector config so
+      //    the audit always matches what the sync actually used.
+      const exactCountCandidates = new Set<string>([
         'employee_master',
         'login_user',
         'employees',
+        'roles',
+        'pages',
+        'role_permissions',
+        // legacy/alt names — kept for tenants that did use them
         'tbl_role',
         'role',
-        'manage_role',
         'tbl_page',
         'page',
-        'role_permissions',
-      ];
+      ]);
+
+      // Pull whatever the sync actually wrote so the audit aligns with reality
+      let syncedEmployeeTable: string | null = null;
+      try {
+        const cfgConnector = await this.db.forTenant(tenantId, (tx) =>
+          tx.integrationConnector.findFirst({
+            where: { tenantId, connectorType: 'COMPPORT_CLOUDSQL' },
+            select: { config: true },
+          }),
+        );
+        const idColumns = (cfgConnector?.config as Record<string, unknown> | null)?.[
+          'idColumns'
+        ] as Record<string, unknown> | undefined;
+        if (idColumns) {
+          for (const tableName of Object.keys(idColumns)) {
+            exactCountCandidates.add(tableName);
+            // Pick the first employee-data table the sync actually used
+            if (!syncedEmployeeTable) syncedEmployeeTable = tableName;
+          }
+        }
+      } catch {
+        /* non-fatal — fall back to hard-coded list */
+      }
+
       const exactCounts = new Map<string, number>();
       for (const tbl of exactCountCandidates) {
         if (!rawTables.some((r) => String(r.TABLE_NAME) === tbl)) continue;
@@ -1482,11 +1545,18 @@ export class PlatformAdminService {
         ]),
       );
 
-      // Map each table to its sync status
+      // Map each table to its sync status. login_user is special: it
+      // can be the employee source (BFL) AND it always supplies User
+      // records, so it counts toward both targets when the sync used it.
       const syncedTableMap: Record<string, { target: string; count: number }> = {
         employee_master: { target: 'Employee', count: syncedEmployees },
-        login_user: { target: 'User', count: syncedUsers },
         employees: { target: 'Employee', count: syncedEmployees },
+        login_user:
+          syncedEmployeeTable === 'login_user'
+            ? { target: 'Employee + User', count: syncedEmployees }
+            : { target: 'User', count: syncedUsers },
+        roles: { target: 'TenantRole', count: syncedRoles },
+        pages: { target: 'TenantPage', count: syncedPages },
         tbl_role: { target: 'TenantRole', count: syncedRoles },
         role: { target: 'TenantRole', count: syncedRoles },
         tbl_page: { target: 'TenantPage', count: syncedPages },
@@ -1513,10 +1583,26 @@ export class PlatformAdminService {
 
       const totalRowsInSchema = tables.reduce((sum, t) => sum + t.rowCount, 0);
 
-      const emp = exactCounts.get('employee_master') ?? exactCounts.get('employees') ?? 0;
+      // Source-of-truth counts. For employees, prefer the table the sync
+      // actually used (read from connector config). Falls back to scanning
+      // candidates so a tenant that hasn't synced yet still gets a number.
+      const emp =
+        (syncedEmployeeTable ? exactCounts.get(syncedEmployeeTable) : undefined) ??
+        exactCounts.get('employee_master') ??
+        exactCounts.get('employees') ??
+        exactCounts.get('login_user') ??
+        0;
       const lu = exactCounts.get('login_user') ?? 0;
-      const tr = exactCounts.get('tbl_role') ?? exactCounts.get('role') ?? 0;
-      const tp = exactCounts.get('tbl_page') ?? exactCounts.get('page') ?? 0;
+      const tr =
+        exactCounts.get('roles') ??
+        exactCounts.get('tbl_role') ??
+        exactCounts.get('role') ??
+        0;
+      const tp =
+        exactCounts.get('pages') ??
+        exactCounts.get('tbl_page') ??
+        exactCounts.get('page') ??
+        0;
       const rp = exactCounts.get('role_permissions') ?? 0;
 
       const pct = (a: number, b: number) => (b > 0 ? Math.round((a / b) * 100) : 0);

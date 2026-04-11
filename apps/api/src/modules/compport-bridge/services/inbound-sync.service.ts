@@ -805,12 +805,22 @@ export class InboundSyncService {
     jobId?: string,
     /** Optional connectorId — if provided, detected id column is persisted/read from config. */
     connectorId?: string,
-  ): Promise<{ synced: number; skipped: number; errors: number; durationMs: number }> {
+  ): Promise<{
+    synced: number;
+    skipped: number;
+    errors: number;
+    durationMs: number;
+    /** All employeeCodes that were successfully written this run.
+     *  runFullSyncBackground uses this to prune stale rows from previous
+     *  broken syncs. */
+    syncedCodes: Set<string>;
+  }> {
     const sql = cloudSqlOverride ?? this.cloudSql;
     const start = Date.now();
     let synced = 0;
     let skipped = 0;
     let errors = 0;
+    const syncedCodes = new Set<string>();
 
     const lookups = await this.loadLookupMaps(schemaName, sql);
     this.logger.log(
@@ -997,6 +1007,7 @@ export class InboundSyncService {
               { timeout: UPSERT_TX_TIMEOUT_MS, maxWait: 30_000 },
             );
             synced += chunk.length;
+            for (const { employeeCode } of chunk) syncedCodes.add(employeeCode);
           } catch (err) {
             // Per-row recovery: when the batched transaction fails,
             // retry each row in its own transaction so a single bad
@@ -1021,6 +1032,7 @@ export class InboundSyncService {
                   { timeout: 30_000, maxWait: 10_000 },
                 );
                 synced++;
+                syncedCodes.add(employeeCode);
               } catch (rowErr) {
                 errors++;
                 const rowMsg = rowErr instanceof Error ? rowErr.message : 'Unknown';
@@ -1073,7 +1085,67 @@ export class InboundSyncService {
     // Resolve manager relationships
     await this.resolveManagerRelationships(tenantId, schemaName, tableName, sql);
 
-    return { synced, skipped, errors, durationMs: Date.now() - start };
+    return { synced, skipped, errors, durationMs: Date.now() - start, syncedCodes };
+  }
+
+  /**
+   * Delete Employee rows whose employeeCode is NOT in the supplied set.
+   * Used by runFullSyncBackground after a successful sync to clean up
+   * ghost rows left over from previous broken syncs (e.g. the 161 rows
+   * BFL accumulated from the pre-fix collapse era).
+   *
+   * Returns the number of rows deleted. Operates entirely within
+   * forTenant() so RLS keeps the operation tenant-scoped.
+   */
+  async pruneStaleEmployees(
+    tenantId: string,
+    syncedCodes: Set<string>,
+  ): Promise<{ deleted: number }> {
+    if (syncedCodes.size === 0) {
+      this.logger.warn(`[prune] Empty syncedCodes set — refusing to delete (would wipe tenant)`);
+      return { deleted: 0 };
+    }
+
+    // Find candidates first so we can log how many will go
+    const existing = await this.db.forTenant(tenantId, (tx) =>
+      tx.employee.findMany({
+        where: { tenantId },
+        select: { id: true, employeeCode: true },
+      }),
+    );
+
+    const stale = existing.filter((e) => !syncedCodes.has(e.employeeCode));
+    if (stale.length === 0) {
+      this.logger.log(`[prune] No stale employees for tenant ${tenantId}`);
+      return { deleted: 0 };
+    }
+
+    this.logger.log(
+      `[prune] Deleting ${stale.length} stale Employee rows (existing=${existing.length}, synced=${syncedCodes.size})`,
+    );
+
+    // Delete in chunks of 1000 ids to keep individual statements small
+    const ids = stale.map((e) => e.id);
+    const CHUNK = 1000;
+    let deleted = 0;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = ids.slice(i, i + CHUNK);
+      try {
+        const result = await this.db.forTenant(
+          tenantId,
+          (tx) => tx.employee.deleteMany({ where: { tenantId, id: { in: chunk } } }),
+          { timeout: 60_000, maxWait: 10_000 },
+        );
+        deleted += result.count;
+      } catch (err) {
+        this.logger.warn(
+          `[prune] Chunk ${i}-${i + chunk.length} failed: ${(err as Error).message?.substring(0, 200)}`,
+        );
+      }
+    }
+
+    this.logger.log(`[prune] Deleted ${deleted}/${stale.length} stale Employee rows`);
+    return { deleted };
   }
 
   /**
