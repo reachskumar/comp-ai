@@ -46,6 +46,7 @@ import {
   useAdminSyncTenantFull,
   useAdminSyncJob,
   useAdminTestTenantConnection,
+  useAdminDataAudit,
 } from '@/hooks/use-admin';
 import Link from 'next/link';
 
@@ -513,6 +514,11 @@ export default function AdminCustomerDetailPage() {
             syncFull={syncFull}
             toast={toast}
           />
+
+          <Separator />
+
+          {/* Data Audit — what's in Compport SQL vs what made it to compportiq */}
+          <DataAuditSection tenantId={id} hasSchema={!!tenant.compportSchema} />
         </CardContent>
       </Card>
 
@@ -1025,6 +1031,153 @@ function FullSyncSection({
           looks inconsistent or after schema changes.
         </p>
       </div>
+    </div>
+  );
+}
+
+// ─── Data Audit Section ──────────────────────────────────
+// Shows what's actually in the tenant's Compport schema vs what's been
+// synced into compportiq. Helps diagnose gaps like "why only 161 employees?".
+
+function DataAuditSection({ tenantId, hasSchema }: { tenantId: string; hasSchema: boolean }) {
+  const [open, setOpen] = useState(false);
+  const { data, isLoading, refetch, isFetching } = useAdminDataAudit(tenantId, open && hasSchema);
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <div>
+          <Label className="text-sm font-medium">Data Audit</Label>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Inspect every table in the Compport schema and see how much has been
+            synced into compportiq. Use this to verify coverage or spot gaps.
+          </p>
+        </div>
+        <Button
+          onClick={() => {
+            setOpen((v) => !v);
+            if (!open) void refetch();
+          }}
+          disabled={!hasSchema}
+          variant="outline"
+          size="sm"
+        >
+          {isFetching && open ? (
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          ) : (
+            <FileText className="mr-2 h-4 w-4" />
+          )}
+          {open ? 'Hide Audit' : 'Run Data Audit'}
+        </Button>
+      </div>
+
+      {open && isLoading && (
+        <div className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
+          Loading Compport schema…
+        </div>
+      )}
+
+      {open && data && !isLoading && (
+        <div className="space-y-4 rounded-md border bg-muted/20 p-4">
+          {/* Coverage summary cards */}
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Coverage (Compport Cloud SQL → compportiq)
+            </p>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+              {(
+                [
+                  ['Employees', data.coverage.employees],
+                  ['Users', data.coverage.users],
+                  ['Roles', data.coverage.roles],
+                  ['Pages', data.coverage.pages],
+                  ['Permissions', data.coverage.permissions],
+                ] as [string, { source: number; synced: number; percent: number }][]
+              ).map(([label, c]) => {
+                const healthy = c.percent >= 95;
+                const warning = c.percent >= 50 && c.percent < 95;
+                const color = healthy
+                  ? 'border-green-500/50 bg-green-50 dark:bg-green-950/20'
+                  : warning
+                    ? 'border-yellow-500/50 bg-yellow-50 dark:bg-yellow-950/20'
+                    : 'border-destructive/50 bg-destructive/10';
+                return (
+                  <div
+                    key={label}
+                    className={`rounded-lg border p-3 text-center ${color}`}
+                  >
+                    <p className="text-xs text-muted-foreground">{label}</p>
+                    <p className="mt-1 text-base font-bold">
+                      {c.synced.toLocaleString()} / {c.source.toLocaleString()}
+                    </p>
+                    <p className="text-xs font-semibold">{c.percent}%</p>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* All tables in the schema */}
+          <div>
+            <div className="mb-2 flex items-center justify-between">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                All tables in {data.compportSchema} ({data.totalTables})
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Total rows: {data.totalRowsInSchema.toLocaleString()}
+              </p>
+            </div>
+            <div className="max-h-96 overflow-auto rounded border bg-background">
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-muted">
+                  <tr className="text-left">
+                    <th className="px-3 py-2 font-medium">Table</th>
+                    <th className="px-3 py-2 text-right font-medium">Rows in Compport</th>
+                    <th className="px-3 py-2 font-medium">Synced</th>
+                    <th className="px-3 py-2 text-right font-medium">Coverage</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.tables.map((t) => (
+                    <tr key={t.name} className="border-t">
+                      <td className="px-3 py-1.5 font-mono text-[11px]">{t.name}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">
+                        {t.rowCount.toLocaleString()}
+                      </td>
+                      <td className="px-3 py-1.5">
+                        {t.isSynced ? (
+                          <span className="rounded bg-green-100 px-1.5 py-0.5 text-[10px] font-medium text-green-800 dark:bg-green-950 dark:text-green-300">
+                            {t.syncedTo}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-1.5 text-right">
+                        {t.coveragePercent != null ? (
+                          <span
+                            className={
+                              t.coveragePercent >= 95
+                                ? 'font-semibold text-green-700 dark:text-green-400'
+                                : t.coveragePercent >= 50
+                                  ? 'font-semibold text-yellow-700 dark:text-yellow-400'
+                                  : 'font-semibold text-destructive'
+                            }
+                          >
+                            {t.coveragePercent}% ({(t.syncedCount ?? 0).toLocaleString()})
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

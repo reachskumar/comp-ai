@@ -503,6 +503,31 @@ class ApiClient {
     }>(`/api/v1/platform-admin/tenants/${tenantId}/sync-jobs/${jobId}`);
   }
 
+  async adminAuditTenantData(id: string) {
+    return this.fetch<{
+      tenantId: string;
+      tenantName: string;
+      compportSchema: string | null;
+      totalTables: number;
+      totalRowsInSchema: number;
+      tables: Array<{
+        name: string;
+        rowCount: number;
+        isSynced: boolean;
+        syncedTo: string | null;
+        syncedCount: number | null;
+        coveragePercent: number | null;
+      }>;
+      coverage: {
+        employees: { source: number; synced: number; percent: number };
+        users: { source: number; synced: number; percent: number };
+        roles: { source: number; synced: number; percent: number };
+        pages: { source: number; synced: number; percent: number };
+        permissions: { source: number; synced: number; percent: number };
+      };
+    }>(`/api/v1/platform-admin/tenants/${id}/data-audit`);
+  }
+
   async adminTestTenantConnection(id: string) {
     return this.fetch<{
       ok: boolean;

@@ -1283,6 +1283,179 @@ export class PlatformAdminService {
     }
   }
 
+  // ─── Data Audit ──────────────────────────────────────────
+
+  /**
+   * Audit what's actually in the tenant's Compport Cloud SQL schema and
+   * how much has been synced into compportiq. Returns row counts for every
+   * table in the schema, plus a "coverage" comparison for the tables we
+   * currently sync (employees, roles, pages, permissions, users).
+   *
+   * This is the tool the user needs to know "am I missing anything?"
+   */
+  async auditTenantData(tenantId: string): Promise<{
+    tenantId: string;
+    tenantName: string;
+    compportSchema: string | null;
+    totalTables: number;
+    totalRowsInSchema: number;
+    tables: Array<{
+      name: string;
+      rowCount: number;
+      isSynced: boolean;
+      syncedTo: string | null;
+      syncedCount: number | null;
+      coveragePercent: number | null;
+    }>;
+    coverage: {
+      employees: { source: number; synced: number; percent: number };
+      users: { source: number; synced: number; percent: number };
+      roles: { source: number; synced: number; percent: number };
+      pages: { source: number; synced: number; percent: number };
+      permissions: { source: number; synced: number; percent: number };
+    };
+  }> {
+    const tenant = await this.getTenant(tenantId);
+    if (!tenant.compportSchema) {
+      throw new BadRequestException(
+        `Tenant "${tenant.name}" has no Compport schema configured. Cannot audit.`,
+      );
+    }
+
+    // Connect via an isolated instance so we don't interfere with other calls
+    const isolatedSql = CompportCloudSqlService.createIsolated();
+    const mysqlConfig = this.getMySqlConfig();
+
+    try {
+      await isolatedSql.connect({
+        host: mysqlConfig.host!,
+        port: mysqlConfig.port ?? 3306,
+        user: mysqlConfig.user!,
+        password: mysqlConfig.password!,
+        database: tenant.compportSchema,
+        sslCa: mysqlConfig.sslCa,
+        sslCert: mysqlConfig.sslCert,
+        sslKey: mysqlConfig.sslKey,
+      });
+
+      // 1) Discover all tables + their row counts from INFORMATION_SCHEMA.
+      //    table_rows is an estimate but fast; good enough for an audit view.
+      const rawTables = await isolatedSql.executeQuery<{
+        TABLE_NAME: string;
+        TABLE_ROWS: number | string | null;
+      }>(
+        tenant.compportSchema,
+        `SELECT TABLE_NAME, TABLE_ROWS
+         FROM INFORMATION_SCHEMA.TABLES
+         WHERE TABLE_SCHEMA = ?
+         ORDER BY TABLE_ROWS DESC`,
+        [tenant.compportSchema],
+      );
+
+      // 2) For the tables we actually sync, get an EXACT count (information_schema
+      //    estimates are often wrong for InnoDB). We cap the exact counts to the
+      //    tables that matter for sync comparisons.
+      const exactCountCandidates = [
+        'employee_master',
+        'login_user',
+        'employees',
+        'tbl_role',
+        'role',
+        'manage_role',
+        'tbl_page',
+        'page',
+        'role_permissions',
+      ];
+      const exactCounts = new Map<string, number>();
+      for (const tbl of exactCountCandidates) {
+        if (!rawTables.some((r) => String(r.TABLE_NAME) === tbl)) continue;
+        try {
+          const rows = await isolatedSql.executeQuery<{ c: number | string }>(
+            tenant.compportSchema,
+            `SELECT COUNT(*) AS c FROM \`${tbl}\``,
+          );
+          exactCounts.set(tbl, Number(rows[0]?.c ?? 0) || 0);
+        } catch {
+          /* ignore */
+        }
+      }
+
+      // 3) Fetch compportiq-side counts so we can show coverage %
+      const [
+        syncedEmployees,
+        syncedUsers,
+        syncedRoles,
+        syncedPages,
+        syncedPermissions,
+      ] = await this.db.forTenant(tenantId, (tx) =>
+        Promise.all([
+          tx.employee.count({ where: { tenantId } }),
+          tx.user.count({ where: { tenantId } }),
+          tx.tenantRole.count({ where: { tenantId } }),
+          tx.tenantPage.count({ where: { tenantId } }),
+          tx.tenantRolePermission.count({ where: { tenantId } }),
+        ]),
+      );
+
+      // Map each table to its sync status
+      const syncedTableMap: Record<string, { target: string; count: number }> = {
+        employee_master: { target: 'Employee', count: syncedEmployees },
+        login_user: { target: 'User', count: syncedUsers },
+        employees: { target: 'Employee', count: syncedEmployees },
+        tbl_role: { target: 'TenantRole', count: syncedRoles },
+        role: { target: 'TenantRole', count: syncedRoles },
+        tbl_page: { target: 'TenantPage', count: syncedPages },
+        page: { target: 'TenantPage', count: syncedPages },
+        role_permissions: { target: 'TenantRolePermission', count: syncedPermissions },
+      };
+
+      const tables = rawTables.map((r) => {
+        const name = String(r.TABLE_NAME);
+        const exactCount = exactCounts.get(name);
+        const rowCount = exactCount ?? Number(r.TABLE_ROWS ?? 0) || 0;
+        const synced = syncedTableMap[name];
+        const coverage =
+          synced && rowCount > 0 ? Math.round((synced.count / rowCount) * 100) : null;
+        return {
+          name,
+          rowCount,
+          isSynced: !!synced,
+          syncedTo: synced?.target ?? null,
+          syncedCount: synced?.count ?? null,
+          coveragePercent: coverage,
+        };
+      });
+
+      const totalRowsInSchema = tables.reduce((sum, t) => sum + t.rowCount, 0);
+
+      const emp = exactCounts.get('employee_master') ?? exactCounts.get('employees') ?? 0;
+      const lu = exactCounts.get('login_user') ?? 0;
+      const tr = exactCounts.get('tbl_role') ?? exactCounts.get('role') ?? 0;
+      const tp = exactCounts.get('tbl_page') ?? exactCounts.get('page') ?? 0;
+      const rp = exactCounts.get('role_permissions') ?? 0;
+
+      const pct = (a: number, b: number) => (b > 0 ? Math.round((a / b) * 100) : 0);
+
+      return {
+        tenantId,
+        tenantName: tenant.name,
+        compportSchema: tenant.compportSchema,
+        totalTables: tables.length,
+        totalRowsInSchema,
+        tables,
+        coverage: {
+          employees: { source: emp, synced: syncedEmployees, percent: pct(syncedEmployees, emp) },
+          users: { source: lu, synced: syncedUsers, percent: pct(syncedUsers, lu) },
+          roles: { source: tr, synced: syncedRoles, percent: pct(syncedRoles, tr) },
+          pages: { source: tp, synced: syncedPages, percent: pct(syncedPages, tp) },
+          permissions: { source: rp, synced: syncedPermissions, percent: pct(syncedPermissions, rp) },
+        },
+      };
+    } finally {
+      await isolatedSql.disconnect().catch(() => {});
+    }
+  }
+
   // ─── Admin Impersonation ─────────────────────────────────
 
   async impersonate(tenantId: string, targetUserId: string, adminUserId: string) {

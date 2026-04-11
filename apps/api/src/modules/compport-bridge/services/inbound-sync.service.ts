@@ -645,25 +645,29 @@ export class InboundSyncService {
       `[tenant-sync] Loaded lookup maps: functions=${lookups.functions.size}, levels=${lookups.levels.size}`,
     );
 
-    // Get total row count up front so the UI can show a real percentage.
+    // ── Identifier strategy ─────────────────────────────────────
+    // Auto-detect the best unique-identifier column for this tenant's
+    // employee table. Previously we hard-coded the order
+    // (employee_code > employee_id > id) but that collapses rows when a
+    // tenant's employee_code isn't actually unique. Now we pick whichever
+    // column has the MOST distinct values.
+    const idStrategy = await this.detectEmployeeIdColumn(sql, schemaName, tableName);
+    this.logger.log(
+      `[tenant-sync] id column for "${tableName}" = ${idStrategy.column} ` +
+        `(distinct=${idStrategy.distinct}, total=${idStrategy.total})`,
+    );
+
+    // Write totalRecords (number of unique employees, not raw rows) so the
+    // progress bar shows a meaningful percentage.
     if (jobId) {
-      try {
-        const countRows = await sql.executeQuery<{ c: number | string }>(
-          schemaName,
-          `SELECT COUNT(*) AS c FROM \`${tableName}\``,
-        );
-        const total = Number(countRows[0]?.c ?? 0) || 0;
-        await this.db
-          .forTenant(tenantId, (tx) =>
-            tx.syncJob.update({
-              where: { id: jobId },
-              data: { totalRecords: total, entityType: 'full_sync' },
-            }),
-          )
-          .catch(() => {});
-      } catch {
-        /* non-fatal — progress will still advance, just without a denominator */
-      }
+      await this.db
+        .forTenant(tenantId, (tx) =>
+          tx.syncJob.update({
+            where: { id: jobId },
+            data: { totalRecords: idStrategy.distinct, entityType: 'full_sync' },
+          }),
+        )
+        .catch(() => {});
     }
 
     let offset = 0;
@@ -681,8 +685,9 @@ export class InboundSyncService {
         break;
       }
 
-      // Parse and map all rows in this batch
+      // Parse and map all rows in this batch using the detected id column
       const batch: { employeeCode: string; data: Record<string, unknown> }[] = [];
+      const seenInBatch = new Set<string>();
       for (const row of rows) {
         try {
           const parsed = CloudSqlEmployeeRowSchema.safeParse(row);
@@ -692,14 +697,31 @@ export class InboundSyncService {
           }
 
           const validRow = parsed.data;
-          const employeeId = String(
-            validRow.employee_code || validRow.employee_id || validRow.id || 'unknown',
-          );
-          if (!employeeId || employeeId === 'unknown' || employeeId === '') {
+          // Use the auto-detected id column first, then fall back to the
+          // legacy chain so we never drop a row with a valid identifier.
+          const raw =
+            (row[idStrategy.column] as unknown) ??
+            validRow.employee_code ??
+            validRow.employee_id ??
+            validRow.id;
+          const employeeId = raw == null ? '' : String(raw).trim();
+          if (!employeeId) {
             skipped++;
             continue;
           }
 
+          // Deduplicate within the batch itself — later rows for the same
+          // employee_code (e.g. historical snapshots) overwrite earlier ones,
+          // which is what we want: latest wins. We use a Map for that.
+          if (seenInBatch.has(employeeId)) {
+            // Replace the existing entry with the newer data
+            const idx = batch.findIndex((b) => b.employeeCode === employeeId);
+            if (idx >= 0) {
+              batch[idx] = { employeeCode: employeeId, data: this.defaultMapping(validRow, lookups) };
+            }
+            continue;
+          }
+          seenInBatch.add(employeeId);
           batch.push({ employeeCode: employeeId, data: this.defaultMapping(validRow, lookups) });
         } catch (err) {
           errors++;
@@ -984,6 +1006,88 @@ export class InboundSyncService {
         terminationReason: toStr(row['termination_reason']),
       },
     };
+  }
+
+  /**
+   * Auto-detect the best unique-identifier column for a Compport employee table.
+   *
+   * Compport schemas vary per tenant: some have a unique `employee_code` string,
+   * others have only `id` or `employee_id`, and in some cases `employee_code`
+   * exists but isn't unique (e.g. department codes). Picking the wrong column
+   * collapses 121,753 rows down to ~161 unique values, which is the bug we saw
+   * on BFL.
+   *
+   * Strategy: probe a handful of candidate columns, run COUNT(DISTINCT) on each,
+   * and return the column with the highest distinct count (and that count as
+   * the total for progress reporting).
+   */
+  private async detectEmployeeIdColumn(
+    sql: CompportCloudSqlService,
+    schemaName: string,
+    tableName: string,
+  ): Promise<{ column: string; distinct: number; total: number }> {
+    // Total row count (single query)
+    let total = 0;
+    try {
+      const totalRows = await sql.executeQuery<{ c: number | string }>(
+        schemaName,
+        `SELECT COUNT(*) AS c FROM \`${tableName}\``,
+      );
+      total = Number(totalRows[0]?.c ?? 0) || 0;
+    } catch (err) {
+      this.logger.warn(
+        `[tenant-sync] Failed to count rows in ${tableName}: ${(err as Error).message?.substring(0, 120)}`,
+      );
+    }
+
+    // Get the actual column list so we only probe columns that exist
+    let existingColumns: string[] = [];
+    try {
+      const cols = await sql.executeQuery<{ COLUMN_NAME: string }>(
+        schemaName,
+        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`,
+        [schemaName, tableName],
+      );
+      existingColumns = cols.map((c) => String(c.COLUMN_NAME));
+    } catch {
+      /* fall through to candidate probing */
+    }
+
+    // Candidate columns in rough order of preference — we want the most-unique one
+    const candidates = ['employee_code', 'employee_id', 'emp_code', 'emp_id', 'id'];
+    const existingCandidates = candidates.filter(
+      (c) =>
+        existingColumns.length === 0 ||
+        existingColumns.some((ec) => ec.toLowerCase() === c.toLowerCase()),
+    );
+
+    let best = { column: 'employee_code', distinct: 0 };
+    for (const col of existingCandidates) {
+      try {
+        const rows = await sql.executeQuery<{ c: number | string }>(
+          schemaName,
+          `SELECT COUNT(DISTINCT \`${col}\`) AS c FROM \`${tableName}\``,
+        );
+        const distinct = Number(rows[0]?.c ?? 0) || 0;
+        this.logger.log(`[tenant-sync] ${tableName}.${col}: distinct=${distinct}`);
+        if (distinct > best.distinct) {
+          best = { column: col, distinct };
+        }
+        // Early exit: if this column has >= 90% unique values, it's "the one"
+        if (total > 0 && distinct >= total * 0.9) break;
+      } catch {
+        /* column doesn't exist — skip */
+      }
+    }
+
+    // Fallback: if nothing probed cleanly, default to employee_code and
+    // let the loop deduplicate whatever it can.
+    if (best.distinct === 0) {
+      best = { column: 'employee_code', distinct: total };
+    }
+
+    return { column: best.column, distinct: best.distinct, total };
   }
 
   /**

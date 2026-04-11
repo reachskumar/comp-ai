@@ -169,6 +169,15 @@ export class PlatformAdminController {
     return this.service.testTenantConnection(id);
   }
 
+  @Get('tenants/:id/data-audit')
+  @ApiOperation({
+    summary:
+      "List every table in the tenant's Compport schema with row counts and sync coverage",
+  })
+  auditTenantData(@Param('id') id: string) {
+    return this.service.auditTenantData(id);
+  }
+
   // ─── Tenant Usage ────────────────────────────────────────
 
   @Get('tenants/:id/usage')

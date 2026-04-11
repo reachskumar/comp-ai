@@ -236,6 +236,15 @@ export function useAdminTestTenantConnection() {
   });
 }
 
+export function useAdminDataAudit(tenantId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: ['admin-data-audit', tenantId],
+    queryFn: () => apiClient.adminAuditTenantData(tenantId!),
+    enabled: !!tenantId && enabled,
+    staleTime: 30_000,
+  });
+}
+
 // ─── Bridge Query Hooks ──────────────────────────────────
 
 export function useBridgeDiscoveryTables(schemaName: string | null) {
