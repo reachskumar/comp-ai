@@ -263,8 +263,31 @@ export class InboundSyncService {
     const details: { id: string; status: 'synced' | 'skipped' | 'error'; reason?: string }[] = [];
 
     const lookups = await this.loadLookupMaps(schemaName);
+
+    // Delta sync MUST read the stored id column — never re-detect per run.
+    // Context.md rule: "Delta sync reads stored value. NEVER re-detects."
+    // We still need a fallback: if the connector hasn't been through a full
+    // sync yet, detect and persist now.
+    const idStrategy = await this.resolveIdColumn(
+      this.cloudSql,
+      schemaName,
+      tableName,
+      tenantId,
+      connectorId,
+    );
+    if (!idStrategy.column || idStrategy.confidence < 0.95) {
+      throw new Error(
+        `Delta sync aborted: no stored idColumn and detection failed ` +
+          `(confidence ${idStrategy.confidence.toFixed(3)}). Run a full sync first.`,
+      );
+    }
+    this.logger.log(
+      `Delta sync id column for "${tableName}" = "${idStrategy.column}" (source=${idStrategy.source})`,
+    );
+
     let offset = 0;
     let hasMore = true;
+    const nullSamples: Array<Record<string, unknown>> = [];
 
     while (hasMore) {
       const rows = await this.connectionManager.executeQuery<Record<string, unknown>>(
@@ -284,20 +307,28 @@ export class InboundSyncService {
           const parsed = CloudSqlEmployeeRowSchema.safeParse(row);
           if (!parsed.success) {
             skipped++;
-            const employeeId = String(
-              row['employee_code'] ?? row['employee_id'] ?? row['id'] ?? 'unknown',
-            );
-            details.push({ id: employeeId, status: 'skipped', reason: parsed.error.message });
+            const rawId = row[idStrategy.column];
+            details.push({
+              id: rawId == null ? 'unknown' : String(rawId),
+              status: 'skipped',
+              reason: parsed.error.message,
+            });
             continue;
           }
 
           const validRow = parsed.data;
-          const employeeId = String(
-            validRow.employee_code || validRow.employee_id || validRow.id || 'unknown',
-          );
-          if (!employeeId || employeeId === 'unknown' || employeeId === '') {
+          const raw = row[idStrategy.column];
+          const employeeId = raw == null ? '' : String(raw).trim();
+          if (!employeeId) {
             skipped++;
-            details.push({ id: 'unknown', status: 'skipped', reason: 'No employee identifier' });
+            if (nullSamples.length < 5) {
+              nullSamples.push({ [idStrategy.column]: raw, offsetInSource: offset });
+            }
+            details.push({
+              id: 'null',
+              status: 'skipped',
+              reason: `null/empty ${idStrategy.column}`,
+            });
             continue;
           }
 
@@ -325,7 +356,8 @@ export class InboundSyncService {
           details.push({ id: employeeId, status: 'synced' });
         } catch (err) {
           errors++;
-          const employeeId = String(row['employee_code'] ?? row['id'] ?? 'unknown');
+          const raw = row[idStrategy.column];
+          const employeeId = raw == null ? 'unknown' : String(raw);
           details.push({
             id: employeeId,
             status: 'error',
@@ -336,6 +368,12 @@ export class InboundSyncService {
 
       offset += rows.length;
       if (rows.length < BATCH_SIZE) hasMore = false;
+    }
+
+    if (nullSamples.length > 0) {
+      this.logger.warn(
+        `Delta sync: rows skipped due to null/empty "${idStrategy.column}". First ${nullSamples.length} samples: ${JSON.stringify(nullSamples)}`,
+      );
     }
 
     const durationMs = Date.now() - start;
@@ -468,8 +506,50 @@ export class InboundSyncService {
         `cities=${lookups.cities.size}, subfunctions=${lookups.subfunctions.size}`,
     );
 
+    // Resolve the id column once at the top of the sync. Reads stored config
+    // if present, else detects and persists. Same rule as syncEmployeesForTenant:
+    // never use a fallback chain at extraction time.
+    const idStrategy = await this.resolveIdColumn(
+      this.cloudSql,
+      schemaName,
+      tableName,
+      tenantId,
+      connectorId,
+    );
+    this.logger.log(
+      `Sync id column for "${tableName}" = "${idStrategy.column}" ` +
+        `(confidence=${idStrategy.confidence.toFixed(3)}, source=${idStrategy.source})`,
+    );
+    if (!idStrategy.column || idStrategy.confidence < 0.95) {
+      throw new Error(
+        `No unique id column for ${schemaName}.${tableName} (confidence ${idStrategy.confidence.toFixed(3)}). Refusing to sync.`,
+      );
+    }
+
+    // Stamp the sync job with the column we picked
+    await this.db
+      .forTenant(tenantId, (tx) =>
+        tx.syncJob.update({
+          where: { id: syncJobId },
+          data: {
+            metadata: {
+              tableName,
+              detectedIdColumn: idStrategy.column,
+              idColumnConfidence: idStrategy.confidence,
+              idColumnSource: idStrategy.source,
+            } as never,
+          },
+        }),
+      )
+      .catch((err) =>
+        this.logger.warn(
+          `Failed to stamp SyncJob metadata: ${(err as Error).message?.substring(0, 120)}`,
+        ),
+      );
+
     let offset = 0;
     let hasMore = true;
+    const nullSamples: Array<Record<string, unknown>> = [];
 
     while (hasMore) {
       // Paginated SELECT from Cloud SQL (with optional delta filter)
@@ -499,24 +579,31 @@ export class InboundSyncService {
           const parsed = CloudSqlEmployeeRowSchema.safeParse(row);
           if (!parsed.success) {
             skipped++;
-            const employeeId = String(
-              row['employee_code'] ?? row['employee_id'] ?? row['id'] ?? 'unknown',
-            );
-            details.push({ id: employeeId, status: 'skipped', reason: parsed.error.message });
+            const rawId = row[idStrategy.column];
+            details.push({
+              id: rawId == null ? 'unknown' : String(rawId),
+              status: 'skipped',
+              reason: parsed.error.message,
+            });
             continue;
           }
 
           const validRow = parsed.data;
 
-          // Resolve the canonical employee identifier (prefer employee_code > employee_id > id)
-          const employeeId = String(
-            validRow.employee_code || validRow.employee_id || validRow.id || 'unknown',
-          );
-
-          // Skip rows without a usable employee identifier
-          if (!employeeId || employeeId === 'unknown' || employeeId === '') {
+          // Resolve the employee identifier from the detected column ONLY.
+          // No fallback chain — see context.md rule "use ONLY detected column".
+          const raw = row[idStrategy.column];
+          const employeeId = raw == null ? '' : String(raw).trim();
+          if (!employeeId) {
             skipped++;
-            details.push({ id: 'unknown', status: 'skipped', reason: 'No employee identifier' });
+            if (nullSamples.length < 5) {
+              nullSamples.push({ [idStrategy.column]: raw, offsetInSource: offset });
+            }
+            details.push({
+              id: 'null',
+              status: 'skipped',
+              reason: `null/empty ${idStrategy.column}`,
+            });
             continue;
           }
 
@@ -547,9 +634,8 @@ export class InboundSyncService {
           details.push({ id: employeeId, status: 'synced' });
         } catch (err) {
           errors++;
-          const employeeId = String(
-            row['employee_code'] ?? row['employee_id'] ?? row['id'] ?? 'unknown',
-          );
+          const raw = row[idStrategy.column];
+          const employeeId = raw == null ? 'unknown' : String(raw);
           const message = err instanceof Error ? err.message : 'Unknown error';
           details.push({ id: employeeId, status: 'error', reason: message.substring(0, 200) });
           this.logger.warn(`Failed to sync employee ${employeeId}: ${message}`);
@@ -602,6 +688,11 @@ export class InboundSyncService {
     this.logger.log(
       `Inbound sync complete: synced=${synced}, skipped=${skipped}, errors=${errors}, duration=${durationMs}ms`,
     );
+    if (nullSamples.length > 0) {
+      this.logger.warn(
+        `Rows skipped due to null/empty "${idStrategy.column}". First ${nullSamples.length} samples: ${JSON.stringify(nullSamples)}`,
+      );
+    }
 
     // Second pass: resolve manager relationships (employee_code → PG id)
     await this.resolveManagerRelationships(tenantId, schemaName, tableName);
@@ -633,6 +724,8 @@ export class InboundSyncService {
     cloudSqlOverride?: CompportCloudSqlService,
     /** Optional jobId — if provided, processedRecords is updated live after each chunk. */
     jobId?: string,
+    /** Optional connectorId — if provided, detected id column is persisted/read from config. */
+    connectorId?: string,
   ): Promise<{ synced: number; skipped: number; errors: number; durationMs: number }> {
     const sql = cloudSqlOverride ?? this.cloudSql;
     const start = Date.now();
@@ -645,33 +738,67 @@ export class InboundSyncService {
       `[tenant-sync] Loaded lookup maps: functions=${lookups.functions.size}, levels=${lookups.levels.size}`,
     );
 
-    // ── Identifier strategy ─────────────────────────────────────
-    // Auto-detect the best unique-identifier column for this tenant's
-    // employee table. Previously we hard-coded the order
-    // (employee_code > employee_id > id) but that collapses rows when a
-    // tenant's employee_code isn't actually unique. Now we pick whichever
-    // column has the MOST distinct values.
-    const idStrategy = await this.detectEmployeeIdColumn(sql, schemaName, tableName);
+    // ── Resolve id column (config cache → PK constraint → candidates) ──
+    const idStrategy = await this.resolveIdColumn(
+      sql,
+      schemaName,
+      tableName,
+      tenantId,
+      connectorId ?? null,
+    );
     this.logger.log(
-      `[tenant-sync] id column for "${tableName}" = ${idStrategy.column} ` +
-        `(distinct=${idStrategy.distinct}, total=${idStrategy.total})`,
+      `[tenant-sync] id column for "${tableName}" = "${idStrategy.column}" ` +
+        `(distinct=${idStrategy.distinct}, total=${idStrategy.total}, ` +
+        `confidence=${idStrategy.confidence.toFixed(3)}, source=${idStrategy.source})`,
     );
 
-    // Write totalRecords (number of unique employees, not raw rows) so the
-    // progress bar shows a meaningful percentage.
+    // Hard stop: never proceed with a collapse-prone column. Per context.md:
+    // "DO NOT PROCEED past this fix until Employee count ≈ source row count."
+    // If confidence is below threshold we fail the sync so the operator sees it
+    // instead of silently dropping 99% of rows.
+    if (!idStrategy.column || idStrategy.confidence < 0.95) {
+      throw new Error(
+        `No unique id column found for ${schemaName}.${tableName} (best=${idStrategy.column || 'none'}, confidence=${idStrategy.confidence.toFixed(3)}). ` +
+          `Refusing to sync — would collapse rows on unique index. ` +
+          `Configure IntegrationConnector.config.idColumns['${tableName}'].column manually.`,
+      );
+    }
+
+    // Write totalRecords + detected id column to SyncJob metadata so the
+    // platform admin UI can show a real percentage and so ops can audit
+    // which column was used for which sync run.
     if (jobId) {
       await this.db
         .forTenant(tenantId, (tx) =>
           tx.syncJob.update({
             where: { id: jobId },
-            data: { totalRecords: idStrategy.distinct, entityType: 'full_sync' },
+            data: {
+              totalRecords: idStrategy.total,
+              entityType: 'full_sync',
+              metadata: {
+                type: 'full',
+                source: 'platform-admin',
+                phase: 'employees',
+                tableName,
+                detectedIdColumn: idStrategy.column,
+                idColumnConfidence: idStrategy.confidence,
+                idColumnDistinct: idStrategy.distinct,
+                idColumnTotal: idStrategy.total,
+                idColumnSource: idStrategy.source,
+              } as never,
+            },
           }),
         )
-        .catch(() => {});
+        .catch((err) =>
+          this.logger.warn(
+            `[tenant-sync] Failed to update SyncJob metadata: ${(err as Error).message?.substring(0, 120)}`,
+          ),
+        );
     }
 
     let offset = 0;
     let hasMore = true;
+    const nullSamples: Array<Record<string, unknown>> = [];
 
     while (hasMore) {
       const rows = await sql.executeQuery<Record<string, unknown>>(
@@ -685,9 +812,10 @@ export class InboundSyncService {
         break;
       }
 
-      // Parse and map all rows in this batch using the detected id column
+      // Parse and map all rows in this batch using the detected id column.
+      // NO fallback chain — per context.md rule "NEVER use ?? fallback chains
+      // after detection. Use ONLY the detected column. Skip nulls. Log first 5."
       const batch: { employeeCode: string; data: Record<string, unknown> }[] = [];
-      const seenInBatch = new Set<string>();
       for (const row of rows) {
         try {
           const parsed = CloudSqlEmployeeRowSchema.safeParse(row);
@@ -697,31 +825,19 @@ export class InboundSyncService {
           }
 
           const validRow = parsed.data;
-          // Use the auto-detected id column first, then fall back to the
-          // legacy chain so we never drop a row with a valid identifier.
-          const raw =
-            (row[idStrategy.column] as unknown) ??
-            validRow.employee_code ??
-            validRow.employee_id ??
-            validRow.id;
+          const raw = row[idStrategy.column];
           const employeeId = raw == null ? '' : String(raw).trim();
           if (!employeeId) {
             skipped++;
-            continue;
-          }
-
-          // Deduplicate within the batch itself — later rows for the same
-          // employee_code (e.g. historical snapshots) overwrite earlier ones,
-          // which is what we want: latest wins. We use a Map for that.
-          if (seenInBatch.has(employeeId)) {
-            // Replace the existing entry with the newer data
-            const idx = batch.findIndex((b) => b.employeeCode === employeeId);
-            if (idx >= 0) {
-              batch[idx] = { employeeCode: employeeId, data: this.defaultMapping(validRow, lookups) };
+            if (nullSamples.length < 5) {
+              nullSamples.push({
+                [idStrategy.column]: raw,
+                offsetInSource: offset,
+              });
             }
             continue;
           }
-          seenInBatch.add(employeeId);
+
           batch.push({ employeeCode: employeeId, data: this.defaultMapping(validRow, lookups) });
         } catch (err) {
           errors++;
@@ -787,6 +903,11 @@ export class InboundSyncService {
     this.logger.log(
       `[tenant-sync] Employee sync complete: synced=${synced}, skipped=${skipped}, errors=${errors}, duration=${durationMs}ms`,
     );
+    if (nullSamples.length > 0) {
+      this.logger.warn(
+        `[tenant-sync] ${skipped} rows skipped due to null/empty "${idStrategy.column}". First ${nullSamples.length} samples: ${JSON.stringify(nullSamples)}`,
+      );
+    }
 
     // Resolve manager relationships
     await this.resolveManagerRelationships(tenantId, schemaName, tableName, sql);
@@ -1009,24 +1130,35 @@ export class InboundSyncService {
   }
 
   /**
-   * Auto-detect the best unique-identifier column for a Compport employee table.
+   * Auto-detect the unique-identifier column for a Compport employee table.
    *
-   * Compport schemas vary per tenant: some have a unique `employee_code` string,
-   * others have only `id` or `employee_id`, and in some cases `employee_code`
-   * exists but isn't unique (e.g. department codes). Picking the wrong column
-   * collapses 121,753 rows down to ~161 unique values, which is the bug we saw
-   * on BFL.
+   * Compport schemas vary per tenant — some use `employee_code`, some
+   * `emp_master_id`, some a random-named PK. Picking a non-unique column
+   * collapses 121K rows into 161 on the PG unique index (the BFL bug).
    *
-   * Strategy: probe a handful of candidate columns, run COUNT(DISTINCT) on each,
-   * and return the column with the highest distinct count (and that count as
-   * the total for progress reporting).
+   * Strategy (in order):
+   *   1. Query INFORMATION_SCHEMA.KEY_COLUMN_USAGE for the actual
+   *      PRIMARY KEY constraint. If it's a single-column PK and
+   *      distinct/total ratio on the PG side is 100%, use it.
+   *   2. Fall back to an extended candidate list, probing each with
+   *      COUNT(DISTINCT) and COUNT(col IS NOT NULL). Accept the first
+   *      column that passes ratio ≥ 0.95 AND has zero nulls.
+   *   3. If nothing passes, return the best column found with
+   *      confidence < 0.95 and log a WARNING — caller decides whether
+   *      to proceed.
    */
   private async detectEmployeeIdColumn(
     sql: CompportCloudSqlService,
     schemaName: string,
     tableName: string,
-  ): Promise<{ column: string; distinct: number; total: number }> {
-    // Total row count (single query)
+  ): Promise<{
+    column: string;
+    distinct: number;
+    total: number;
+    confidence: number;
+    source: 'pk' | 'candidate' | 'fallback';
+  }> {
+    // ── Step 1: total row count ─────────────────────────────
     let total = 0;
     try {
       const totalRows = await sql.executeQuery<{ c: number | string }>(
@@ -1038,9 +1170,84 @@ export class InboundSyncService {
       this.logger.warn(
         `[tenant-sync] Failed to count rows in ${tableName}: ${(err as Error).message?.substring(0, 120)}`,
       );
+      return {
+        column: '',
+        distinct: 0,
+        total: 0,
+        confidence: 0,
+        source: 'fallback',
+      };
     }
 
-    // Get the actual column list so we only probe columns that exist
+    if (total === 0) {
+      return { column: '', distinct: 0, total: 0, confidence: 0, source: 'fallback' };
+    }
+
+    // ── Step 2: Query actual PRIMARY KEY from INFORMATION_SCHEMA ──
+    // Single-column PKs are the gold standard — if MySQL says it's a PK,
+    // it's guaranteed unique and non-null.
+    try {
+      const pkRows = await sql.executeQuery<{ COLUMN_NAME: string }>(
+        schemaName,
+        `SELECT COLUMN_NAME
+           FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+          WHERE TABLE_SCHEMA = ?
+            AND TABLE_NAME = ?
+            AND CONSTRAINT_NAME = 'PRIMARY'
+          ORDER BY ORDINAL_POSITION`,
+        [schemaName, tableName],
+      );
+      if (pkRows.length === 1) {
+        const pkCol = String(pkRows[0]!.COLUMN_NAME);
+        // Sanity check: MySQL PK is guaranteed unique + non-null, but we still
+        // run COUNT(DISTINCT) to confirm (and to populate the metadata field
+        // we write to SyncJob).
+        try {
+          const rows = await sql.executeQuery<{ d: number | string }>(
+            schemaName,
+            `SELECT COUNT(DISTINCT \`${pkCol}\`) AS d FROM \`${tableName}\``,
+          );
+          const distinct = Number(rows[0]?.d ?? 0) || 0;
+          this.logger.log(
+            `[tenant-sync] PK detection: ${tableName}.${pkCol} distinct=${distinct}/${total}`,
+          );
+          if (distinct === total) {
+            return {
+              column: pkCol,
+              distinct,
+              total,
+              confidence: 1,
+              source: 'pk',
+            };
+          }
+          // PK exists but isn't perfectly unique (extremely rare; indicates
+          // orphaned rows or a composite constraint misreported). Fall
+          // through to candidate probing.
+          this.logger.warn(
+            `[tenant-sync] ${tableName}.${pkCol} is PK but distinct (${distinct}) != total (${total}). Falling back.`,
+          );
+        } catch (e) {
+          this.logger.warn(
+            `[tenant-sync] PK ${pkCol} COUNT(DISTINCT) failed: ${(e as Error).message?.substring(0, 120)}`,
+          );
+        }
+      } else if (pkRows.length > 1) {
+        this.logger.log(
+          `[tenant-sync] ${tableName} has composite PK (${pkRows
+            .map((r) => r.COLUMN_NAME)
+            .join('+')}). Skipping PK path.`,
+        );
+      } else {
+        this.logger.log(`[tenant-sync] ${tableName} has no PRIMARY KEY. Skipping PK path.`);
+      }
+    } catch (err) {
+      this.logger.warn(
+        `[tenant-sync] KEY_COLUMN_USAGE probe failed: ${(err as Error).message?.substring(0, 120)}`,
+      );
+    }
+
+    // ── Step 3: Get the actual column list so candidate probing only
+    // touches columns that exist ────────────────────────────────
     let existingColumns: string[] = [];
     try {
       const cols = await sql.executeQuery<{ COLUMN_NAME: string }>(
@@ -1051,43 +1258,223 @@ export class InboundSyncService {
       );
       existingColumns = cols.map((c) => String(c.COLUMN_NAME));
     } catch {
-      /* fall through to candidate probing */
+      /* fall through */
     }
 
-    // Candidate columns in rough order of preference — we want the most-unique one
-    const candidates = ['employee_code', 'employee_id', 'emp_code', 'emp_id', 'id'];
+    // ── Step 4: Extended candidate list ─────────────────────
+    // Compport and upstream HRIS schemas use many naming conventions.
+    // Order is hint only — we pick the first column that passes the
+    // strict uniqueness test.
+    const candidates = [
+      'employee_id',
+      'emp_id',
+      'emp_no',
+      'emp_code',
+      'emp_master_id',
+      'employee_code',
+      'employee_number',
+      'staff_id',
+      'personnel_id',
+      'payroll_id',
+      'badge_id',
+      'worker_id',
+      'person_id',
+      'serial_no',
+      'pk_id',
+      'id',
+    ];
     const existingCandidates = candidates.filter(
       (c) =>
         existingColumns.length === 0 ||
         existingColumns.some((ec) => ec.toLowerCase() === c.toLowerCase()),
     );
 
-    let best = { column: 'employee_code', distinct: 0 };
+    // Probe every candidate and keep the best (highest distinct/total ratio
+    // with zero nulls).
+    let best: {
+      column: string;
+      distinct: number;
+      nonNull: number;
+      confidence: number;
+    } = { column: '', distinct: 0, nonNull: 0, confidence: 0 };
+
     for (const col of existingCandidates) {
       try {
-        const rows = await sql.executeQuery<{ c: number | string }>(
+        const rows = await sql.executeQuery<{ d: number | string; nn: number | string }>(
           schemaName,
-          `SELECT COUNT(DISTINCT \`${col}\`) AS c FROM \`${tableName}\``,
+          `SELECT COUNT(DISTINCT \`${col}\`) AS d,
+                  SUM(CASE WHEN \`${col}\` IS NOT NULL AND \`${col}\` != '' THEN 1 ELSE 0 END) AS nn
+             FROM \`${tableName}\``,
         );
-        const distinct = Number(rows[0]?.c ?? 0) || 0;
-        this.logger.log(`[tenant-sync] ${tableName}.${col}: distinct=${distinct}`);
-        if (distinct > best.distinct) {
-          best = { column: col, distinct };
+        const distinct = Number(rows[0]?.d ?? 0) || 0;
+        const nonNull = Number(rows[0]?.nn ?? 0) || 0;
+        // Confidence = 1.0 iff every row has a distinct non-null value.
+        const confidence = nonNull === total && total > 0 ? distinct / total : 0;
+        this.logger.log(
+          `[tenant-sync] candidate ${tableName}.${col} distinct=${distinct} nonNull=${nonNull}/${total} confidence=${confidence.toFixed(3)}`,
+        );
+        if (confidence > best.confidence) {
+          best = { column: col, distinct, nonNull, confidence };
         }
-        // Early exit: if this column has >= 90% unique values, it's "the one"
-        if (total > 0 && distinct >= total * 0.9) break;
+        if (confidence === 1) break; // perfect match — stop probing
       } catch {
-        /* column doesn't exist — skip */
+        /* column doesn't exist or typed incompatibly — skip */
       }
     }
 
-    // Fallback: if nothing probed cleanly, default to employee_code and
-    // let the loop deduplicate whatever it can.
-    if (best.distinct === 0) {
-      best = { column: 'employee_code', distinct: total };
+    if (best.confidence >= 0.95 && best.column) {
+      return {
+        column: best.column,
+        distinct: best.distinct,
+        total,
+        confidence: best.confidence,
+        source: 'candidate',
+      };
     }
 
-    return { column: best.column, distinct: best.distinct, total };
+    // ── Step 5: nothing passed the strict test ──────────────
+    // Log WARN and return best-effort. Caller decides whether to proceed.
+    this.logger.warn(
+      `[tenant-sync] NO unique id column found for ${tableName}. Best candidate: ${best.column || 'none'} (confidence ${best.confidence.toFixed(3)}). ` +
+        `Sync will FAIL unless a valid column is configured in IntegrationConnector.config.detectedEmployeeIdColumn.`,
+    );
+    return {
+      column: best.column,
+      distinct: best.distinct,
+      total,
+      confidence: best.confidence,
+      source: 'fallback',
+    };
+  }
+
+  /**
+   * Resolve the employee-id column for a tenant's employee table.
+   *
+   * Reads IntegrationConnector.config.detectedEmployeeIdColumn first.
+   * If missing (first sync), runs detection and persists the result.
+   * If present, uses it without re-probing — delta syncs hit this path
+   * every 120 seconds so re-detection would be wasteful.
+   *
+   * Caller is expected to pass the connectorId. If not available (legacy
+   * code paths), falls back to pure detection.
+   */
+  private async resolveIdColumn(
+    sql: CompportCloudSqlService,
+    schemaName: string,
+    tableName: string,
+    tenantId: string,
+    connectorId: string | null,
+  ): Promise<{
+    column: string;
+    distinct: number;
+    total: number;
+    confidence: number;
+    source: 'config' | 'pk' | 'candidate' | 'fallback';
+  }> {
+    // Try config first
+    if (connectorId) {
+      try {
+        const connector = await this.db.forTenant(tenantId, (tx) =>
+          tx.integrationConnector.findFirst({
+            where: { id: connectorId, tenantId },
+            select: { config: true },
+          }),
+        );
+        const cfg = (connector?.config as Record<string, unknown> | null) ?? {};
+        const tableCfg =
+          (cfg['idColumns'] as Record<string, unknown> | undefined)?.[tableName] ??
+          (tableName === 'employee_master' && typeof cfg['detectedEmployeeIdColumn'] === 'string'
+            ? {
+                column: cfg['detectedEmployeeIdColumn'],
+                confidence: cfg['idColumnConfidence'] ?? 0,
+                distinct: cfg['idColumnDistinct'] ?? 0,
+                total: cfg['idColumnTotal'] ?? 0,
+              }
+            : undefined);
+        if (tableCfg && typeof (tableCfg as { column?: unknown }).column === 'string') {
+          const stored = tableCfg as {
+            column: string;
+            confidence?: number;
+            distinct?: number;
+            total?: number;
+          };
+          if (stored.column) {
+            this.logger.log(
+              `[tenant-sync] Using stored idColumn for ${tableName}: ${stored.column} (confidence=${stored.confidence ?? 'unknown'})`,
+            );
+            return {
+              column: stored.column,
+              distinct: Number(stored.distinct ?? 0),
+              total: Number(stored.total ?? 0),
+              confidence: Number(stored.confidence ?? 1),
+              source: 'config',
+            };
+          }
+        }
+      } catch (err) {
+        this.logger.warn(
+          `[tenant-sync] Failed to read connector config: ${(err as Error).message?.substring(0, 120)}`,
+        );
+      }
+    }
+
+    // Detect and persist
+    const detected = await this.detectEmployeeIdColumn(sql, schemaName, tableName);
+
+    if (connectorId && detected.column && detected.confidence >= 0.95) {
+      try {
+        // Fetch current config first, merge the new id-column info, write back.
+        const current = await this.db.forTenant(tenantId, (tx) =>
+          tx.integrationConnector.findFirst({
+            where: { id: connectorId, tenantId },
+            select: { config: true },
+          }),
+        );
+        const cfg = ((current?.config as Record<string, unknown> | null) ?? {}) as Record<
+          string,
+          unknown
+        >;
+        const existingByTable = (cfg['idColumns'] as Record<string, unknown> | undefined) ?? {};
+        const nextByTable: Record<string, unknown> = {
+          ...existingByTable,
+          [tableName]: {
+            column: detected.column,
+            confidence: detected.confidence,
+            distinct: detected.distinct,
+            total: detected.total,
+            source: detected.source,
+            detectedAt: new Date().toISOString(),
+          },
+        };
+        const nextCfg: Record<string, unknown> = {
+          ...cfg,
+          idColumns: nextByTable,
+        };
+        // For backward compatibility with legacy readers, also mirror
+        // employee_master's detection at the top level.
+        if (tableName === 'employee_master') {
+          nextCfg['detectedEmployeeIdColumn'] = detected.column;
+          nextCfg['idColumnConfidence'] = detected.confidence;
+          nextCfg['idColumnDistinct'] = detected.distinct;
+          nextCfg['idColumnTotal'] = detected.total;
+        }
+        await this.db.forTenant(tenantId, (tx) =>
+          tx.integrationConnector.update({
+            where: { id: connectorId },
+            data: { config: nextCfg as never },
+          }),
+        );
+        this.logger.log(
+          `[tenant-sync] Persisted idColumn for ${tableName}: ${detected.column} (confidence=${detected.confidence.toFixed(3)}, source=${detected.source})`,
+        );
+      } catch (err) {
+        this.logger.warn(
+          `[tenant-sync] Failed to persist idColumn: ${(err as Error).message?.substring(0, 120)}`,
+        );
+      }
+    }
+
+    return detected;
   }
 
   /**

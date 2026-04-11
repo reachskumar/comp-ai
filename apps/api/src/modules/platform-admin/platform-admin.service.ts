@@ -1014,7 +1014,10 @@ export class PlatformAdminService {
 
     // Fire and forget. cpu-throttling=false + minScale=1 keeps the instance
     // alive so the background work continues after the HTTP response is sent.
-    void this.runFullSyncBackground(tenantId, job.id).catch((err) => {
+    // Pass connectorId so syncEmployeesForTenant can persist the detected
+    // id column into connector.config (per context.md rule: "ALWAYS store
+    // detectedEmployeeIdColumn in connector config after first detection").
+    void this.runFullSyncBackground(tenantId, job.id, connector.id).catch((err) => {
       this.logger.error(`[sync-full] Background job ${job.id} crashed: ${err}`);
     });
 
@@ -1025,7 +1028,11 @@ export class PlatformAdminService {
    * The actual sync work. Runs in the background, updates the SyncJob row
    * with progress and final status. NEVER throws — failures are recorded.
    */
-  private async runFullSyncBackground(tenantId: string, jobId: string): Promise<void> {
+  private async runFullSyncBackground(
+    tenantId: string,
+    jobId: string,
+    connectorId: string,
+  ): Promise<void> {
     const tenant = await this.getTenant(tenantId).catch(() => null);
     if (!tenant || !tenant.compportSchema) {
       await this.markJobFailed(tenantId, jobId, 'Tenant or compportSchema missing');
@@ -1075,6 +1082,7 @@ export class PlatformAdminService {
             table,
             isolatedSql,
             jobId,
+            connectorId,
           );
           this.logger.log(
             `[sync-full] Employee sync used table "${table}": synced=${employeeResult!.synced}`,
