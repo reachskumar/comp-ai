@@ -1076,8 +1076,12 @@ export class InboundSyncService {
     const sql = cloudSqlOverride ?? this.cloudSql;
     const start = Date.now();
 
-    // Step 1: load (employee_code, email) pairs from Cloud SQL
-    let pairs: { employeeCode: string; email: string }[] = [];
+    // Step 1: load (employee_code, email) pairs from Cloud SQL.
+    // CRITICAL: The user sync builds the User.email from
+    //   email = row.email?.trim() || `${employeeCode}@compport.local`
+    // so we MUST do the same here, otherwise the join misses every
+    // row that had no real email.
+    let pairs: { employeeCode: string; userEmail: string }[] = [];
     try {
       const rows = await sql.executeQuery<{
         employee_code: string | null;
@@ -1086,10 +1090,14 @@ export class InboundSyncService {
       pairs = rows
         .map((r) => {
           const employeeCode = (r.employee_code ?? '').toString().trim();
-          const email = (r.email ?? '').toString().trim().toLowerCase();
-          return { employeeCode, email };
+          const realEmail = (r.email ?? '').toString().trim();
+          // Mirror the synthesis used by the user sync exactly — same
+          // case-preserving logic, otherwise the WHERE clause misses
+          // every row whose email contains uppercase letters.
+          const userEmail = realEmail || `${employeeCode}@compport.local`;
+          return { employeeCode, userEmail };
         })
-        .filter((p) => p.employeeCode && p.email);
+        .filter((p) => p.employeeCode && p.userEmail);
     } catch (err) {
       this.logger.error(
         `[link] Failed to read login_user for ${tenantId}: ${(err as Error).message?.substring(0, 200)}`,
@@ -1113,43 +1121,62 @@ export class InboundSyncService {
     for (const e of employees) {
       if (e.employeeCode) codeToId.set(e.employeeCode, e.id);
     }
-    this.logger.log(
-      `[link] Loaded ${codeToId.size} employees and ${pairs.length} login_user pairs`,
-    );
 
-    // Step 3: build batched UPDATE statements
-    let linked = 0;
+    // Step 3: dedupe by user email (the User table is already deduped
+    // by email, so multiple login_user rows can map to the same User).
+    // First pair wins — that's the same logic the user sync uses
+    // (Map.set lets later writes overwrite, so behaviour is consistent).
+    const emailToEmployeeId = new Map<string, string>();
     let notFound = 0;
-    const BATCH = 500;
-    const batchUpdates: { email: string; employeeId: string }[] = [];
-
-    for (const { employeeCode, email } of pairs) {
+    for (const { employeeCode, userEmail } of pairs) {
       const employeeId = codeToId.get(employeeCode);
       if (!employeeId) {
         notFound++;
         continue;
       }
-      batchUpdates.push({ email, employeeId });
+      // Only set if not already mapped — preserves first-pair-wins semantics
+      if (!emailToEmployeeId.has(userEmail)) {
+        emailToEmployeeId.set(userEmail, employeeId);
+      }
     }
 
-    // Step 4: apply updates in chunks
-    for (let i = 0; i < batchUpdates.length; i += BATCH) {
-      const chunk = batchUpdates.slice(i, i + BATCH);
+    this.logger.log(
+      `[link] Loaded ${codeToId.size} employees, ${pairs.length} login_user pairs, ` +
+        `${emailToEmployeeId.size} unique user emails to link`,
+    );
+
+    // Step 4: apply updates in chunks. We use updateMany with OR'd
+    // (email, employeeId) tuples — but Prisma can't express that
+    // efficiently, so we just iterate per email but inside a single
+    // transaction per chunk for throughput.
+    let linked = 0;
+    let conflicts = 0;
+    const updates = Array.from(emailToEmployeeId.entries());
+    const BATCH = 500;
+
+    for (let i = 0; i < updates.length; i += BATCH) {
+      const chunk = updates.slice(i, i + BATCH);
       try {
         await this.db.forTenant(
           tenantId,
           async (tx) => {
-            for (const { email, employeeId } of chunk) {
+            for (const [email, employeeId] of chunk) {
               try {
                 const result = await tx.user.updateMany({
                   where: { tenantId, email, employeeId: null },
                   data: { employeeId },
                 });
                 if (result.count > 0) linked += result.count;
-              } catch {
-                // unique-constraint violations (employeeId is @unique in some
-                // schemas) — skip silently and let the next pass try a
-                // different user→employee mapping
+              } catch (e) {
+                // User.employeeId is @unique. If two users share the
+                // same employeeCode (e.g. shared test accounts) the
+                // second link fails — count and skip.
+                conflicts++;
+                if (conflicts <= 5) {
+                  this.logger.warn(
+                    `[link] Conflict linking email=${email} → employeeId=${employeeId}: ${(e as Error).message?.substring(0, 100)}`,
+                  );
+                }
               }
             }
           },
@@ -1163,15 +1190,16 @@ export class InboundSyncService {
     }
 
     const durationMs = Date.now() - start;
-    const linkRate = pairs.length > 0 ? linked / pairs.length : 0;
-    const msg = `[link] Linked ${linked}/${pairs.length} users to employees (notFound=${notFound}, rate=${(linkRate * 100).toFixed(1)}%, duration=${durationMs}ms)`;
+    const denominator = emailToEmployeeId.size;
+    const linkRate = denominator > 0 ? linked / denominator : 0;
+    const msg = `[link] Linked ${linked}/${denominator} unique users to employees (sourcePairs=${pairs.length}, employeeNotFound=${notFound}, conflicts=${conflicts}, rate=${(linkRate * 100).toFixed(1)}%, duration=${durationMs}ms)`;
     if (linkRate < 0.8) {
       this.logger.warn(msg);
     } else {
       this.logger.log(msg);
     }
 
-    return { candidates: pairs.length, linked, notFound, durationMs };
+    return { candidates: denominator, linked, notFound, durationMs };
   }
 
   /**
