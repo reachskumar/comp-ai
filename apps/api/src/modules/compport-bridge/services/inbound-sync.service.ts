@@ -288,8 +288,24 @@ export class InboundSyncService {
     let offset = 0;
     let hasMore = true;
     const nullSamples: Array<Record<string, unknown>> = [];
-    const seenEmails = new Set<string>();
+    // Owner-aware email dedupe (see syncEmployeesForTenant for rationale)
+    const emailOwners = new Map<string, string>();
     let emailCollisions = 0;
+    try {
+      const existing = await this.db.forTenant(tenantId, (tx) =>
+        tx.employee.findMany({
+          where: { tenantId },
+          select: { employeeCode: true, email: true },
+        }),
+      );
+      for (const e of existing) {
+        if (e.email) emailOwners.set(e.email.toLowerCase(), e.employeeCode);
+      }
+    } catch (err) {
+      this.logger.warn(
+        `[delta] Failed to pre-load existing emails: ${(err as Error).message?.substring(0, 120)}`,
+      );
+    }
 
     while (hasMore) {
       const rows = await this.connectionManager.executeQuery<Record<string, unknown>>(
@@ -353,16 +369,21 @@ export class InboundSyncService {
             mappedData = this.defaultMapping(validRow, lookups, employeeId);
           }
 
-          // Intra-sync email dedupe — see syncEmployeesForTenant for the
-          // same logic. PG @@unique([tenantId, email]) requires this.
+          // Owner-aware email dedupe — see syncEmployeesForTenant.
           const candidateEmail = String(mappedData['email'] ?? '');
           const lc = candidateEmail.toLowerCase();
-          if (lc && seenEmails.has(lc)) {
-            const [local, domain] = candidateEmail.split('@');
-            mappedData['email'] = `${local}+${employeeId}@${domain || 'imported.local'}`;
-            emailCollisions++;
+          if (lc) {
+            const owner = emailOwners.get(lc);
+            if (owner && owner !== employeeId) {
+              const [local, domain] = candidateEmail.split('@');
+              const suffixed = `${local}+${employeeId}@${domain || 'imported.local'}`;
+              mappedData['email'] = suffixed;
+              emailOwners.set(suffixed.toLowerCase(), employeeId);
+              emailCollisions++;
+            } else {
+              emailOwners.set(lc, employeeId);
+            }
           }
-          seenEmails.add(String(mappedData['email']).toLowerCase());
 
           await this.upsertEmployee(tenantId, employeeId, mappedData);
           synced++;
@@ -569,8 +590,24 @@ export class InboundSyncService {
     let offset = 0;
     let hasMore = true;
     const nullSamples: Array<Record<string, unknown>> = [];
-    const seenEmails = new Set<string>();
+    // Owner-aware email dedupe (see syncEmployeesForTenant for rationale)
+    const emailOwners = new Map<string, string>();
     let emailCollisions = 0;
+    try {
+      const existing = await this.db.forTenant(tenantId, (tx) =>
+        tx.employee.findMany({
+          where: { tenantId },
+          select: { employeeCode: true, email: true },
+        }),
+      );
+      for (const e of existing) {
+        if (e.email) emailOwners.set(e.email.toLowerCase(), e.employeeCode);
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Failed to pre-load existing emails: ${(err as Error).message?.substring(0, 120)}`,
+      );
+    }
 
     while (hasMore) {
       // Paginated SELECT from Cloud SQL (with optional delta filter)
@@ -649,16 +686,21 @@ export class InboundSyncService {
             mappedData = this.defaultMapping(validRow, lookups, employeeId);
           }
 
-          // Intra-sync email dedupe — see syncEmployeesForTenant for the
-          // same logic. PG @@unique([tenantId, email]) requires this.
+          // Owner-aware email dedupe — see syncEmployeesForTenant.
           const candidateEmail = String(mappedData['email'] ?? '');
           const lc = candidateEmail.toLowerCase();
-          if (lc && seenEmails.has(lc)) {
-            const [local, domain] = candidateEmail.split('@');
-            mappedData['email'] = `${local}+${employeeId}@${domain || 'imported.local'}`;
-            emailCollisions++;
+          if (lc) {
+            const owner = emailOwners.get(lc);
+            if (owner && owner !== employeeId) {
+              const [local, domain] = candidateEmail.split('@');
+              const suffixed = `${local}+${employeeId}@${domain || 'imported.local'}`;
+              mappedData['email'] = suffixed;
+              emailOwners.set(suffixed.toLowerCase(), employeeId);
+              emailCollisions++;
+            } else {
+              emailOwners.set(lc, employeeId);
+            }
           }
-          seenEmails.add(String(mappedData['email']).toLowerCase());
 
           // 3. Upsert into PostgreSQL
           await this.upsertEmployee(tenantId, employeeId, mappedData);
@@ -836,12 +878,33 @@ export class InboundSyncService {
     let offset = 0;
     let hasMore = true;
     const nullSamples: Array<Record<string, unknown>> = [];
-    // Track emails seen across this entire sync run. Employee schema has
-    // @@unique([tenantId, email]) so we MUST dedupe before upserting or
-    // batches fail with "Unique constraint failed" — see incident
-    // 2026-04-11 BFL login_user sync.
-    const seenEmails = new Set<string>();
+    // Track emails seen across this entire sync run AND pre-existing rows
+    // in PG. Employee schema has @@unique([tenantId, email]) so we MUST
+    // dedupe against both sets or batches fail with "Unique constraint
+    // failed" — see incident 2026-04-11 BFL login_user sync. Map value is
+    // the employeeCode that owns the email; if the same employeeCode
+    // shows up later (own row update) it passes through, otherwise we
+    // suffix to avoid the collision.
+    const emailOwners = new Map<string, string>();
     let emailCollisions = 0;
+    try {
+      const existing = await this.db.forTenant(tenantId, (tx) =>
+        tx.employee.findMany({
+          where: { tenantId },
+          select: { employeeCode: true, email: true },
+        }),
+      );
+      for (const e of existing) {
+        if (e.email) emailOwners.set(e.email.toLowerCase(), e.employeeCode);
+      }
+      this.logger.log(
+        `[tenant-sync] Pre-loaded ${emailOwners.size} existing email→employeeCode pairs for collision detection`,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `[tenant-sync] Failed to pre-load existing emails: ${(err as Error).message?.substring(0, 120)}`,
+      );
+    }
 
     while (hasMore) {
       const rows = await sql.executeQuery<Record<string, unknown>>(
@@ -884,20 +947,26 @@ export class InboundSyncService {
           // Build mapped data using detected id for placeholder email uniqueness
           const data = this.defaultMapping(validRow, lookups, employeeId);
 
-          // Intra-sync email dedupe: if this email is already used by another
-          // employeeCode in this run, suffix it so the unique index doesn't
-          // collide. The first occurrence wins (keeps clean email); subsequent
-          // ones get a deterministic per-row suffix.
+          // Owner-aware email dedupe. Map tracks email → employeeCode that
+          // currently owns it (across both pre-existing PG rows and rows
+          // already processed in this run). If a new row's email belongs to
+          // a DIFFERENT employeeCode, suffix it so the unique index doesn't
+          // collide. If it belongs to the same employeeCode, it's the same
+          // row being updated — pass through unchanged.
           const candidateEmail = String(data['email'] ?? '');
           const lc = candidateEmail.toLowerCase();
-          if (lc && seenEmails.has(lc)) {
-            // Suffix with the unique employeeId so each duplicate gets a
-            // distinct (but still recognisable) email
-            const [local, domain] = candidateEmail.split('@');
-            data['email'] = `${local}+${employeeId}@${domain || 'imported.local'}`;
-            emailCollisions++;
+          if (lc) {
+            const owner = emailOwners.get(lc);
+            if (owner && owner !== employeeId) {
+              const [local, domain] = candidateEmail.split('@');
+              const suffixed = `${local}+${employeeId}@${domain || 'imported.local'}`;
+              data['email'] = suffixed;
+              emailOwners.set(suffixed.toLowerCase(), employeeId);
+              emailCollisions++;
+            } else {
+              emailOwners.set(lc, employeeId);
+            }
           }
-          seenEmails.add(String(data['email']).toLowerCase());
 
           batch.push({ employeeCode: employeeId, data });
         } catch (err) {
