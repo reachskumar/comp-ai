@@ -24,4 +24,13 @@ export class DashboardController {
     this.logger.log(`Dashboard summary: tenant=${req.user.tenantId}`);
     return this.dashboardService.getSummary(req.user.tenantId);
   }
+
+  @Get('sync-status/current')
+  @ApiOperation({
+    summary:
+      'Most recent full-sync job for this tenant. UI polls this to show a live progress banner.',
+  })
+  async getCurrentSyncStatus(@Request() req: AuthRequest) {
+    return this.dashboardService.getCurrentSyncStatus(req.user.tenantId);
+  }
 }

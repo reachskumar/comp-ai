@@ -1051,12 +1051,16 @@ export class PlatformAdminService {
 
       this.logger.log(`[sync-full] Isolated Cloud SQL connected for ${tenant.name} (job ${jobId})`);
 
+      await this.updateJobPhase(tenantId, jobId, 'roles');
+
       // Step 1: Sync roles, pages, permissions, and users
       const roleResult = await this.inboundSyncService.syncRolesAndPermissions(
         tenantId,
         tenant.compportSchema,
         isolatedSql,
       );
+
+      await this.updateJobPhase(tenantId, jobId, 'employees');
 
       // Step 2: Sync employees — auto-detect table (employee_master → login_user → employees)
       let employeeResult: { synced: number; skipped: number; errors: number; durationMs: number };
@@ -1070,6 +1074,7 @@ export class PlatformAdminService {
             tenant.compportSchema,
             table,
             isolatedSql,
+            jobId,
           );
           this.logger.log(
             `[sync-full] Employee sync used table "${table}": synced=${employeeResult!.synced}`,
@@ -1134,6 +1139,26 @@ export class PlatformAdminService {
     } finally {
       await isolatedSql.disconnect().catch(() => {});
       this.logger.log(`[sync-full] Isolated Cloud SQL disconnected for ${tenant.name}`);
+    }
+  }
+
+  /** Update the SyncJob's phase in metadata so the UI can show where the sync is. */
+  private async updateJobPhase(
+    tenantId: string,
+    jobId: string,
+    phase: 'roles' | 'employees',
+  ): Promise<void> {
+    try {
+      await this.db.forTenant(tenantId, (tx) =>
+        tx.syncJob.update({
+          where: { id: jobId },
+          data: {
+            metadata: { type: 'full', source: 'platform-admin', phase } as never,
+          },
+        }),
+      );
+    } catch (err) {
+      this.logger.warn(`[sync-full] Failed to update phase for job ${jobId}: ${err}`);
     }
   }
 

@@ -6,6 +6,7 @@ import { Sidebar } from '@/components/sidebar';
 import { TopBar } from '@/components/top-bar';
 import { Sheet, SheetContent } from '@/components/ui/sheet';
 import { CopilotPanel } from '@/components/copilot-panel';
+import { SyncProgressBanner } from '@/components/sync-progress-banner';
 
 // ─── Copilot Panel Context ─────────────────────────────────
 // Lets any child component open the copilot panel (e.g., "Ask Copilot" buttons)
@@ -109,7 +110,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               copilotPanelOpen={copilotPanelOpen}
             />
             <div className="flex flex-1 overflow-hidden">
-              <main className="flex-1 overflow-auto p-4 lg:p-6">{children}</main>
+              <main className="flex-1 overflow-auto p-4 lg:p-6">
+                <SyncProgressBanner />
+                {children}
+              </main>
               {/* Copilot side panel (desktop only) */}
               <div className="relative">
                 <CopilotPanel

@@ -631,6 +631,8 @@ export class InboundSyncService {
     schemaName: string,
     tableName = 'employee_master',
     cloudSqlOverride?: CompportCloudSqlService,
+    /** Optional jobId — if provided, processedRecords is updated live after each chunk. */
+    jobId?: string,
   ): Promise<{ synced: number; skipped: number; errors: number; durationMs: number }> {
     const sql = cloudSqlOverride ?? this.cloudSql;
     const start = Date.now();
@@ -642,6 +644,27 @@ export class InboundSyncService {
     this.logger.log(
       `[tenant-sync] Loaded lookup maps: functions=${lookups.functions.size}, levels=${lookups.levels.size}`,
     );
+
+    // Get total row count up front so the UI can show a real percentage.
+    if (jobId) {
+      try {
+        const [{ c }] = await sql.executeQuery<{ c: number }>(
+          schemaName,
+          `SELECT COUNT(*) AS c FROM \`${tableName}\``,
+        );
+        const total = Number(c) || 0;
+        await this.db
+          .forTenant(tenantId, (tx) =>
+            tx.syncJob.update({
+              where: { id: jobId },
+              data: { totalRecords: total, entityType: 'full_sync' },
+            }),
+          )
+          .catch(() => {});
+      } catch {
+        /* non-fatal — progress will still advance, just without a denominator */
+      }
+    }
 
     let offset = 0;
     let hasMore = true;
@@ -712,6 +735,24 @@ export class InboundSyncService {
             this.logger.error(
               `[tenant-sync] Batch upsert failed (chunk ${i}-${i + chunk.length}): ${message.substring(0, 200)}`,
             );
+          }
+
+          // Live progress: update processedRecords on the SyncJob row so
+          // both platform admin and the tenant-side banner see the count
+          // climbing in real time.
+          if (jobId) {
+            const progress = synced;
+            const errCount = errors;
+            await this.db
+              .forTenant(tenantId, (tx) =>
+                tx.syncJob.update({
+                  where: { id: jobId },
+                  data: { processedRecords: progress, failedRecords: errCount },
+                }),
+              )
+              .catch(() => {
+                /* progress updates are best-effort */
+              });
           }
         }
       }

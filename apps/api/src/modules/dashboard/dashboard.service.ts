@@ -84,4 +84,60 @@ export class DashboardService {
       };
     }
   }
+
+  /**
+   * Latest full-sync job for the tenant. Returns null if there is no
+   * recent sync (nothing to display). The tenant UI polls this every 3s
+   * while a sync is running and shows a live progress banner.
+   */
+  async getCurrentSyncStatus(tenantId: string): Promise<{
+    id: string;
+    status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+    phase: string | null;
+    processedRecords: number;
+    totalRecords: number;
+    failedRecords: number;
+    startedAt: Date | null;
+    completedAt: Date | null;
+    errorMessage: string | null;
+  } | null> {
+    try {
+      const job = await this.db.forTenant(tenantId, (tx) =>
+        tx.syncJob.findFirst({
+          where: { tenantId, entityType: 'full_sync' },
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            status: true,
+            metadata: true,
+            processedRecords: true,
+            totalRecords: true,
+            failedRecords: true,
+            startedAt: true,
+            completedAt: true,
+            errorMessage: true,
+          },
+        }),
+      );
+      if (!job) return null;
+
+      const meta = (job.metadata as Record<string, unknown> | null) ?? {};
+      const phase = typeof meta['phase'] === 'string' ? (meta['phase'] as string) : null;
+
+      return {
+        id: job.id,
+        status: job.status,
+        phase,
+        processedRecords: job.processedRecords,
+        totalRecords: job.totalRecords,
+        failedRecords: job.failedRecords,
+        startedAt: job.startedAt,
+        completedAt: job.completedAt,
+        errorMessage: job.errorMessage,
+      };
+    } catch (err) {
+      this.logger.warn(`getCurrentSyncStatus failed for tenant=${tenantId}: ${err}`);
+      return null;
+    }
+  }
 }
