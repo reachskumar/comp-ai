@@ -915,6 +915,130 @@ export class InboundSyncService {
     return { synced, skipped, errors, durationMs: Date.now() - start };
   }
 
+  /**
+   * BLOCKER 4 (context.md): User→Employee linking pass.
+   *
+   * The role/permission sync deliberately skips populating User.employeeId
+   * for performance ("skipping employee link for perf"). This breaks Copilot
+   * MANAGER and EMPLOYEE scoping which both rely on User.employeeId.
+   *
+   * This pass runs AFTER both employee and user syncs complete. It:
+   *   1. Reads (employee_code, email) pairs from Cloud SQL login_user
+   *   2. Looks up each Employee.id by employeeCode in Postgres
+   *   3. Batches UPDATE User SET employeeId in chunks of 500
+   *   4. Logs link rate — WARNs if < 80%
+   */
+  async linkUsersToEmployees(
+    tenantId: string,
+    schemaName: string,
+    cloudSqlOverride?: CompportCloudSqlService,
+  ): Promise<{
+    candidates: number;
+    linked: number;
+    notFound: number;
+    durationMs: number;
+  }> {
+    const sql = cloudSqlOverride ?? this.cloudSql;
+    const start = Date.now();
+
+    // Step 1: load (employee_code, email) pairs from Cloud SQL
+    let pairs: { employeeCode: string; email: string }[] = [];
+    try {
+      const rows = await sql.executeQuery<{
+        employee_code: string | null;
+        email: string | null;
+      }>(schemaName, 'SELECT employee_code, email FROM `login_user`');
+      pairs = rows
+        .map((r) => {
+          const employeeCode = (r.employee_code ?? '').toString().trim();
+          const email = (r.email ?? '').toString().trim().toLowerCase();
+          return { employeeCode, email };
+        })
+        .filter((p) => p.employeeCode && p.email);
+    } catch (err) {
+      this.logger.error(
+        `[link] Failed to read login_user for ${tenantId}: ${(err as Error).message?.substring(0, 200)}`,
+      );
+      return { candidates: 0, linked: 0, notFound: 0, durationMs: Date.now() - start };
+    }
+
+    if (pairs.length === 0) {
+      this.logger.warn(`[link] No (employee_code, email) pairs found in login_user`);
+      return { candidates: 0, linked: 0, notFound: 0, durationMs: Date.now() - start };
+    }
+
+    // Step 2: build employeeCode → Employee.id map for this tenant
+    const employees = await this.db.forTenant(tenantId, (tx) =>
+      tx.employee.findMany({
+        where: { tenantId },
+        select: { id: true, employeeCode: true },
+      }),
+    );
+    const codeToId = new Map<string, string>();
+    for (const e of employees) {
+      if (e.employeeCode) codeToId.set(e.employeeCode, e.id);
+    }
+    this.logger.log(
+      `[link] Loaded ${codeToId.size} employees and ${pairs.length} login_user pairs`,
+    );
+
+    // Step 3: build batched UPDATE statements
+    let linked = 0;
+    let notFound = 0;
+    const BATCH = 500;
+    const batchUpdates: { email: string; employeeId: string }[] = [];
+
+    for (const { employeeCode, email } of pairs) {
+      const employeeId = codeToId.get(employeeCode);
+      if (!employeeId) {
+        notFound++;
+        continue;
+      }
+      batchUpdates.push({ email, employeeId });
+    }
+
+    // Step 4: apply updates in chunks
+    for (let i = 0; i < batchUpdates.length; i += BATCH) {
+      const chunk = batchUpdates.slice(i, i + BATCH);
+      try {
+        await this.db.forTenant(
+          tenantId,
+          async (tx) => {
+            for (const { email, employeeId } of chunk) {
+              try {
+                const result = await tx.user.updateMany({
+                  where: { tenantId, email, employeeId: null },
+                  data: { employeeId },
+                });
+                if (result.count > 0) linked += result.count;
+              } catch {
+                // unique-constraint violations (employeeId is @unique in some
+                // schemas) — skip silently and let the next pass try a
+                // different user→employee mapping
+              }
+            }
+          },
+          { timeout: UPSERT_TX_TIMEOUT_MS, maxWait: 30_000 },
+        );
+      } catch (err) {
+        this.logger.warn(
+          `[link] Batch ${i}-${i + chunk.length} failed: ${(err as Error).message?.substring(0, 200)}`,
+        );
+      }
+    }
+
+    const durationMs = Date.now() - start;
+    const linkRate = pairs.length > 0 ? linked / pairs.length : 0;
+    const msg = `[link] Linked ${linked}/${pairs.length} users to employees (notFound=${notFound}, rate=${(linkRate * 100).toFixed(1)}%, duration=${durationMs}ms)`;
+    if (linkRate < 0.8) {
+      this.logger.warn(msg);
+    } else {
+      this.logger.log(msg);
+    }
+
+    return { candidates: pairs.length, linked, notFound, durationMs };
+  }
+
   // ─── Private Helpers ─────────────────────────────────────────
 
   /**

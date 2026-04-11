@@ -19,21 +19,25 @@ export class EncryptionService {
     const secret = this.configService.get<string>('BENEFITS_ENCRYPTION_KEY');
     if (secret && secret.length >= 32) {
       this.key = Buffer.from(secret.slice(0, 32), 'utf-8');
-    } else if (process.env['NODE_ENV'] === 'production') {
-      // Log critical warning but don't crash — allows the app to start so
-      // the encryption key can be configured via platform settings.
-      this.key = randomBytes(32);
-      this.logger.error(
-        'BENEFITS_ENCRYPTION_KEY is not set in production! ' +
-          'Using a random key — encrypted data will NOT survive restarts. ' +
-          'Set BENEFITS_ENCRYPTION_KEY (>=32 chars) immediately.',
-      );
-    } else {
-      this.key = Buffer.from('benefits-dev-key-32-chars-long!!', 'utf-8');
-      this.logger.warn(
-        'Using default encryption key. Set BENEFITS_ENCRYPTION_KEY in production.',
+      return;
+    }
+
+    // BLOCKER 2 (context.md): never generate a random key at runtime — any
+    // SSN encrypted with it becomes unrecoverable on the next restart. Hard
+    // fail in production so the missing config is impossible to ignore.
+    if (process.env['NODE_ENV'] === 'production') {
+      throw new Error(
+        'BENEFITS_ENCRYPTION_KEY is not set or too short (need >=32 chars). ' +
+          'Generate one with `openssl rand -hex 32` and store it in GCP ' +
+          'Secret Manager. Refusing to start with an unstable key.',
       );
     }
+
+    // Dev only — deterministic key so existing local fixtures still decrypt.
+    this.key = Buffer.from('benefits-dev-key-32-chars-long!!', 'utf-8');
+    this.logger.warn(
+      'Using deterministic dev encryption key. Set BENEFITS_ENCRYPTION_KEY in production.',
+    );
   }
 
   encrypt(plaintext: string): string {

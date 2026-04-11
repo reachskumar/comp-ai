@@ -25,19 +25,31 @@ export class PlatformConfigService {
   private readonly CACHE_TTL_MS = 60_000; // 1 minute
 
   constructor(private readonly db: DatabaseService) {
-    const keyEnv = process.env['PLATFORM_CONFIG_ENCRYPTION_KEY']
-      ?? process.env['PII_ENCRYPTION_KEY']
-      ?? '';
+    const keyEnv =
+      process.env['PLATFORM_CONFIG_ENCRYPTION_KEY'] ?? process.env['PII_ENCRYPTION_KEY'] ?? '';
 
     if (keyEnv.length >= 32) {
       this.encryptionKey = Buffer.from(keyEnv.slice(0, 32), 'utf-8');
-    } else {
-      // Development fallback
-      this.encryptionKey = Buffer.from('platform-config-dev-key-32char!', 'utf-8');
-      if (process.env['NODE_ENV'] === 'production') {
-        this.logger.error('PLATFORM_CONFIG_ENCRYPTION_KEY not set in production!');
-      }
+      return;
     }
+
+    // BLOCKER 3 (context.md): never fall back to a hardcoded dev key in
+    // production. Anything encrypted with the committed key would be
+    // readable by anyone with repo access. Hard fail so the missing config
+    // is impossible to ignore.
+    if (process.env['NODE_ENV'] === 'production') {
+      throw new Error(
+        'PLATFORM_CONFIG_ENCRYPTION_KEY (or PII_ENCRYPTION_KEY) is not set or too short ' +
+          '(need >=32 chars). Generate with `openssl rand -hex 32` and store in GCP ' +
+          'Secret Manager. Refusing to start with a hardcoded dev key.',
+      );
+    }
+
+    // Dev only — deterministic key so existing local fixtures still decrypt.
+    this.encryptionKey = Buffer.from('platform-config-dev-key-32char!', 'utf-8');
+    this.logger.warn(
+      'Using deterministic dev encryption key. Set PLATFORM_CONFIG_ENCRYPTION_KEY in production.',
+    );
   }
 
   // ─── Read ────────────────────────────────────────────────

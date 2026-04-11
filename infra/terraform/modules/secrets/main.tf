@@ -94,6 +94,52 @@ resource "google_secret_manager_secret_version" "encryption_key" {
   secret_data = random_password.encryption_key.result
 }
 
+# ─── BENEFITS_ENCRYPTION_KEY (AES-256-GCM for SSN/PHI) ─────────
+# IMPORTANT: this secret was created out-of-band via gcloud during the
+# BLOCKER 2 fix. The data is owned by GCP, not Terraform — never let
+# TF write secret_data here or it will rotate the key and make
+# previously-encrypted SSN data unrecoverable.
+resource "google_secret_manager_secret" "benefits_encryption_key" {
+  secret_id = "${var.name_prefix}-benefits-encryption-key"
+
+  replication {
+    auto {}
+  }
+
+  labels = var.labels
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+# Bring the existing secret into Terraform state. Requires Terraform 1.5+.
+import {
+  to = google_secret_manager_secret.benefits_encryption_key
+  id = "projects/compportiq/secrets/${var.name_prefix}-benefits-encryption-key"
+}
+
+# ─── PLATFORM_CONFIG_ENCRYPTION_KEY (AES-256-GCM for platform_config) ──
+# Same out-of-band provenance as benefits_encryption_key.
+resource "google_secret_manager_secret" "platform_config_encryption_key" {
+  secret_id = "${var.name_prefix}-platform-config-encryption-key"
+
+  replication {
+    auto {}
+  }
+
+  labels = var.labels
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+import {
+  to = google_secret_manager_secret.platform_config_encryption_key
+  id = "projects/compportiq/secrets/${var.name_prefix}-platform-config-encryption-key"
+}
+
 # ─── Azure OpenAI (placeholder — replace with real values after deploy) ──
 resource "google_secret_manager_secret" "azure_openai_key" {
   secret_id = "${var.name_prefix}-azure-openai-key"
@@ -134,6 +180,8 @@ locals {
     google_secret_manager_secret.redis_url.secret_id,
     google_secret_manager_secret.jwt_secret.secret_id,
     google_secret_manager_secret.encryption_key.secret_id,
+    google_secret_manager_secret.benefits_encryption_key.secret_id,
+    google_secret_manager_secret.platform_config_encryption_key.secret_id,
     google_secret_manager_secret.azure_openai_key.secret_id,
     google_secret_manager_secret.azure_openai_endpoint.secret_id,
   ]

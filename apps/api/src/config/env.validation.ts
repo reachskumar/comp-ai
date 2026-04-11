@@ -111,6 +111,21 @@ export class EnvironmentVariables {
   @IsOptional()
   INTEGRATION_ENCRYPTION_KEY?: string;
 
+  // ---- Encryption keys (required in production — see env.validation.ts
+  //      productionRequiredKeys list and the post-validation hard check) ----
+
+  @IsString()
+  @IsOptional()
+  BENEFITS_ENCRYPTION_KEY?: string;
+
+  @IsString()
+  @IsOptional()
+  PLATFORM_CONFIG_ENCRYPTION_KEY?: string;
+
+  @IsString()
+  @IsOptional()
+  PII_ENCRYPTION_KEY?: string;
+
   // ---- Real-time Sync ----
 
   @Transform(({ value }) => (value != null ? parseInt(String(value), 10) : value))
@@ -130,6 +145,35 @@ export function validate(config: Record<string, unknown>): EnvironmentVariables 
 
   if (errors.length > 0) {
     throw new Error(`Config validation error: ${errors.toString()}`);
+  }
+
+  // Production-only hard checks. Per context.md BLOCKERS 2 & 3, encryption
+  // keys MUST be set before the app boots in production. The encryption
+  // services also throw, but failing here gives a single, clear error
+  // message at startup instead of a runtime error the first time the
+  // service is instantiated.
+  if (validatedConfig.NODE_ENV === 'production') {
+    const missing: string[] = [];
+    if (!validatedConfig.BENEFITS_ENCRYPTION_KEY || validatedConfig.BENEFITS_ENCRYPTION_KEY.length < 32) {
+      missing.push('BENEFITS_ENCRYPTION_KEY (must be >=32 chars)');
+    }
+    const platformKey =
+      validatedConfig.PLATFORM_CONFIG_ENCRYPTION_KEY ?? validatedConfig.PII_ENCRYPTION_KEY ?? '';
+    if (platformKey.length < 32) {
+      missing.push('PLATFORM_CONFIG_ENCRYPTION_KEY or PII_ENCRYPTION_KEY (must be >=32 chars)');
+    }
+    if (
+      !validatedConfig.INTEGRATION_ENCRYPTION_KEY ||
+      validatedConfig.INTEGRATION_ENCRYPTION_KEY.length < 32
+    ) {
+      missing.push('INTEGRATION_ENCRYPTION_KEY (must be >=32 chars)');
+    }
+    if (missing.length > 0) {
+      throw new Error(
+        `Production config missing required encryption keys:\n  - ${missing.join('\n  - ')}\n` +
+          'Generate with `openssl rand -hex 32` and store in GCP Secret Manager.',
+      );
+    }
   }
 
   return validatedConfig;

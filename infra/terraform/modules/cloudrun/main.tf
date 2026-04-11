@@ -142,6 +142,24 @@ resource "google_cloud_run_v2_service" "api" {
         }
       }
       env {
+        name = "BENEFITS_ENCRYPTION_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = var.secret_ids["benefits_encryption_key"]
+            version = "latest"
+          }
+        }
+      }
+      env {
+        name = "PLATFORM_CONFIG_ENCRYPTION_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = var.secret_ids["platform_config_encryption_key"]
+            version = "latest"
+          }
+        }
+      }
+      env {
         name = "AZURE_OPENAI_API_KEY"
         value_source {
           secret_key_ref {

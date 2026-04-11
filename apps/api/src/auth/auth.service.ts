@@ -97,8 +97,22 @@ export class AuthService {
         ?? users[0]
         ?? null);
 
-    if (!user || !user.passwordHash) {
+    if (!user) {
       throw new UnauthorizedException('Invalid credentials');
+    }
+
+    // BLOCKER 5 (context.md): users provisioned by Compport sync land with
+    // passwordHash = ''. bcryptjs.compare('', '') is implementation-defined
+    // and can return true on some platforms — that would let any sync'd
+    // user log in with an empty password. Reject these explicitly with a
+    // distinct message so SSO/setup flows are obvious.
+    if (!user.passwordHash || user.passwordHash.trim() === '') {
+      this.logger.warn(
+        `Login blocked — empty passwordHash (synced from Compport): ${user.email}`,
+      );
+      throw new UnauthorizedException(
+        'This account was provisioned by Compport. Use SSO or contact your administrator to set a password.',
+      );
     }
 
     // Check if account is locked

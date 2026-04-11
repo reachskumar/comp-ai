@@ -1102,10 +1102,31 @@ export class PlatformAdminService {
         this.logger.error(`[sync-full] All employee table candidates failed for ${tenant.name}`);
       }
 
+      // BLOCKER 4: link Users → Employees now that both are synced.
+      // syncRolesAndPermissions deliberately skips this for performance,
+      // so we run it as an explicit pass at the end of every full sync.
+      let linkResult: { candidates: number; linked: number; notFound: number } = {
+        candidates: 0,
+        linked: 0,
+        notFound: 0,
+      };
+      try {
+        linkResult = await this.inboundSyncService.linkUsersToEmployees(
+          tenantId,
+          tenant.compportSchema,
+          isolatedSql,
+        );
+      } catch (err) {
+        this.logger.warn(
+          `[sync-full] User→Employee linking failed: ${(err as Error).message?.substring(0, 200)}`,
+        );
+      }
+
       this.logger.log(
         `[sync-full] Complete for ${tenant.name}: roles=${roleResult.roles.synced}, ` +
           `pages=${roleResult.pages.synced}, permissions=${roleResult.permissions.synced}, ` +
-          `users=${roleResult.users.synced}, employees=${employeeResult.synced}`,
+          `users=${roleResult.users.synced}, employees=${employeeResult.synced}, ` +
+          `linked=${linkResult.linked}/${linkResult.candidates}`,
       );
 
       // Mark job as completed with final counts in metadata
@@ -1136,6 +1157,9 @@ export class PlatformAdminService {
               users: roleResult.users.synced,
               employees: employeeResult.synced,
               employeeErrors: employeeResult.errors,
+              usersLinkedToEmployees: linkResult.linked,
+              usersUnlinked: linkResult.notFound,
+              userLinkCandidates: linkResult.candidates,
             } as never,
           },
         }),
