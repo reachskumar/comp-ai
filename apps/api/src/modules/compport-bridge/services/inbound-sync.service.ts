@@ -288,6 +288,8 @@ export class InboundSyncService {
     let offset = 0;
     let hasMore = true;
     const nullSamples: Array<Record<string, unknown>> = [];
+    const seenEmails = new Set<string>();
+    let emailCollisions = 0;
 
     while (hasMore) {
       const rows = await this.connectionManager.executeQuery<Record<string, unknown>>(
@@ -348,8 +350,19 @@ export class InboundSyncService {
             }
             mappedData = mapResult.mappedData;
           } else {
-            mappedData = this.defaultMapping(validRow, lookups);
+            mappedData = this.defaultMapping(validRow, lookups, employeeId);
           }
+
+          // Intra-sync email dedupe — see syncEmployeesForTenant for the
+          // same logic. PG @@unique([tenantId, email]) requires this.
+          const candidateEmail = String(mappedData['email'] ?? '');
+          const lc = candidateEmail.toLowerCase();
+          if (lc && seenEmails.has(lc)) {
+            const [local, domain] = candidateEmail.split('@');
+            mappedData['email'] = `${local}+${employeeId}@${domain || 'imported.local'}`;
+            emailCollisions++;
+          }
+          seenEmails.add(String(mappedData['email']).toLowerCase());
 
           await this.upsertEmployee(tenantId, employeeId, mappedData);
           synced++;
@@ -368,6 +381,12 @@ export class InboundSyncService {
 
       offset += rows.length;
       if (rows.length < BATCH_SIZE) hasMore = false;
+    }
+
+    if (emailCollisions > 0) {
+      this.logger.warn(
+        `Delta sync: ${emailCollisions} email collisions de-duplicated by suffixing with employeeId`,
+      );
     }
 
     if (nullSamples.length > 0) {
@@ -550,6 +569,8 @@ export class InboundSyncService {
     let offset = 0;
     let hasMore = true;
     const nullSamples: Array<Record<string, unknown>> = [];
+    const seenEmails = new Set<string>();
+    let emailCollisions = 0;
 
     while (hasMore) {
       // Paginated SELECT from Cloud SQL (with optional delta filter)
@@ -625,8 +646,19 @@ export class InboundSyncService {
             mappedData = mapResult.mappedData;
           } else {
             // No mappings — use direct field names with lookup resolution
-            mappedData = this.defaultMapping(validRow, lookups);
+            mappedData = this.defaultMapping(validRow, lookups, employeeId);
           }
+
+          // Intra-sync email dedupe — see syncEmployeesForTenant for the
+          // same logic. PG @@unique([tenantId, email]) requires this.
+          const candidateEmail = String(mappedData['email'] ?? '');
+          const lc = candidateEmail.toLowerCase();
+          if (lc && seenEmails.has(lc)) {
+            const [local, domain] = candidateEmail.split('@');
+            mappedData['email'] = `${local}+${employeeId}@${domain || 'imported.local'}`;
+            emailCollisions++;
+          }
+          seenEmails.add(String(mappedData['email']).toLowerCase());
 
           // 3. Upsert into PostgreSQL
           await this.upsertEmployee(tenantId, employeeId, mappedData);
@@ -686,11 +718,16 @@ export class InboundSyncService {
     );
 
     this.logger.log(
-      `Inbound sync complete: synced=${synced}, skipped=${skipped}, errors=${errors}, duration=${durationMs}ms`,
+      `Inbound sync complete: synced=${synced}, skipped=${skipped}, errors=${errors}, emailCollisions=${emailCollisions}, duration=${durationMs}ms`,
     );
     if (nullSamples.length > 0) {
       this.logger.warn(
         `Rows skipped due to null/empty "${idStrategy.column}". First ${nullSamples.length} samples: ${JSON.stringify(nullSamples)}`,
+      );
+    }
+    if (emailCollisions > 0) {
+      this.logger.warn(
+        `${emailCollisions} email collisions de-duplicated by suffixing with employeeId`,
       );
     }
 
@@ -799,6 +836,12 @@ export class InboundSyncService {
     let offset = 0;
     let hasMore = true;
     const nullSamples: Array<Record<string, unknown>> = [];
+    // Track emails seen across this entire sync run. Employee schema has
+    // @@unique([tenantId, email]) so we MUST dedupe before upserting or
+    // batches fail with "Unique constraint failed" — see incident
+    // 2026-04-11 BFL login_user sync.
+    const seenEmails = new Set<string>();
+    let emailCollisions = 0;
 
     while (hasMore) {
       const rows = await sql.executeQuery<Record<string, unknown>>(
@@ -838,7 +881,25 @@ export class InboundSyncService {
             continue;
           }
 
-          batch.push({ employeeCode: employeeId, data: this.defaultMapping(validRow, lookups) });
+          // Build mapped data using detected id for placeholder email uniqueness
+          const data = this.defaultMapping(validRow, lookups, employeeId);
+
+          // Intra-sync email dedupe: if this email is already used by another
+          // employeeCode in this run, suffix it so the unique index doesn't
+          // collide. The first occurrence wins (keeps clean email); subsequent
+          // ones get a deterministic per-row suffix.
+          const candidateEmail = String(data['email'] ?? '');
+          const lc = candidateEmail.toLowerCase();
+          if (lc && seenEmails.has(lc)) {
+            // Suffix with the unique employeeId so each duplicate gets a
+            // distinct (but still recognisable) email
+            const [local, domain] = candidateEmail.split('@');
+            data['email'] = `${local}+${employeeId}@${domain || 'imported.local'}`;
+            emailCollisions++;
+          }
+          seenEmails.add(String(data['email']).toLowerCase());
+
+          batch.push({ employeeCode: employeeId, data });
         } catch (err) {
           errors++;
           const message = err instanceof Error ? err.message : 'Unknown error';
@@ -901,11 +962,16 @@ export class InboundSyncService {
 
     const durationMs = Date.now() - start;
     this.logger.log(
-      `[tenant-sync] Employee sync complete: synced=${synced}, skipped=${skipped}, errors=${errors}, duration=${durationMs}ms`,
+      `[tenant-sync] Employee sync complete: synced=${synced}, skipped=${skipped}, errors=${errors}, emailCollisions=${emailCollisions}, duration=${durationMs}ms`,
     );
     if (nullSamples.length > 0) {
       this.logger.warn(
         `[tenant-sync] ${skipped} rows skipped due to null/empty "${idStrategy.column}". First ${nullSamples.length} samples: ${JSON.stringify(nullSamples)}`,
+      );
+    }
+    if (emailCollisions > 0) {
+      this.logger.warn(
+        `[tenant-sync] ${emailCollisions} email collisions de-duplicated by suffixing with employeeId`,
       );
     }
 
@@ -1199,6 +1265,11 @@ export class InboundSyncService {
   private defaultMapping(
     row: Record<string, unknown>,
     lookups: LookupMaps,
+    /** Unique row identifier extracted from the detected id column. Used to
+     *  build a placeholder email when the source row has no real one — must
+     *  be unique across the sync so the @@unique([tenantId, email]) index
+     *  doesn't collide. Falls back to the legacy chain only when not provided. */
+    rowUniqueId?: string,
   ): Record<string, unknown> {
     // Helper: resolve a numeric FK ID using a lookup map, fallback to string
     const resolve = (map: Map<number, string>, val: unknown): string | null => {
@@ -1309,12 +1380,16 @@ export class InboundSyncService {
     const perfRatingRaw = row['rating_for_current_year'] ?? row['performance_rating'];
     const performanceRating = perfRatingRaw != null ? Number(perfRatingRaw) : null;
 
+    // Email placeholder: must be unique across the sync. Use the detected id
+    // column (always unique by definition) when available; fall back to the
+    // legacy chain only for callsites that haven't been threaded yet.
+    const fallbackId =
+      rowUniqueId ??
+      String(row['employee_code'] ?? row['employee_id'] ?? row['id'] ?? 'unknown');
     return {
       firstName: firstName ?? 'Unknown',
       lastName: lastName ?? '',
-      email:
-        email ??
-        `${String(row['employee_code'] ?? row['employee_id'] ?? row['id'])}@imported.local`,
+      email: email ?? `${fallbackId}@imported.local`,
       department,
       jobFamily,
       level,
