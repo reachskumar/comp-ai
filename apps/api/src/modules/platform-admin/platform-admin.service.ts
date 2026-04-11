@@ -1325,6 +1325,59 @@ export class PlatformAdminService {
    *
    * This is the tool the user needs to know "am I missing anything?"
    */
+  /**
+   * BLOCKER 6 (context.md): scan tenant Compport schema for compensation
+   * tables and persist them on the connector. Used by the platform admin
+   * UI to discover what's available before wiring the comp data sync.
+   */
+  async discoverCompensationTables(tenantId: string) {
+    const tenant = await this.getTenant(tenantId);
+    if (!tenant.compportSchema) {
+      throw new BadRequestException(
+        `Tenant "${tenant.name}" has no Compport schema configured. Cannot discover comp tables.`,
+      );
+    }
+
+    // Find/ensure the connector so persistence works
+    await this.ensureConnectorExists(tenantId, tenant.name, tenant.compportSchema);
+    const connector = await this.db.forTenant(tenantId, (tx) =>
+      tx.integrationConnector.findFirst({
+        where: { tenantId, connectorType: 'COMPPORT_CLOUDSQL' },
+        select: { id: true },
+      }),
+    );
+
+    const isolatedSql = CompportCloudSqlService.createIsolated();
+    const mysqlConfig = this.getMySqlConfig();
+    try {
+      await isolatedSql.connect({
+        host: mysqlConfig.host!,
+        port: mysqlConfig.port ?? 3306,
+        user: mysqlConfig.user!,
+        password: mysqlConfig.password!,
+        database: tenant.compportSchema,
+        sslCa: mysqlConfig.sslCa,
+        sslCert: mysqlConfig.sslCert,
+        sslKey: mysqlConfig.sslKey,
+      });
+      const result = await this.inboundSyncService.discoverCompensationTables(
+        tenantId,
+        tenant.compportSchema,
+        isolatedSql,
+        connector?.id,
+      );
+      return {
+        tenantId,
+        tenantName: tenant.name,
+        compportSchema: tenant.compportSchema,
+        connectorId: connector?.id ?? null,
+        ...result,
+      };
+    } finally {
+      await isolatedSql.disconnect().catch(() => {});
+    }
+  }
+
   async auditTenantData(tenantId: string): Promise<{
     tenantId: string;
     tenantName: string;

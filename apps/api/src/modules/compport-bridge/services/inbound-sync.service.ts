@@ -1039,6 +1039,152 @@ export class InboundSyncService {
     return { candidates: pairs.length, linked, notFound, durationMs };
   }
 
+  /**
+   * BLOCKER 6 (context.md): compensation table discovery.
+   *
+   * Compport tenant schemas vary in which compensation/performance tables
+   * they expose. Run this once per tenant to find out which tables exist,
+   * then store the result in IntegrationConnector.config.availableTables.
+   * The compensation sync logic (TBD) will then know which tables to read.
+   *
+   * Returns a map keyed by category (salary/revision/perf/band/variable)
+   * with the discovered table names and their estimated row counts.
+   */
+  async discoverCompensationTables(
+    tenantId: string,
+    schemaName: string,
+    cloudSqlOverride?: CompportCloudSqlService,
+    connectorId?: string,
+  ): Promise<{
+    salary: Array<{ name: string; rowCount: number }>;
+    revision: Array<{ name: string; rowCount: number }>;
+    performance: Array<{ name: string; rowCount: number }>;
+    band: Array<{ name: string; rowCount: number }>;
+    variable: Array<{ name: string; rowCount: number }>;
+    other: Array<{ name: string; rowCount: number }>;
+  }> {
+    const sql = cloudSqlOverride ?? this.cloudSql;
+
+    const candidatesByCategory: Record<string, string[]> = {
+      salary: [
+        'salary_details',
+        'ctc_details',
+        'compensation_details',
+        'current_ctc',
+        'emp_salary',
+        'salary_master',
+        'employee_compensation',
+      ],
+      revision: [
+        'revision_history',
+        'increment_history',
+        'salary_history',
+        'comp_history',
+        'ctc_history',
+        'salary_revision',
+        'compensation_revision',
+      ],
+      performance: [
+        'performance_ratings',
+        'appraisal_data',
+        'kpi_scores',
+        'performance_history',
+        'appraisal_history',
+      ],
+      band: ['grade_band', 'salary_bands', 'pay_grades', 'compensation_bands'],
+      variable: [
+        'variable_pay',
+        'bonus_details',
+        'incentive_details',
+        'variable_pay_details',
+        'bonus_history',
+      ],
+      other: ['increment_matrix', 'merit_matrix'],
+    };
+
+    const allCandidates = Object.values(candidatesByCategory).flat();
+
+    // One INFORMATION_SCHEMA query for everything
+    const placeholders = allCandidates.map(() => '?').join(', ');
+    let foundTables: Array<{ TABLE_NAME: string; TABLE_ROWS: number | string | null }> = [];
+    try {
+      foundTables = await sql.executeQuery<{
+        TABLE_NAME: string;
+        TABLE_ROWS: number | string | null;
+      }>(
+        schemaName,
+        `SELECT TABLE_NAME, TABLE_ROWS
+           FROM INFORMATION_SCHEMA.TABLES
+          WHERE TABLE_SCHEMA = ?
+            AND TABLE_NAME IN (${placeholders})`,
+        [schemaName, ...allCandidates],
+      );
+    } catch (err) {
+      this.logger.error(
+        `[discover] INFORMATION_SCHEMA query failed: ${(err as Error).message?.substring(0, 200)}`,
+      );
+      throw err;
+    }
+
+    // Build map and bucketize
+    const foundMap = new Map<string, number>();
+    for (const t of foundTables) {
+      foundMap.set(String(t.TABLE_NAME), Number(t.TABLE_ROWS ?? 0) || 0);
+    }
+
+    const bucket = (cands: string[]) =>
+      cands
+        .filter((c) => foundMap.has(c))
+        .map((c) => ({ name: c, rowCount: foundMap.get(c) ?? 0 }));
+
+    const result = {
+      salary: bucket(candidatesByCategory['salary']!),
+      revision: bucket(candidatesByCategory['revision']!),
+      performance: bucket(candidatesByCategory['performance']!),
+      band: bucket(candidatesByCategory['band']!),
+      variable: bucket(candidatesByCategory['variable']!),
+      other: bucket(candidatesByCategory['other']!),
+    };
+
+    const totalFound = Object.values(result).reduce((sum, arr) => sum + arr.length, 0);
+    this.logger.log(
+      `[discover] ${schemaName}: found ${totalFound} compensation tables ` +
+        `(salary=${result.salary.length}, revision=${result.revision.length}, ` +
+        `performance=${result.performance.length}, band=${result.band.length}, ` +
+        `variable=${result.variable.length}, other=${result.other.length})`,
+    );
+
+    // Persist into connector config for later sync use
+    if (connectorId) {
+      try {
+        const current = await this.db.forTenant(tenantId, (tx) =>
+          tx.integrationConnector.findFirst({
+            where: { id: connectorId, tenantId },
+            select: { config: true },
+          }),
+        );
+        const cfg = ((current?.config as Record<string, unknown> | null) ?? {}) as Record<
+          string,
+          unknown
+        >;
+        cfg['availableCompTables'] = result;
+        cfg['compTablesDiscoveredAt'] = new Date().toISOString();
+        await this.db.forTenant(tenantId, (tx) =>
+          tx.integrationConnector.update({
+            where: { id: connectorId },
+            data: { config: cfg as never },
+          }),
+        );
+      } catch (err) {
+        this.logger.warn(
+          `[discover] Failed to persist availableCompTables: ${(err as Error).message?.substring(0, 120)}`,
+        );
+      }
+    }
+
+    return result;
+  }
+
   // ─── Private Helpers ─────────────────────────────────────────
 
   /**

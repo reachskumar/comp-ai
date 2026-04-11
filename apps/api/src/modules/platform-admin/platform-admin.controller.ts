@@ -178,6 +178,15 @@ export class PlatformAdminController {
     return this.service.auditTenantData(id);
   }
 
+  @Post('tenants/:id/discover-comp-tables')
+  @ApiOperation({
+    summary:
+      'Scan the tenant Compport schema for compensation/performance tables and persist the result in connector config (BLOCKER 6 prep).',
+  })
+  discoverCompTables(@Param('id') id: string) {
+    return this.service.discoverCompensationTables(id);
+  }
+
   // ─── Tenant Usage ────────────────────────────────────────
 
   @Get('tenants/:id/usage')
