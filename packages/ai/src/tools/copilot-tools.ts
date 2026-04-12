@@ -172,6 +172,12 @@ export interface CopilotDbAdapter {
   // ─── Optional Rule Management Adapter ──────────────────────
   /** If provided, rule management tools will be added to the copilot. */
   ruleManagement?: RuleManagementDbAdapter;
+
+  // ─── Optional Mirror Adapter (universal Compport data access) ──
+  /** If provided, three mirror introspection tools (list/describe/query)
+   *  are added to the copilot, giving the agent access to EVERY table
+   *  in the tenant's Compport system — not just the typed Prisma models. */
+  mirrorAdapter?: MirrorDbAdapter;
 }
 
 /** Roles allowed to execute write actions through the copilot. */
@@ -484,5 +490,126 @@ export function createCopilotTools(
     tools.push(...ruleTools);
   }
 
+  // Mirror introspection tools — let the agent query ANY Compport table
+  // that has been mirrored via the universal sync pipeline (Stage 2).
+  // These are always available; if no mirror exists yet, they return
+  // empty results with a "mirror not yet configured" message.
+  if (db.mirrorAdapter) {
+    tools.push(...createMirrorTools(tenantId, db.mirrorAdapter));
+  }
+
   return tools;
+}
+
+// ─── Mirror Adapter Interface ────────────────────────────────────
+
+export interface MirrorDbAdapter {
+  /** List all mirrored tables for this tenant with row counts and column metadata. */
+  listMirrorTables(
+    tenantId: string,
+  ): Promise<
+    Array<{
+      tableName: string;
+      rowCount: number;
+      columnCount: number;
+      columns: string[];
+      lastSyncAt: string | null;
+      status: string;
+    }>
+  >;
+
+  /** Describe a specific mirror table — full column details + sample row. */
+  describeMirrorTable(
+    tenantId: string,
+    tableName: string,
+  ): Promise<{
+    tableName: string;
+    columns: Array<{ name: string; dataType: string; nullable: boolean }>;
+    rowCount: number;
+    sampleRow: Record<string, unknown> | null;
+    primaryKey: string[];
+  } | null>;
+
+  /** Query a mirror table with optional filtering. Returns up to `limit` rows. */
+  queryMirrorTable(
+    tenantId: string,
+    tableName: string,
+    filters?: {
+      where?: Record<string, unknown>;
+      orderBy?: string;
+      orderDir?: 'ASC' | 'DESC';
+      limit?: number;
+      columns?: string[];
+    },
+  ): Promise<unknown[]>;
+}
+
+function createMirrorTools(
+  tenantId: string,
+  adapter: MirrorDbAdapter,
+): StructuredToolInterface[] {
+  const listTables = createDomainTool({
+    name: 'list_compport_tables',
+    description:
+      'List ALL data tables available from the Compport system for this tenant. ' +
+      'Returns table names, row counts, column names, and sync status. ' +
+      'Use this FIRST to discover what data is available before querying specific tables. ' +
+      'Covers compensation, performance, bonuses, LTI, CTI, grades, bands, history, audit logs — everything.',
+    schema: z.object({}),
+    func: async () => adapter.listMirrorTables(tenantId),
+  });
+
+  const describeTable = createDomainTool({
+    name: 'describe_compport_table',
+    description:
+      'Get detailed metadata for a specific Compport table: all columns (name + type), ' +
+      'a sample row showing real values, primary key, and row count. ' +
+      'Call list_compport_tables first to find the table name, then use this to understand its structure.',
+    schema: z.object({
+      tableName: z.string().describe('The Compport table name (e.g. salary_details, performance_ratings, bonus_details)'),
+    }),
+    func: async (input) => adapter.describeMirrorTable(tenantId, input.tableName),
+  });
+
+  const queryTable = createDomainTool({
+    name: 'query_compport_table',
+    description:
+      'Query any Compport data table by name with optional filters. ' +
+      'Use describe_compport_table first to understand the column names and types, ' +
+      'then use this tool to retrieve actual data. ' +
+      'Supports filtering by column values, ordering, column selection, and row limits. ' +
+      'Covers salary, bonus, performance, history, modules, rules, audit — any table the tenant has.',
+    schema: z.object({
+      tableName: z.string().describe('The Compport table name to query'),
+      where: z
+        .record(z.unknown())
+        .optional()
+        .describe('Filter conditions as { columnName: value } pairs. Exact match only.'),
+      columns: z
+        .array(z.string())
+        .optional()
+        .describe('Specific columns to return (default: all)'),
+      orderBy: z.string().optional().describe('Column to sort by'),
+      orderDir: z
+        .enum(['ASC', 'DESC'])
+        .optional()
+        .default('ASC')
+        .describe('Sort direction'),
+      limit: z
+        .number()
+        .optional()
+        .default(50)
+        .describe('Max rows to return (default 50, max 200)'),
+    }),
+    func: async (input) =>
+      adapter.queryMirrorTable(tenantId, input.tableName, {
+        where: input.where,
+        columns: input.columns,
+        orderBy: input.orderBy,
+        orderDir: input.orderDir,
+        limit: Math.min(input.limit ?? 50, 200),
+      }),
+  });
+
+  return [listTables, describeTable, queryTable];
 }

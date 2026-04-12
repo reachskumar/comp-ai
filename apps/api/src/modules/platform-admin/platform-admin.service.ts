@@ -13,6 +13,7 @@ import { TenantRegistryService } from '../compport-bridge/services/tenant-regist
 import { CompportCloudSqlService } from '../compport-bridge/services/compport-cloudsql.service';
 import { InboundSyncService } from '../compport-bridge/services/inbound-sync.service';
 import { SchemaCatalogService } from '../compport-bridge/services/schema-catalog.service';
+import { MirrorSyncService } from '../compport-bridge/services/mirror-sync.service';
 import { CreateTenantDto, UpdateTenantDto, CreateTenantUserDto, OnboardTenantDto } from './dto';
 
 /** Canonical feature keys that can be toggled per-tenant */
@@ -42,6 +43,7 @@ export class PlatformAdminService {
     private readonly cloudSql: CompportCloudSqlService,
     private readonly inboundSyncService: InboundSyncService,
     private readonly schemaCatalogService: SchemaCatalogService,
+    private readonly mirrorSyncService: MirrorSyncService,
   ) {}
 
   // ─── Tenant CRUD ──────────────────────────────────────────
@@ -1475,6 +1477,54 @@ export class PlatformAdminService {
           isMirrorable: e.isMirrorable,
           reasonNotMirrorable: e.reasonNotMirrorable,
         })),
+      };
+    } finally {
+      await isolatedSql.disconnect().catch(() => {});
+    }
+  }
+
+  /**
+   * Universal mirror sync (Phase 2). Reads TenantSchemaCatalog (Phase 1),
+   * creates per-tenant Postgres schema mirror_<slug>, and copies every
+   * mirrorable table from Compport MySQL → Postgres.
+   *
+   * Fire-and-forget via controller; caller polls SyncJob or the
+   * TenantDataMirrorState table for per-table status.
+   */
+  async syncTenantMirror(tenantId: string) {
+    const tenant = await this.getTenant(tenantId);
+    if (!tenant.compportSchema) {
+      throw new BadRequestException(
+        `Tenant "${tenant.name}" has no Compport schema configured.`,
+      );
+    }
+
+    const isolatedSql = CompportCloudSqlService.createIsolated();
+    const mysqlConfig = this.getMySqlConfig();
+    try {
+      await isolatedSql.connect({
+        host: mysqlConfig.host!,
+        port: mysqlConfig.port ?? 3306,
+        user: mysqlConfig.user!,
+        password: mysqlConfig.password!,
+        database: tenant.compportSchema,
+        sslCa: mysqlConfig.sslCa,
+        sslCert: mysqlConfig.sslCert,
+        sslKey: mysqlConfig.sslKey,
+      });
+
+      const result = await this.mirrorSyncService.syncAllTables(
+        tenantId,
+        tenant.slug,
+        tenant.compportSchema,
+        isolatedSql,
+      );
+
+      return {
+        tenantId,
+        tenantName: tenant.name,
+        compportSchema: tenant.compportSchema,
+        ...result,
       };
     } finally {
       await isolatedSql.disconnect().catch(() => {});

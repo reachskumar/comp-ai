@@ -1,4 +1,4 @@
-export { createCopilotTools, type CopilotDbAdapter } from './copilot-tools.js';
+export { createCopilotTools, type CopilotDbAdapter, type MirrorDbAdapter } from './copilot-tools.js';
 
 export { createDataQualityTools, type DataQualityDbAdapter } from './data-quality-tools.js';
 

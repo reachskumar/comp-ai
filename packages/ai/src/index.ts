@@ -50,7 +50,7 @@ export {
 } from './streaming.js';
 
 // Copilot tools
-export { createCopilotTools, type CopilotDbAdapter } from './tools/index.js';
+export { createCopilotTools, type CopilotDbAdapter, type MirrorDbAdapter } from './tools/index.js';
 
 // Graphs
 export {

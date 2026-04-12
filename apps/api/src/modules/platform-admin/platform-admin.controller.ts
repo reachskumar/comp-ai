@@ -196,6 +196,15 @@ export class PlatformAdminController {
     return this.service.discoverTenantSchema(id);
   }
 
+  @Post('tenants/:id/sync-mirror')
+  @ApiOperation({
+    summary:
+      'Mirror sync — copy every mirrorable table from Compport MySQL to the tenant\'s Postgres mirror schema. Run discover-schema first.',
+  })
+  syncMirror(@Param('id') id: string) {
+    return this.service.syncTenantMirror(id);
+  }
+
   // ─── Tenant Usage ────────────────────────────────────────
 
   @Get('tenants/:id/usage')

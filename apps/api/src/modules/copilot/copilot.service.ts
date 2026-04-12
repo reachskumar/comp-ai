@@ -7,6 +7,7 @@ import {
   type CopilotUserContext,
   type SSEEvent,
   type RuleManagementDbAdapter,
+  type MirrorDbAdapter,
 } from '@compensation/ai';
 import { HumanMessage, AIMessage, type BaseMessage } from '@langchain/core/messages';
 import { Prisma } from '@compensation/database';
@@ -20,6 +21,121 @@ export class CopilotService implements CopilotDbAdapter {
     private readonly db: DatabaseService,
     private readonly dataScopeService: DataScopeService,
   ) {}
+
+  // ─── Mirror Adapter (universal Compport data access) ────────
+
+  get mirrorAdapter(): MirrorDbAdapter {
+    const db = this.db;
+    return {
+      async listMirrorTables(tenantId) {
+        const states = await db.forTenant(tenantId, (tx) =>
+          tx.tenantDataMirrorState.findMany({
+            where: { tenantId },
+            orderBy: { sourceTable: 'asc' },
+          }),
+        );
+        const catalogs = await db.forTenant(tenantId, (tx) =>
+          tx.tenantSchemaCatalog.findMany({
+            where: { tenantId },
+            select: { tableName: true, columns: true },
+          }),
+        );
+        const colMap = new Map<string, string[]>();
+        for (const c of catalogs) {
+          const cols = Array.isArray(c.columns) ? (c.columns as Array<{ name: string }>).map((x) => x.name) : [];
+          colMap.set(c.tableName, cols);
+        }
+        return states.map((s) => ({
+          tableName: s.sourceTable,
+          rowCount: s.rowCount,
+          columnCount: colMap.get(s.sourceTable)?.length ?? 0,
+          columns: colMap.get(s.sourceTable) ?? [],
+          lastSyncAt: s.lastFullSyncAt?.toISOString() ?? s.lastDeltaSyncAt?.toISOString() ?? null,
+          status: s.status,
+        }));
+      },
+
+      async describeMirrorTable(tenantId, tableName) {
+        const cat = await db.forTenant(tenantId, (tx) =>
+          tx.tenantSchemaCatalog.findFirst({
+            where: { tenantId, tableName },
+          }),
+        );
+        if (!cat) return null;
+        const columns = Array.isArray(cat.columns)
+          ? (cat.columns as Array<{ name: string; dataType: string; nullable: boolean }>)
+          : [];
+        return {
+          tableName: cat.tableName,
+          columns: columns.map((c) => ({ name: c.name, dataType: c.dataType, nullable: c.nullable })),
+          rowCount: cat.rowCount,
+          sampleRow: (cat.sampleRow as Record<string, unknown> | null) ?? null,
+          primaryKey: cat.primaryKeyColumns,
+        };
+      },
+
+      async queryMirrorTable(tenantId, tableName, filters) {
+        // Look up the tenant's mirror schema from mirror state
+        const state = await db.forTenant(tenantId, (tx) =>
+          tx.tenantDataMirrorState.findFirst({
+            where: { tenantId, sourceTable: tableName, status: 'READY' },
+            select: { mirrorSchema: true, mirrorTable: true },
+          }),
+        );
+        if (!state) return [];
+
+        // Validate table/column names against the catalog to prevent injection
+        const cat = await db.forTenant(tenantId, (tx) =>
+          tx.tenantSchemaCatalog.findFirst({
+            where: { tenantId, tableName },
+            select: { columns: true },
+          }),
+        );
+        const validColumns = new Set<string>(
+          Array.isArray(cat?.columns) ? (cat!.columns as Array<{ name: string }>).map((c) => c.name) : [],
+        );
+
+        // Build SELECT
+        const selectCols = filters?.columns?.length
+          ? filters.columns.filter((c) => validColumns.has(c)).map((c) => `"${c}"`).join(', ') || '*'
+          : '*';
+
+        // Build WHERE
+        const params: unknown[] = [];
+        let whereSql = '';
+        if (filters?.where && Object.keys(filters.where).length > 0) {
+          const conditions: string[] = [];
+          for (const [col, val] of Object.entries(filters.where)) {
+            if (!validColumns.has(col)) continue; // skip unknown columns
+            params.push(val);
+            conditions.push(`"${col}" = $${params.length}`);
+          }
+          if (conditions.length > 0) {
+            whereSql = ` WHERE ${conditions.join(' AND ')}`;
+          }
+        }
+
+        // Build ORDER BY
+        let orderSql = '';
+        if (filters?.orderBy && validColumns.has(filters.orderBy)) {
+          const dir = filters.orderDir === 'DESC' ? 'DESC' : 'ASC';
+          orderSql = ` ORDER BY "${filters.orderBy}" ${dir}`;
+        }
+
+        const limit = Math.min(filters?.limit ?? 50, 200);
+        params.push(limit);
+
+        const sql = `SELECT ${selectCols} FROM "${state.mirrorSchema}"."${state.mirrorTable}"${whereSql}${orderSql} LIMIT $${params.length}`;
+
+        try {
+          const rows = await db.client.$queryRawUnsafe<Record<string, unknown>[]>(sql, ...params);
+          return rows;
+        } catch (err) {
+          return [{ error: `Query failed: ${(err as Error).message?.substring(0, 200)}` }];
+        }
+      },
+    };
+  }
 
   // ─── Rule Management Adapter (for Copilot rule tools) ───────
 
@@ -1196,6 +1312,9 @@ export class CopilotService implements CopilotDbAdapter {
       requestLetter: self.requestLetter.bind(self),
       get ruleManagement() {
         return self.ruleManagement;
+      },
+      get mirrorAdapter() {
+        return self.mirrorAdapter;
       },
 
       // Override queryEmployees with scope filter
