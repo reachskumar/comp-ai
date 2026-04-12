@@ -6,8 +6,13 @@ import { SchemaCatalogService, CatalogColumn } from './schema-catalog.service';
 /** How many source rows to pull per paginated SELECT from MySQL. */
 const PAGE_SIZE = 5000;
 
-/** How many rows to INSERT per Postgres transaction in the mirror. */
-const INSERT_CHUNK = 1000;
+/**
+ * Max parameters per Postgres $executeRawUnsafe statement.
+ * Postgres itself caps at 65,535 but Node pg driver + Prisma
+ * can stack-overflow on large arrays well before that. 10,000
+ * is safe and fast.
+ */
+const MAX_PG_PARAMS = 10_000;
 
 /**
  * MirrorSyncService — Phase 2 of the universal sync architecture.
@@ -248,6 +253,9 @@ export class MirrorSyncService {
 
     const colNames = columns.map((c) => c.name);
     const pgColList = colNames.map((c) => `"${c}"`).join(', ');
+    // Dynamic chunk size: total params = rows × columns. Keep under MAX_PG_PARAMS.
+    // e.g. 80 columns → 10000/80 = 125 rows per INSERT; 10 columns → 1000 rows.
+    const insertChunk = Math.max(1, Math.floor(MAX_PG_PARAMS / Math.max(colNames.length, 1)));
     let totalRows = 0;
     let offset = 0;
     let hasMore = true;
@@ -264,9 +272,9 @@ export class MirrorSyncService {
         break;
       }
 
-      // Insert in sub-chunks
-      for (let i = 0; i < rows.length; i += INSERT_CHUNK) {
-        const chunk = rows.slice(i, i + INSERT_CHUNK);
+      // Insert in sub-chunks sized to stay under Postgres parameter limits
+      for (let i = 0; i < rows.length; i += insertChunk) {
+        const chunk = rows.slice(i, i + insertChunk);
         const values: unknown[] = [];
         const rowPlaceholders: string[] = [];
 
