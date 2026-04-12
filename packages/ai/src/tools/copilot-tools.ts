@@ -582,7 +582,7 @@ function createMirrorTools(
     schema: z.object({
       tableName: z.string().describe('The Compport table name to query'),
       where: z
-        .record(z.unknown())
+        .record(z.string(), z.unknown())
         .optional()
         .describe('Filter conditions as { columnName: value } pairs. Exact match only.'),
       columns: z
