@@ -187,6 +187,15 @@ export class PlatformAdminController {
     return this.service.discoverCompensationTables(id);
   }
 
+  @Post('tenants/:id/discover-schema')
+  @ApiOperation({
+    summary:
+      'Universal discovery — catalog EVERY table in the tenant Compport schema. Required before mirror sync.',
+  })
+  discoverSchema(@Param('id') id: string) {
+    return this.service.discoverTenantSchema(id);
+  }
+
   // ─── Tenant Usage ────────────────────────────────────────
 
   @Get('tenants/:id/usage')

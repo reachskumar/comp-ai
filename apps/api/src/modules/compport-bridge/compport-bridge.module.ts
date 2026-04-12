@@ -11,6 +11,7 @@ import { WriteBackService } from './services/write-back.service';
 import { CompportHistoryService } from './services/history.service';
 import { InboundSyncService } from './services/inbound-sync.service';
 import { SchemaDiscoveryService } from './services/schema-discovery.service';
+import { SchemaCatalogService } from './services/schema-catalog.service';
 import { TenantRegistryService } from './services/tenant-registry.service';
 import { CompportBridgeController } from './compport-bridge.controller';
 import { WriteBackController } from './controllers/write-back.controller';
@@ -78,6 +79,7 @@ export class CompportBridgeModule {
         SyncSchedulerService,
         RealtimeSyncProcessor,
         SchemaDiscoveryService,
+        SchemaCatalogService,
         TenantRegistryService,
         IntegrationDashboardService,
         BridgeRateLimitGuard,
@@ -94,6 +96,7 @@ export class CompportBridgeModule {
         InboundSyncService,
         SyncSchedulerService,
         SchemaDiscoveryService,
+        SchemaCatalogService,
         TenantRegistryService,
         IntegrationDashboardService,
       ],

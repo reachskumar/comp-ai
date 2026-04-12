@@ -12,6 +12,7 @@ import { CredentialVaultService } from '../integrations/services/credential-vaul
 import { TenantRegistryService } from '../compport-bridge/services/tenant-registry.service';
 import { CompportCloudSqlService } from '../compport-bridge/services/compport-cloudsql.service';
 import { InboundSyncService } from '../compport-bridge/services/inbound-sync.service';
+import { SchemaCatalogService } from '../compport-bridge/services/schema-catalog.service';
 import { CreateTenantDto, UpdateTenantDto, CreateTenantUserDto, OnboardTenantDto } from './dto';
 
 /** Canonical feature keys that can be toggled per-tenant */
@@ -40,6 +41,7 @@ export class PlatformAdminService {
     private readonly tenantRegistry: TenantRegistryService,
     private readonly cloudSql: CompportCloudSqlService,
     private readonly inboundSyncService: InboundSyncService,
+    private readonly schemaCatalogService: SchemaCatalogService,
   ) {}
 
   // ─── Tenant CRUD ──────────────────────────────────────────
@@ -1406,6 +1408,73 @@ export class PlatformAdminService {
         compportSchema: tenant.compportSchema,
         connectorId: connector?.id ?? null,
         ...result,
+      };
+    } finally {
+      await isolatedSql.disconnect().catch(() => {});
+    }
+  }
+
+  /**
+   * Universal Compport schema discovery (Phase 1 of universal sync).
+   * Walks every table in the tenant's Compport schema and persists a
+   * full catalog into TenantSchemaCatalog. Phase 2 (mirror sync) reads
+   * from this catalog so it knows what to mirror.
+   */
+  async discoverTenantSchema(tenantId: string) {
+    const tenant = await this.getTenant(tenantId);
+    if (!tenant.compportSchema) {
+      throw new BadRequestException(
+        `Tenant "${tenant.name}" has no Compport schema configured.`,
+      );
+    }
+
+    await this.ensureConnectorExists(tenantId, tenant.name, tenant.compportSchema);
+    const connector = await this.db.forTenant(tenantId, (tx) =>
+      tx.integrationConnector.findFirst({
+        where: { tenantId, connectorType: 'COMPPORT_CLOUDSQL' },
+        select: { id: true },
+      }),
+    );
+    if (!connector) {
+      throw new BadRequestException(`No COMPPORT_CLOUDSQL connector for tenant "${tenant.name}"`);
+    }
+
+    const isolatedSql = CompportCloudSqlService.createIsolated();
+    const mysqlConfig = this.getMySqlConfig();
+    try {
+      await isolatedSql.connect({
+        host: mysqlConfig.host!,
+        port: mysqlConfig.port ?? 3306,
+        user: mysqlConfig.user!,
+        password: mysqlConfig.password!,
+        database: tenant.compportSchema,
+        sslCa: mysqlConfig.sslCa,
+        sslCert: mysqlConfig.sslCert,
+        sslKey: mysqlConfig.sslKey,
+      });
+      const entries = await this.schemaCatalogService.discoverAllTables(
+        tenantId,
+        connector.id,
+        tenant.compportSchema,
+        isolatedSql,
+      );
+      return {
+        tenantId,
+        tenantName: tenant.name,
+        compportSchema: tenant.compportSchema,
+        connectorId: connector.id,
+        totalTables: entries.length,
+        mirrorableTables: entries.filter((e) => e.isMirrorable).length,
+        totalRows: entries.reduce((s, e) => s + e.rowCount, 0),
+        tables: entries.map((e) => ({
+          name: e.tableName,
+          rowCount: e.rowCount,
+          columnCount: e.columns.length,
+          primaryKey: e.primaryKeyColumns,
+          lastModifiedColumn: e.lastModifiedColumn,
+          isMirrorable: e.isMirrorable,
+          reasonNotMirrorable: e.reasonNotMirrorable,
+        })),
       };
     } finally {
       await isolatedSql.disconnect().catch(() => {});

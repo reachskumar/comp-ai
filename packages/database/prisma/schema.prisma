@@ -253,6 +253,8 @@ model Tenant {
   tenantRoles          TenantRole[]
   tenantPages          TenantPage[]
   tenantRolePermissions TenantRolePermission[]
+  schemaCatalogs       TenantSchemaCatalog[]
+  mirrorStates         TenantDataMirrorState[]
 
   @@map("tenants")
 }
@@ -2142,4 +2144,66 @@ model PlatformConfig {
   @@unique([category, key])
   @@index([category])
   @@map("platform_config")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Universal Compport Schema Catalog & Data Mirror
+// ─────────────────────────────────────────────────────────────
+//
+// Phase 1: Per-tenant catalog of every Compport table.
+// Phase 2: Per-tenant Postgres mirror schema (mirror_<slug>) holding
+//          a 1:1 copy of every catalogued table, populated by
+//          MirrorSyncService. The catalog drives the mirror, the
+//          mirror drives the agent tools.
+
+model TenantSchemaCatalog {
+  id                  String   @id @default(cuid())
+  tenantId            String
+  connectorId         String
+  // Source-side metadata
+  sourceSchema        String   // Compport MySQL schema name (e.g. 250108_1736335952)
+  tableName           String
+  rowCount            Int      @default(0)
+  primaryKeyColumns   String[] @default([]) // empty array if no PK
+  columns             Json     @default("[]") // [{name, dataType, nullable, isPrimary, ordinalPosition}]
+  lastModifiedColumn  String?  // updated_at / modified_date / etc., for delta sync
+  sampleRow           Json?    // first row, for agent introspection
+  // Mirror-side state
+  isMirrorable        Boolean  @default(true) // false = too big / too sensitive / explicitly excluded
+  mirrorTableName     String?  // resolved name in the per-tenant mirror schema (lowercased, sanitized)
+  // Lifecycle
+  discoveredAt        DateTime @default(now())
+  lastDiscoveredAt    DateTime @default(now())
+
+  tenant     Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, sourceSchema, tableName])
+  @@index([tenantId])
+  @@index([tenantId, isMirrorable])
+  @@map("tenant_schema_catalogs")
+}
+
+model TenantDataMirrorState {
+  id                String    @id @default(cuid())
+  tenantId          String
+  mirrorSchema      String    // PG schema name for this tenant's mirror (e.g. mirror_bfl)
+  sourceTable       String    // original Compport table name
+  mirrorTable       String    // PG table name (sanitized)
+  rowCount          Int       @default(0)
+  lastFullSyncAt    DateTime?
+  lastDeltaSyncAt   DateTime?
+  lastError         String?
+  // Watermark for incremental sync. Either a timestamp (last value seen in
+  // lastModifiedColumn) or a max(pk) for tables without a timestamp.
+  watermarkType     String?   // 'timestamp' | 'pk' | null
+  watermarkValue    String?
+  status            String    @default("PENDING") // PENDING / SYNCING / READY / FAILED
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  tenant            Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, sourceTable])
+  @@index([tenantId, status])
+  @@map("tenant_data_mirror_states")
 }
