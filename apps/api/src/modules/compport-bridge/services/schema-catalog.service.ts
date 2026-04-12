@@ -248,9 +248,9 @@ export class SchemaCatalogService {
                   tableName: e.tableName,
                   rowCount: e.rowCount,
                   primaryKeyColumns: e.primaryKeyColumns,
-                  columns: e.columns as never,
+                  columns: (e.columns ?? []) as never,
                   lastModifiedColumn: e.lastModifiedColumn,
-                  sampleRow: (e.sampleRow ?? undefined) as never,
+                  sampleRow: (e.sampleRow ?? null) as never,
                   isMirrorable: e.isMirrorable,
                   mirrorTableName: this.sanitizeMirrorTableName(e.tableName),
                 },
@@ -258,9 +258,9 @@ export class SchemaCatalogService {
                   connectorId,
                   rowCount: e.rowCount,
                   primaryKeyColumns: e.primaryKeyColumns,
-                  columns: e.columns as never,
+                  columns: (e.columns ?? []) as never,
                   lastModifiedColumn: e.lastModifiedColumn,
-                  sampleRow: (e.sampleRow ?? undefined) as never,
+                  sampleRow: (e.sampleRow ?? null) as never,
                   isMirrorable: e.isMirrorable,
                   mirrorTableName: this.sanitizeMirrorTableName(e.tableName),
                   lastDiscoveredAt: new Date(),
@@ -271,9 +271,54 @@ export class SchemaCatalogService {
           { timeout: 60_000, maxWait: 10_000 },
         );
       } catch (err) {
+        const fullMsg = err instanceof Error ? err.message : String(err);
         this.logger.error(
-          `[catalog] persist chunk ${i}-${i + chunk.length} failed: ${(err as Error).message?.substring(0, 200)}`,
+          `[catalog] persist chunk ${i}-${i + chunk.length} failed: ${fullMsg.substring(0, 500)}`,
         );
+        // Try single-row recovery so one bad table doesn't block the rest
+        for (const e of chunk) {
+          try {
+            await this.db.forTenant(tenantId, (tx) =>
+              tx.tenantSchemaCatalog.upsert({
+                where: {
+                  tenantId_sourceSchema_tableName: {
+                    tenantId,
+                    sourceSchema: schemaName,
+                    tableName: e.tableName,
+                  },
+                },
+                create: {
+                  tenantId,
+                  connectorId,
+                  sourceSchema: schemaName,
+                  tableName: e.tableName,
+                  rowCount: e.rowCount,
+                  primaryKeyColumns: e.primaryKeyColumns,
+                  columns: (e.columns ?? []) as never,
+                  lastModifiedColumn: e.lastModifiedColumn,
+                  sampleRow: (e.sampleRow ?? null) as never,
+                  isMirrorable: e.isMirrorable,
+                  mirrorTableName: this.sanitizeMirrorTableName(e.tableName),
+                },
+                update: {
+                  connectorId,
+                  rowCount: e.rowCount,
+                  primaryKeyColumns: e.primaryKeyColumns,
+                  columns: (e.columns ?? []) as never,
+                  lastModifiedColumn: e.lastModifiedColumn,
+                  sampleRow: (e.sampleRow ?? null) as never,
+                  isMirrorable: e.isMirrorable,
+                  mirrorTableName: this.sanitizeMirrorTableName(e.tableName),
+                  lastDiscoveredAt: new Date(),
+                },
+              }),
+            );
+          } catch (rowErr) {
+            this.logger.warn(
+              `[catalog] single-row persist failed for ${e.tableName}: ${(rowErr as Error).message?.substring(0, 300)}`,
+            );
+          }
+        }
       }
     }
 
