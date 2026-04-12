@@ -50,14 +50,33 @@ Status markers on checklist items:
 ## Do not build on top of these. Fix them first.
 ## ═══════════════════════════════════════════
 
-### BLOCKER 1 — Employee sync collapse 🔴 P0
-Status: 🔴 BROKEN
-Affects: ALL tenants, not just BFL
+### BLOCKER 1 — Employee sync collapse ✅ RESOLVED (2026-04-11)
+Status: ✅ DONE — verified in prod
+Commits: f38704a, abf5821, f61475c, 7e2c83e, e0624be
+BFL result: employees=123,249/123,249 (100%), errors=0, pruned=155
 
-Symptom [CONFIRMED-LOG]:
-  BFL has 121,753 rows in Compport employee_master.
-  After full sync, CompportIQ Employee table has 161 rows.
-  synced=123249, skipped=0, errors=0 — sync reports success.
+What was fixed:
+  - PK-first detection via INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+  - Extended 16-column candidate list with strict 0.95 confidence threshold
+  - Removed ?? fallback chain entirely — detected column only
+  - Per-row recovery on chunk failure (no more 499-row collateral damage)
+  - Owner-aware email dedupe (pre-loads existing PG rows)
+  - Dropped @@unique([tenantId, email]) on Employee (migration 20260411140000)
+  - Stale-row pruning after successful sync
+  - Detection result persisted in IntegrationConnector.config.idColumns
+  - Delta sync reads stored column, never re-detects
+  - SyncJob.metadata stamped with detectedIdColumn + confidence
+
+BFL facts [CONFIRMED-LOG]:
+  - employee_master table is EMPTY for BFL
+  - Actual data lives in login_user (PK column: id, confidence: 1.000)
+  - Detection source: 'config' (persisted after first successful run)
+  - 74 email collisions de-duplicated by suffixing
+
+Original symptom [CONFIRMED-LOG]:
+  BFL had 121,753 rows in Compport employee_master.
+  After full sync, CompportIQ Employee table had 161 rows.
+  synced=123249, skipped=0, errors=0 — sync reported success.
   All AI agents operating on 0.2% of real employee population.
 
 Root cause [CONFIRMED-CODE: inbound-sync.service.ts ~700-707]:
@@ -120,89 +139,54 @@ DO NOT PROCEED past this fix until Employee count ≈ 121,753 for BFL.
 
 ---
 
-### BLOCKER 2 — BENEFITS_ENCRYPTION_KEY missing 🔴 P0
-Status: 🔴 BROKEN
-File [CONFIRMED-CODE]: 
-  apps/api/src/modules/benefits/services/encryption.service.ts:22-36
-
-Symptom: App generates random AES-256-GCM key on EVERY restart.
-Any BenefitDependent.ssnEncrypted written before a restart becomes
-permanently unrecoverable. Data loss on every Cloud Run restart.
-
-Fix:
-  1. Change startup behavior: THROW if key missing. Never generate.
-  2. Generate: openssl rand -hex 32
-  3. Store in GCP Secret Manager as BENEFITS_ENCRYPTION_KEY
-  4. Mount in infra/terraform/modules/cloudrun/main.tf
-     (same pattern as INTEGRATION_ENCRYPTION_KEY)
-  5. Add to apps/api/src/config/env.validation.ts as required
+### BLOCKER 2 — BENEFITS_ENCRYPTION_KEY missing ✅ RESOLVED (2026-04-11)
+Status: ✅ DONE
+Commit: 982e649
+Secret: compportiq-prod-benefits-encryption-key in GCP Secret Manager
+Mounted on Cloud Run API service. App throws on missing. Terraform wired.
 
 ---
 
-### BLOCKER 3 — PLATFORM_CONFIG_ENCRYPTION_KEY missing 🔴 P0
-Status: 🔴 BROKEN
-File [CONFIRMED-CODE]:
-  apps/api/src/modules/platform-admin/services/
-  platform-config.service.ts:27-40
-
-Symptom: Falls back to hardcoded string
-  'platform-config-dev-key-32char!'
-This key is committed to the repository. Anyone with repo access
-can decrypt all platform_config values including API keys and
-connector credentials.
-
-Fix:
-  1. Generate: openssl rand -hex 32
-  2. Store in GCP Secret Manager as PLATFORM_CONFIG_ENCRYPTION_KEY
-  3. Mount in Cloud Run
-  4. Re-encrypt all existing platform_config rows that were
-     encrypted with the hardcoded key BEFORE deploying new key
-  5. THROW on startup if key missing. Never fall back.
+### BLOCKER 3 — PLATFORM_CONFIG_ENCRYPTION_KEY missing ✅ RESOLVED (2026-04-11)
+Status: ✅ DONE
+Commit: 982e649
+Secret: compportiq-prod-platform-config-encryption-key in GCP Secret Manager
+Mounted on Cloud Run API service. App throws on missing. Terraform wired.
+Hardcoded dev key 'platform-config-dev-key-32char!' removed from fallback.
 
 ---
 
-### BLOCKER 4 — User→Employee link never populated 🔴 P0
-Status: 🔴 BROKEN
-File [CONFIRMED-CODE]: inbound-sync.service.ts:1542
-Comment in code: "skipping employee link for perf"
+### BLOCKER 4 — User→Employee link ⚠️ PARTIALLY RESOLVED
+Status: ⚠️ Code deployed, link rate low
+Commit: 982e649 (linkUsersToEmployees), dad1ef6 (dedupe + bulk SQL)
 
-Symptom: All 123,249 User rows have employeeId = null [CONFIRMED-LOG].
-  MANAGER role copilot: "do NOT show data outside their team"
-  → relies on User.employeeId. With null: undefined behavior.
-  EMPLOYEE self-service: cannot find own record.
-  Copilot MANAGER and EMPLOYEE scoping both broken.
+linkUsersToEmployees() runs after every full sync. Code:
+  - Reads login_user (employee_code, email) from Cloud SQL
+  - Mirrors user sync email synthesis exactly
+  - Dedupes by both email AND employeeId upfront
+  - Bulk raw SQL UPDATE ... FROM (VALUES ...) for speed
+  - Per-row recovery if chunk fails
 
-Fix: After employee sync AND user sync complete, run linking pass:
-  1. Query login_user for (employee_code, email) from Cloud SQL
-  2. Build email → employeeCode map
-  3. Build employeeCode → PostgreSQL Employee.id map
-  4. Batch UPDATE User SET employeeId in chunks of 500
-  5. Log link rate — WARN if < 80%
-  6. Run at end of full sync AND after delta syncs touching
-     employees or users
+Issue: Most recent run shows linked=0/2 — likely because
+previous runs already linked most users, so the WHERE
+clause (employeeId IS NULL) matches very few.
+[NEEDS-VERIFY: check how many users still have employeeId=null]
 
 ---
 
-### BLOCKER 5 — Empty passwordHash login vulnerability 🔴 P0
-Status: 🔴 BROKEN
-File [CONFIRMED-CODE]: inbound-sync.service.ts syncRolesAndPermissions
+### BLOCKER 5 — Empty passwordHash login vulnerability ✅ RESOLVED (2026-04-11)
+Status: ✅ DONE
+Commit: 982e649
 
-Symptom: All synced users created with passwordHash: ''
-bcryptjs.compare('', '') behavior is implementation-dependent.
-123,249 users potentially accessible with empty password.
-
-Fix: In AuthService.login, BEFORE bcryptjs.compare call:
-  if (!user.passwordHash || user.passwordHash.trim() === '') {
-    throw new UnauthorizedException(
-      'This account was provisioned by Compport. ' +
-      'Use SSO or contact your administrator to set a password.'
-    );
-  }
+AuthService.login now rejects users with empty/whitespace passwordHash
+before bcryptjs.compare. Returns distinct message:
+"This account was provisioned by Compport. Use SSO or contact your
+administrator to set a password."
 
 ---
 
-### BLOCKER 6 — Compensation data not synced at all ⬜ P0
-Status: ⬜ NOT STARTED
+### BLOCKER 6 — Compensation data not synced 🔄 IN PROGRESS
+Status: 🔄 Universal mirror sync deployed, catalog persist being fixed
 [CONFIRMED-SCHEMA]: Employee model has baseSalary, totalComp,
   compaRatio, performanceRating fields in schema.prisma
 [NEEDS-VERIFY]: Which Compport tables hold this data per tenant.
@@ -217,23 +201,30 @@ Impact: WITHOUT this:
   - Copilot cannot answer any compensation questions accurately
   - Simulations have no starting comp data to model from
 
-Discovery query to run for each tenant before fixing:
-  SELECT TABLE_NAME, TABLE_ROWS
-  FROM INFORMATION_SCHEMA.TABLES
-  WHERE TABLE_SCHEMA = '<tenant_schema>'
-  AND TABLE_NAME IN (
-    'salary_details','ctc_details','compensation_details',
-    'current_ctc','emp_salary','salary_master',
-    'revision_history','increment_history','salary_history',
-    'comp_history','ctc_history',
-    'variable_pay','bonus_details','incentive_details',
-    'performance_ratings','appraisal_data','kpi_scores',
-    'grade_band','salary_bands','pay_grades',
-    'increment_matrix','merit_matrix'
-  )
-  ORDER BY TABLE_NAME;
+Architecture change (2026-04-12): Universal mirror sync replaces
+per-table manual wiring. Instead of discovering comp tables one by
+one, we now:
+  Phase 1: SchemaCatalogService.discoverAllTables() walks EVERY
+           table in INFORMATION_SCHEMA and persists to TenantSchemaCatalog
+  Phase 2: MirrorSyncService.syncAllTables() creates per-tenant PG
+           schema (mirror_<slug>) and copies all mirrorable tables
+  Phase 3: Agent tools (list/describe/query) introspect the mirror
 
-Store result in IntegrationConnector.config.availableTables
+Models added: TenantSchemaCatalog, TenantDataMirrorState
+Migration: 20260411150000_universal_schema_catalog
+
+Current status:
+  - Phase 1 discovery: ✅ discovers 345 tables for BFL
+  - Phase 1 persist: 🔄 was failing (sampleRow undefined→null fix deployed)
+  - Phase 2 mirror: ⬜ depends on Phase 1 persist working
+  - Phase 3 tools: ✅ code deployed, waiting for mirror data
+
+Commits: a866a7d (Stage 1), 006014c (Stage 2+3), 1fe2c12 (auto-wire),
+         f78c5c2 (persist fix)
+
+BFL discovery result [CONFIRMED-LOG]:
+  345 base tables found, 345 classified as mirrorable
+  Compensation tables available: [NEEDS-VERIFY — waiting for catalog persist]
 
 ---
 
