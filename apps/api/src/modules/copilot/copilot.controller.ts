@@ -81,11 +81,15 @@ export class CopilotController {
       }
     } catch (error) {
       this.logger.error('Copilot chat error', error);
+      const rawMsg = error instanceof Error ? error.message : 'Internal error';
+      const is429 = rawMsg.includes('429') || rawMsg.includes('Rate limit') || rawMsg.includes('Too Many Requests');
       reply.raw.write(
         formatSSE({
           event: 'error',
           data: {
-            message: error instanceof Error ? error.message : 'Internal error',
+            message: is429
+              ? 'The AI service is temporarily busy. Please wait a moment and try again.'
+              : rawMsg,
             timestamp: Date.now(),
           },
         }),

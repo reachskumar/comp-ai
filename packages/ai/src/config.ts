@@ -179,7 +179,7 @@ export function resolveModelConfig(config: AIConfig, graphType?: string): ModelC
 const DEFAULT_TIMEOUT_MS = 60_000;
 
 /** Default number of retries on transient failures */
-const DEFAULT_MAX_RETRIES = 2;
+const DEFAULT_MAX_RETRIES = 6;
 
 /**
  * Callback handler that logs token usage after each LLM call.

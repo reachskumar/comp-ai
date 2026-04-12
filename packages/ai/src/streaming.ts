@@ -159,10 +159,17 @@ export async function* streamGraphToSSE(
       }
     }
   } catch (error) {
+    const rawMsg = error instanceof Error ? error.message : 'Unknown error';
+    // Detect Azure OpenAI / OpenAI rate limit errors and return a
+    // human-readable message instead of a raw stack trace URL.
+    const is429 = rawMsg.includes('429') || rawMsg.includes('Rate limit') || rawMsg.includes('Too Many Requests') || rawMsg.includes('MODEL_RATE_LIMIT');
+    const userMessage = is429
+      ? 'The AI service is temporarily busy. Please wait a moment and try again.'
+      : rawMsg;
     yield {
       event: 'error',
       data: {
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: userMessage,
         timestamp: Date.now(),
       },
     };
