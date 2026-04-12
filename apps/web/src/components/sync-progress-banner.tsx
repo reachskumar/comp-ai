@@ -64,7 +64,9 @@ function SyncProgressBannerInner() {
         ? 'Syncing roles, permissions, and users…'
         : data.phase === 'employees'
           ? `Syncing employees from Compport${total > 0 ? ` (${processed.toLocaleString()} / ${total.toLocaleString()})` : ` (${processed.toLocaleString()} synced)`}`
-          : 'Starting Compport data sync…';
+          : data.phase === 'mirror'
+            ? 'Mirroring all Compport data tables (salary, bonus, performance, history, modules…)'
+            : 'Starting Compport data sync…';
 
     return (
       <div className="mb-4 rounded-lg border border-blue-500/50 bg-blue-50 dark:bg-blue-950/20 px-4 py-3">

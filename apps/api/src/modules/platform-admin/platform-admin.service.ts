@@ -1159,11 +1159,47 @@ export class PlatformAdminService {
         );
       }
 
+      // ── Phase 3: Universal discovery + mirror sync ──────────
+      // Discover EVERY table in the Compport schema and mirror them all
+      // into a per-tenant Postgres schema. This gives the AI agent
+      // access to everything — salary, bonus, perf, history, modules,
+      // rules, audit, etc. — not just the 5 typed models.
+      await this.updateJobPhase(tenantId, jobId, 'mirror');
+      let mirrorResult = { tablesProcessed: 0, totalRowsMirrored: 0, errors: [] as string[] };
+      try {
+        // Step 1: catalog every table
+        await this.schemaCatalogService.discoverAllTables(
+          tenantId,
+          connectorId,
+          tenant.compportSchema,
+          isolatedSql,
+        );
+        this.logger.log(`[sync-full] Schema catalog complete for ${tenant.name}`);
+
+        // Step 2: mirror all mirrorable tables
+        const result = await this.mirrorSyncService.syncAllTables(
+          tenantId,
+          tenant.slug,
+          tenant.compportSchema,
+          isolatedSql,
+        );
+        mirrorResult = result;
+        this.logger.log(
+          `[sync-full] Mirror sync complete for ${tenant.name}: ` +
+            `tables=${result.tablesProcessed}, rows=${result.totalRowsMirrored}, errors=${result.errors.length}`,
+        );
+      } catch (err) {
+        this.logger.warn(
+          `[sync-full] Mirror sync failed for ${tenant.name}: ${(err as Error).message?.substring(0, 200)}`,
+        );
+      }
+
       this.logger.log(
         `[sync-full] Complete for ${tenant.name}: roles=${roleResult.roles.synced}, ` +
           `pages=${roleResult.pages.synced}, permissions=${roleResult.permissions.synced}, ` +
           `users=${roleResult.users.synced}, employees=${employeeResult.synced}, ` +
-          `pruned=${pruneResult.deleted}, linked=${linkResult.linked}/${linkResult.candidates}`,
+          `pruned=${pruneResult.deleted}, linked=${linkResult.linked}/${linkResult.candidates}, ` +
+          `mirrorTables=${mirrorResult.tablesProcessed}, mirrorRows=${mirrorResult.totalRowsMirrored}`,
       );
 
       // Mark job as completed with final counts in metadata
@@ -1198,6 +1234,9 @@ export class PlatformAdminService {
               usersLinkedToEmployees: linkResult.linked,
               usersUnlinked: linkResult.notFound,
               userLinkCandidates: linkResult.candidates,
+              mirrorTablesProcessed: mirrorResult.tablesProcessed,
+              mirrorRowsMirrored: mirrorResult.totalRowsMirrored,
+              mirrorErrors: mirrorResult.errors.length,
             } as never,
           },
         }),
@@ -1216,7 +1255,7 @@ export class PlatformAdminService {
   private async updateJobPhase(
     tenantId: string,
     jobId: string,
-    phase: 'roles' | 'employees',
+    phase: 'roles' | 'employees' | 'mirror',
   ): Promise<void> {
     try {
       await this.db.forTenant(tenantId, (tx) =>
