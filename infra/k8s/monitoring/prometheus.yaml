@@ -1,0 +1,132 @@
+# Prometheus configuration for CompportIQ monitoring
+# Deployed via kube-prometheus-stack Helm chart
+#
+# Install:
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm install monitoring prometheus-community/kube-prometheus-stack \
+#     --namespace monitoring --create-namespace \
+#     -f monitoring/prometheus-values.yaml
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: monitoring
+data:
+  prometheus-values.yaml: |
+    # Grafana
+    grafana:
+      enabled: true
+      adminPassword: "changeme-in-secret"
+      ingress:
+        enabled: true
+        hosts:
+          - grafana.compportiq.ai
+      dashboardProviders:
+        dashboardproviders.yaml:
+          apiVersion: 1
+          providers:
+            - name: compportiq
+              folder: CompportIQ
+              type: file
+              options:
+                path: /var/lib/grafana/dashboards/compportiq
+
+    # Prometheus
+    prometheus:
+      prometheusSpec:
+        retention: 15d
+        storageSpec:
+          volumeClaimTemplate:
+            spec:
+              accessModes: ["ReadWriteOnce"]
+              resources:
+                requests:
+                  storage: 50Gi
+        # Scrape CompportIQ API metrics
+        additionalScrapeConfigs:
+          - job_name: compportiq-api
+            kubernetes_sd_configs:
+              - role: pod
+                namespaces:
+                  names: [compportiq]
+            relabel_configs:
+              - source_labels: [__meta_kubernetes_pod_label_app]
+                regex: api
+                action: keep
+              - source_labels: [__meta_kubernetes_pod_ip]
+                target_label: __address__
+                replacement: "$1:4000"
+            metrics_path: /metrics
+            scrape_interval: 15s
+
+    # Alertmanager
+    alertmanager:
+      config:
+        route:
+          receiver: slack
+          group_by: [alertname, namespace]
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 4h
+          routes:
+            - match:
+                severity: critical
+              receiver: slack
+              repeat_interval: 1h
+        receivers:
+          - name: slack
+            slack_configs:
+              - api_url: "https://hooks.slack.com/services/REPLACE_ME"
+                channel: "#compportiq-alerts"
+                title: '{{ .GroupLabels.alertname }}'
+                text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+---
+# Custom alerts for CompportIQ
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: compportiq-alerts
+  namespace: monitoring
+spec:
+  groups:
+    - name: compportiq.rules
+      rules:
+        - alert: HighErrorRate
+          expr: |
+            sum(rate(http_requests_total{namespace="compportiq",status=~"5.."}[5m]))
+            / sum(rate(http_requests_total{namespace="compportiq"}[5m])) > 0.05
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            description: "CompportIQ API error rate is above 5% for 5 minutes"
+
+        - alert: HighLatency
+          expr: |
+            histogram_quantile(0.95,
+              sum(rate(http_request_duration_seconds_bucket{namespace="compportiq"}[5m])) by (le)
+            ) > 5
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            description: "CompportIQ API p95 latency is above 5s"
+
+        - alert: SyncJobStuck
+          expr: |
+            time() - max(compportiq_last_sync_completion_timestamp{namespace="compportiq"}) > 600
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            description: "No sync job has completed in the last 10 minutes"
+
+        - alert: PodCrashLooping
+          expr: |
+            rate(kube_pod_container_status_restarts_total{namespace="compportiq"}[15m]) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            description: "Pod {{ $labels.pod }} is crash-looping"

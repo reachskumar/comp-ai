@@ -1,0 +1,49 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: compportiq-ingress
+  namespace: compportiq
+  annotations:
+    kubernetes.io/ingress.class: "gce"
+    kubernetes.io/ingress.global-static-ip-name: "compportiq-ip"
+    networking.gke.io/managed-certificates: "compportiq-cert"
+    # HTTPS redirect
+    kubernetes.io/ingress.allow-http: "false"
+spec:
+  rules:
+    # API: compportiq-prod-api → api service
+    - host: "*.compportiq.ai"
+      http:
+        paths:
+          - path: /api/*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: api
+                port:
+                  number: 80
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: api
+                port:
+                  number: 80
+          # Everything else → web
+          - path: /*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: web
+                port:
+                  number: 80
+---
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: compportiq-cert
+  namespace: compportiq
+spec:
+  domains:
+    - "compportiq.ai"
+    - "*.compportiq.ai"

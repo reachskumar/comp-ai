@@ -1,0 +1,22 @@
+# Ensure at least 1 API pod is always running during deploys/node drains
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api-pdb
+  namespace: compportiq
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: web-pdb
+  namespace: compportiq
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: web
