@@ -149,6 +149,17 @@ export class PlatformAdminService {
     // Auto-create integration connector if a Compport schema is provided
     if (dto.compportSchema) {
       await this.ensureConnectorExists(tenant.id, dto.name, dto.compportSchema);
+
+      // Auto-trigger full sync (discover + employees + roles + catalog + mirror)
+      // Fire-and-forget so tenant creation returns immediately.
+      this.logger.log(
+        `[onboard] Auto-triggering full sync for new tenant ${tenant.name} (schema: ${dto.compportSchema})`,
+      );
+      void this.startTenantFullSync(tenant.id).catch((err) => {
+        this.logger.warn(
+          `[onboard] Auto-sync failed for ${tenant.name}: ${(err as Error).message?.substring(0, 200)}`,
+        );
+      });
     }
 
     return tenant;
@@ -640,6 +651,20 @@ export class PlatformAdminService {
       } finally {
         await this.cloudSql.disconnect();
       }
+    }
+
+    // Auto-trigger full sync in the background (employees + catalog + mirror).
+    // The role sync above ran synchronously for immediate usability, but the
+    // full sync is heavier and runs async.
+    if (queryReady) {
+      this.logger.log(
+        `[onboard] Auto-triggering full sync for ${dto.companyName}`,
+      );
+      void this.startTenantFullSync(tenant.id).catch((err) => {
+        this.logger.warn(
+          `[onboard] Auto-sync failed for ${dto.companyName}: ${(err as Error).message?.substring(0, 200)}`,
+        );
+      });
     }
 
     return {
