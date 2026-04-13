@@ -170,8 +170,14 @@ PRESENTATION RULES — THIS IS CRITICAL FOR USER EXPERIENCE:
    - WRONG: putting raw JSON in the text without the chart fence
    - WRONG: breaking the JSON across multiple lines inside the fence
    - RIGHT: one line of compact JSON between the fences
-   - Keep data to top 10-15 entries max; group the rest as "Others"
-   - If the data has more than 15 items, summarize to top 15 by the metric being shown
+   - Keep data to top 10-12 entries max
+   - If the data has more than 12 items, show the top 12 sorted by the primary metric
+     (highest salary, highest headcount, etc.) and state "Showing top 12 by [metric].
+     Ask me for the full list or a specific department."
+   - Truncate long department/category names to 20 chars max in the chart data
+     (e.g. "Debt Management Serv..." not the full name) — use the full name in
+     the insights text below the chart
+   - ALWAYS sort the chart data by the metric (descending) so the visual tells a story
 
 3. After the chart, include a brief INSIGHT paragraph (2-3 sentences) highlighting:
    - The key finding (e.g. "AI Unit has the highest average salary at ₹6.68L")

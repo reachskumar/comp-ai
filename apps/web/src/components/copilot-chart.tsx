@@ -199,7 +199,15 @@ const TT_STYLE = {
   fontSize: '11px',
 };
 const TICK = { fill: 'hsl(var(--muted-foreground))', fontSize: 10 };
+const ANGLED_TICK = { fill: 'hsl(var(--muted-foreground))', fontSize: 9 };
 const MARGIN = { top: 5, right: 10, left: 0, bottom: 5 };
+const BAR_MARGIN = { top: 5, right: 10, left: 0, bottom: 60 };
+
+/** Truncate long labels for chart axes */
+function truncateLabel(value: unknown, maxLen = 18): string {
+  const s = String(value ?? '');
+  return s.length > maxLen ? s.substring(0, maxLen) + '…' : s;
+}
 
 function renderChart(config: ChartConfig, rc: RC): React.ReactElement {
   const { type, data, xKey, yKeys, nameKey, valueKey } = config;
@@ -329,13 +337,32 @@ function renderChart(config: ChartConfig, rc: RC): React.ReactElement {
     );
   }
 
-  // Default: bar chart
+  // Default: bar chart — angled labels for long category names
   return (
-    <rc.BarChart data={data} margin={MARGIN}>
+    <rc.BarChart data={data} margin={BAR_MARGIN}>
       <CG strokeDasharray="3 3" className="stroke-muted" />
-      <XA dataKey={xKey} tick={TICK} />
-      <YA tick={TICK} />
-      <TT contentStyle={TT_STYLE} />
+      <XA
+        dataKey={xKey}
+        tick={ANGLED_TICK}
+        angle={-35}
+        textAnchor="end"
+        interval={0}
+        height={60}
+        tickFormatter={(v: unknown) => truncateLabel(v)}
+      />
+      <YA tick={TICK} tickFormatter={(v: unknown) => {
+        const n = Number(v);
+        if (isNaN(n)) return String(v);
+        if (n >= 10000000) return `${(n / 10000000).toFixed(1)}Cr`;
+        if (n >= 100000) return `${(n / 100000).toFixed(1)}L`;
+        if (n >= 1000) return `${(n / 1000).toFixed(0)}K`;
+        return String(n);
+      }} />
+      <TT contentStyle={TT_STYLE} formatter={(value: unknown) => {
+        const n = Number(value);
+        if (isNaN(n)) return String(value);
+        return `₹${n.toLocaleString('en-IN')}`;
+      }} />
       <LG wrapperStyle={{ fontSize: '10px' }} />
       {(yKeys ?? []).map((key, i) => (
         <rc.Bar
