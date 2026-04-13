@@ -54,7 +54,7 @@ spec:
             httpGet:
               path: /health
               port: http
-            initialDelaySeconds: 10
+            initialDelaySeconds: 15
             periodSeconds: 30
             timeoutSeconds: 5
             failureThreshold: 3
@@ -62,7 +62,7 @@ spec:
             httpGet:
               path: /health
               port: http
-            initialDelaySeconds: 5
+            initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
@@ -70,9 +70,10 @@ spec:
             httpGet:
               path: /health
               port: http
-            initialDelaySeconds: 5
+            initialDelaySeconds: 10
             periodSeconds: 5
-            failureThreshold: 12  # 60s startup window
+            failureThreshold: 24  # 120s startup window
+
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:

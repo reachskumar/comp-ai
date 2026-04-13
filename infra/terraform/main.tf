@@ -163,8 +163,7 @@ module "gke" {
   name_prefix         = local.name_prefix
   project_id          = var.gcp_project
   region              = var.gcp_region
-  vpc_id              = module.vpc.vpc_id
-  subnet_id           = module.vpc.data_subnet_id
+  existing_vpc_id     = module.vpc.vpc_id  # existing VPC (in compportiq-ai) for peering
   api_machine_type    = var.gke_api_machine_type
   api_min_nodes       = var.gke_api_min_nodes
   api_max_nodes       = var.gke_api_max_nodes

@@ -1,21 +1,74 @@
+# ─── GKE VPC (in compportiq project, avoids cross-project VPC complexity) ──
+
+resource "google_compute_network" "gke" {
+  name                    = "${var.name_prefix}-gke-vpc"
+  project                 = var.project_id
+  auto_create_subnetworks = false
+}
+
+resource "google_compute_subnetwork" "gke" {
+  name          = "${var.name_prefix}-gke-subnet"
+  project       = var.project_id
+  region        = var.region
+  network       = google_compute_network.gke.id
+  ip_cidr_range = "10.100.0.0/20"
+
+  secondary_ip_range {
+    range_name    = "gke-pods"
+    ip_cidr_range = "10.104.0.0/14"
+  }
+
+  secondary_ip_range {
+    range_name    = "gke-services"
+    ip_cidr_range = "10.108.0.0/20"
+  }
+
+  private_ip_google_access = true
+}
+
+# Peering to the existing VPC (for Cloud SQL + Redis access)
+resource "google_compute_network_peering" "gke_to_existing" {
+  name         = "${var.name_prefix}-gke-to-existing"
+  network      = google_compute_network.gke.id
+  peer_network = var.existing_vpc_id
+
+  export_custom_routes = true
+  import_custom_routes = true
+}
+
+resource "google_compute_network_peering" "existing_to_gke" {
+  name         = "${var.name_prefix}-existing-to-gke"
+  network      = var.existing_vpc_id
+  peer_network = google_compute_network.gke.id
+
+  export_custom_routes = true
+  import_custom_routes = true
+
+  depends_on = [google_compute_network_peering.gke_to_existing]
+}
+
 # ─── GKE Cluster ──────────────────────────────────────────
-# Regional cluster replacing Cloud Run for better performance,
-# persistent pods, GPU support, and monitoring.
 
 resource "google_container_cluster" "primary" {
   name     = "${var.name_prefix}-cluster"
   location = var.region
+  project  = var.project_id
 
   remove_default_node_pool = true
   initial_node_count       = 1
 
-  network    = var.vpc_id
-  subnetwork = var.subnet_id
+  network    = google_compute_network.gke.id
+  subnetwork = google_compute_subnetwork.gke.id
 
   private_cluster_config {
     enable_private_nodes    = true
     enable_private_endpoint = false
     master_ipv4_cidr_block  = "172.16.0.0/28"
+  }
+
+  ip_allocation_policy {
+    cluster_secondary_range_name  = "gke-pods"
+    services_secondary_range_name = "gke-services"
   }
 
   workload_identity_config {

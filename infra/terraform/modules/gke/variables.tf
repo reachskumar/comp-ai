@@ -10,12 +10,9 @@ variable "region" {
   type = string
 }
 
-variable "vpc_id" {
-  type = string
-}
-
-variable "subnet_id" {
-  type = string
+variable "existing_vpc_id" {
+  type        = string
+  description = "Existing VPC ID (for peering — gives GKE pods access to Cloud SQL + Redis)"
 }
 
 variable "api_machine_type" {

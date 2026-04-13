@@ -16,19 +16,19 @@ spec:
         app: sync-worker
     spec:
       serviceAccountName: compportiq-api
-      # Schedule on worker node pool (spot instances)
-      tolerations:
-        - key: "workload"
-          value: "sync"
-          effect: "NoSchedule"
-      nodeSelector:
-        pool: workers
+      # TODO: Move to worker node pool when spot instances are available
+      # tolerations:
+      #   - key: "workload"
+      #     value: "sync"
+      #     effect: "NoSchedule"
+      # nodeSelector:
+      #   pool: workers
       containers:
         - name: sync-worker
           image: asia-south1-docker.pkg.dev/compportiq/compportiq-prod-docker/api:latest
-          # Same image as API but only runs the BullMQ processor
+          # Same image + entrypoint as API — BullMQ runs inside NestJS
           command: ["node"]
-          args: ["--max-old-space-size=4096", "--experimental-require-module", "dist/main.js"]
+          args: ["--max-old-space-size=4096", "--experimental-require-module", "apps/api/dist/main.js"]
           resources:
             requests:
               cpu: "1000m"
