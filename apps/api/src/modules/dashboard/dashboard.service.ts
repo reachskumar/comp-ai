@@ -102,9 +102,22 @@ export class DashboardService {
     errorMessage: string | null;
   } | null> {
     try {
+      // Only return jobs the user should care about:
+      //  - RUNNING/PENDING → active sync, show progress
+      //  - COMPLETED/FAILED within last 5 min → flash result then dismiss
+      //  - Older than 5 min → stale, don't show (prevents stuck banners)
+      const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
+
       const job = await this.db.forTenant(tenantId, (tx) =>
         tx.syncJob.findFirst({
-          where: { tenantId, entityType: 'full_sync' },
+          where: {
+            tenantId,
+            entityType: 'full_sync',
+            OR: [
+              { status: { in: ['PENDING', 'RUNNING'] } },
+              { completedAt: { gte: fiveMinAgo } },
+            ],
+          },
           orderBy: { createdAt: 'desc' },
           select: {
             id: true,

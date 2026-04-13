@@ -69,6 +69,15 @@ export {
   type CopilotUserContext,
 } from './graphs/copilot-graph.js';
 
+// Rules Orchestrator
+export {
+  buildRulesOrchestratorGraph,
+  type RulesOrchestratorOptions,
+  type ParsedRule,
+  type ValidationResult,
+  type CompportRuleMapping,
+} from './graphs/rules-orchestrator-graph.js';
+
 // Compliance tools
 export { createComplianceTools, type ComplianceDbAdapter } from './tools/compliance-tools.js';
 
