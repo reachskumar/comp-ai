@@ -113,14 +113,13 @@ resource "google_secret_manager_secret" "benefits_encryption_key" {
   }
 }
 
-# Bring the existing secret into Terraform state. Requires Terraform 1.5+.
-import {
-  to = google_secret_manager_secret.benefits_encryption_key
-  id = "projects/compportiq/secrets/${var.name_prefix}-benefits-encryption-key"
-}
+# Import these secrets into TF state manually before first apply:
+#   terraform import 'module.secrets.google_secret_manager_secret.benefits_encryption_key' \
+#     'projects/compportiq/secrets/compportiq-prod-benefits-encryption-key'
+#   terraform import 'module.secrets.google_secret_manager_secret.platform_config_encryption_key' \
+#     'projects/compportiq/secrets/compportiq-prod-platform-config-encryption-key'
 
 # ─── PLATFORM_CONFIG_ENCRYPTION_KEY (AES-256-GCM for platform_config) ──
-# Same out-of-band provenance as benefits_encryption_key.
 resource "google_secret_manager_secret" "platform_config_encryption_key" {
   secret_id = "${var.name_prefix}-platform-config-encryption-key"
 
@@ -133,11 +132,6 @@ resource "google_secret_manager_secret" "platform_config_encryption_key" {
   lifecycle {
     prevent_destroy = true
   }
-}
-
-import {
-  to = google_secret_manager_secret.platform_config_encryption_key
-  id = "projects/compportiq/secrets/${var.name_prefix}-platform-config-encryption-key"
 }
 
 # ─── Azure OpenAI (placeholder — replace with real values after deploy) ──

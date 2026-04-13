@@ -24,6 +24,7 @@ resource "google_project_service" "apis" {
     "sqladmin.googleapis.com",
     "redis.googleapis.com",
     "run.googleapis.com",
+    "container.googleapis.com",  # GKE
     "artifactregistry.googleapis.com",
     "secretmanager.googleapis.com",
     "cloudkms.googleapis.com",
@@ -153,6 +154,29 @@ module "cloudrun" {
   labels                   = local.labels
 
   depends_on = [google_project_service.apis]
+}
+
+# ─── GKE Cluster (replaces Cloud Run over time) ─────────────
+module "gke" {
+  source = "./modules/gke"
+
+  name_prefix         = local.name_prefix
+  project_id          = var.gcp_project
+  region              = var.gcp_region
+  vpc_id              = module.vpc.vpc_id
+  subnet_id           = module.vpc.data_subnet_id
+  api_machine_type    = var.gke_api_machine_type
+  api_min_nodes       = var.gke_api_min_nodes
+  api_max_nodes       = var.gke_api_max_nodes
+  worker_machine_type = var.gke_worker_machine_type
+  worker_min_nodes    = var.gke_worker_min_nodes
+  worker_max_nodes    = var.gke_worker_max_nodes
+  labels              = local.labels
+
+  depends_on = [
+    google_project_service.apis,
+    module.vpc,
+  ]
 }
 
 # ─── Cloud Load Balancing + managed SSL ─────────────────────

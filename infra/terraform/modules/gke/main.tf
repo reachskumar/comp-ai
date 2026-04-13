@@ -35,7 +35,7 @@ resource "google_container_cluster" "primary" {
     }
   }
 
-  labels = var.labels
+  resource_labels = var.labels
 }
 
 # ─── Node Pool: API + Web ─────────────────────────────────

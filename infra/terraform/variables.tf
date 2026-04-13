@@ -91,6 +91,39 @@ variable "web_max_instances" {
   default     = 10
 }
 
+# ─── GKE ─────────────────────────────────────────────────────
+variable "gke_api_machine_type" {
+  description = "GKE default node pool machine type"
+  type        = string
+  default     = "e2-standard-4"
+}
+
+variable "gke_api_min_nodes" {
+  type    = number
+  default = 2
+}
+
+variable "gke_api_max_nodes" {
+  type    = number
+  default = 10
+}
+
+variable "gke_worker_machine_type" {
+  description = "GKE worker node pool machine type"
+  type        = string
+  default     = "e2-standard-8"
+}
+
+variable "gke_worker_min_nodes" {
+  type    = number
+  default = 1
+}
+
+variable "gke_worker_max_nodes" {
+  type    = number
+  default = 5
+}
+
 # ─── Labels ──────────────────────────────────────────────────
 variable "labels" {
   description = "Common labels for all resources"
