@@ -1,1046 +1,265 @@
 # CONTEXT.md — CompportIQ Engineering Ground Truth
 #
-# Generated: 2026-04-11
-# Source: Full codebase audit (5 parallel agents, read-only)
+# Updated: 2026-04-13
+# Source: Full codebase audit + 3-day production stabilization session
 #
 # ════════════════════════════════════════════════════════════
-# EVERY Claude Code session MUST read this file completely
-# before writing a single line of code.
+# EVERY Claude Code session MUST read this file before coding.
 # Update this file whenever architecture or status changes.
 # ════════════════════════════════════════════════════════════
-#
-# CONFIDENCE MARKERS USED IN THIS FILE:
-#
-# [CONFIRMED-CODE]   — verified by reading the actual source file.
-#                      File path and line number available.
-# [CONFIRMED-LOG]    — verified from production log output.
-# [CONFIRMED-SCHEMA] — verified from schema.prisma directly.
-# [INFERRED]         — logical inference from confirmed facts.
-#                      Treat as probable but verify before relying on it.
-# [NEEDS-VERIFY]     — not confirmed. Must query DB or read file
-#                      before using this in code.
-# [ASSUMPTION]       — working assumption. Flag if wrong.
 
 ---
 
-## ═══════════════════════════════════════════
-## SECTION 0 — HOW TO USE THIS FILE
-## ═══════════════════════════════════════════
+## SECTION 1 — CURRENT STATE (2026-04-13)
 
-Before starting ANY task:
-  1. Read SECTION 1 — ACTIVE BLOCKERS first
-  2. Read the section for the area you are working in
-  3. Check SECTION 9 — GO-LIVE CHECKLIST for your task's status
-  4. Read SECTION 10 — RULES before writing code
-  5. Never skip to coding without completing steps 1-4
+### Infrastructure — ALL in `compportiq` GCP project
 
-Status markers on checklist items:
-  ✅ DONE       — verified working, confirmed in prod
-  🔴 BROKEN     — confirmed broken right now
-  🔄 IN PROGRESS — being actively fixed this session
-  ⬜ NOT STARTED — known gap, work not begun
-  ⚠️  RISK       — working but has known fragility
+| Resource | Details |
+|---|---|
+| **GKE Cluster** | `compportiq-prod-cluster`, asia-south1, regional, 2 node pools |
+| **Default Pool** | e2-standard-4 (4 vCPU, 16GB), 2-10 nodes, API + Web + Workers |
+| **Worker Pool** | e2-standard-8, spot instances, currently disabled (using default) |
+| **PostgreSQL** | `compportiq-gke-postgres`, 10.203.32.2, PG 16, ENTERPRISE, REGIONAL HA |
+| **Redis** | `compportiq-gke-redis`, 10.241.79.227, 1GB basic |
+| **Cloud NAT** | `gke-nat` on `gke-router` for external MySQL egress |
+| **Static IP** | `compportiq-gke-ip` = 34.120.125.227 |
+| **DNS** | compportiq.ai + *.compportiq.ai → 34.120.125.227 |
+| **TLS** | GKE Managed Certificate (compportiq.ai + bfl.compportiq.ai) |
 
----
+### Kubernetes Workloads (namespace: compportiq)
 
-## ═══════════════════════════════════════════
-## SECTION 1 — ACTIVE BLOCKERS
-## ═══════════════════════════════════════════
-## Read this before anything else.
-## Do not build on top of these. Fix them first.
-## ═══════════════════════════════════════════
+| Workload | Replicas | Status |
+|---|---|---|
+| API (NestJS) | 3, HPA 3-20 | ✅ Running, health OK |
+| Web (Next.js) | 2, HPA 2-10 | ✅ Running |
+| Sync Workers | 2 | ✅ Running |
+| Prometheus | 1 | ✅ Running |
+| Grafana | 1 | ✅ Running |
+| Alertmanager | 1 | ✅ Running |
 
-### BLOCKER 1 — Employee sync collapse ✅ RESOLVED (2026-04-11)
-Status: ✅ DONE — verified in prod
-Commits: f38704a, abf5821, f61475c, 7e2c83e, e0624be
-BFL result: employees=123,249/123,249 (100%), errors=0, pruned=155
+### Database Connections
 
-What was fixed:
-  - PK-first detection via INFORMATION_SCHEMA.KEY_COLUMN_USAGE
-  - Extended 16-column candidate list with strict 0.95 confidence threshold
-  - Removed ?? fallback chain entirely — detected column only
-  - Per-row recovery on chunk failure (no more 499-row collateral damage)
-  - Owner-aware email dedupe (pre-loads existing PG rows)
-  - Dropped @@unique([tenantId, email]) on Employee (migration 20260411140000)
-  - Stale-row pruning after successful sync
-  - Detection result persisted in IntegrationConnector.config.idColumns
-  - Delta sync reads stored column, never re-detects
-  - SyncJob.metadata stamped with detectedIdColumn + confidence
+| DB | Host | Access Method |
+|---|---|---|
+| CompportIQ PostgreSQL | 10.203.32.2:5432 | Direct private IP (same VPC) |
+| Redis | 10.241.79.227:6379 | Direct private IP (same VPC) |
+| Compport MySQL (UAT) | 34.14.218.154:3306 | Public IP via Cloud NAT |
 
-BFL facts [CONFIRMED-LOG]:
-  - employee_master table is EMPTY for BFL
-  - Actual data lives in login_user (PK column: id, confidence: 1.000)
-  - Detection source: 'config' (persisted after first successful run)
-  - 74 email collisions de-duplicated by suffixing
-
-Original symptom [CONFIRMED-LOG]:
-  BFL had 121,753 rows in Compport employee_master.
-  After full sync, CompportIQ Employee table had 161 rows.
-  synced=123249, skipped=0, errors=0 — sync reported success.
-  All AI agents operating on 0.2% of real employee population.
-
-Root cause [CONFIRMED-CODE: inbound-sync.service.ts ~700-707]:
-  Three compounding problems:
-
-  Problem A — Candidate list too narrow:
-    detectEmployeeIdColumn tests only:
-    ['employee_code','employee_id','emp_code','emp_id','id']
-    Does NOT query INFORMATION_SCHEMA.KEY_COLUMN_USAGE for
-    the actual MySQL PRIMARY KEY constraint.
-    BFL's actual PK column name is [NEEDS-VERIFY — run Phase 1].
-
-  Problem B — Fallback chain defeats detection:
-    const raw = (row[idStrategy.column] as unknown) ??
-                validRow.employee_code ??
-                validRow.employee_id ??
-                validRow.id;
-    If detected column has nulls, chain falls to employee_code.
-    BFL's employee_code has only 161 distinct values → collapse.
-
-  Problem C — Zod schema false negative:
-    CloudSqlEmployeeRowSchema requires one of:
-    employee_id / employee_code / id
-    If none exist, Zod still passes (.passthrough()) but
-    extraction uses wrong column silently.
-
-Same bug in delta sync [CONFIRMED-CODE]:
-  syncEmployeesIncremental uses same Employee.upsert path.
-  Fix BOTH simultaneously. Delta runs every 120s.
-
-Fix approach:
-  Step 1: Query INFORMATION_SCHEMA.KEY_COLUMN_USAGE
-          WHERE CONSTRAINT_NAME = 'PRIMARY'
-          AND TABLE_SCHEMA = schemaName
-          AND TABLE_NAME = tableName
-          → get actual PK column FIRST, before any candidate check
-
-  Step 2: Extended candidate list (after PK check):
-          employee_id, emp_id, emp_no, staff_id, personnel_id,
-          payroll_id, badge_id, employee_number, emp_master_id,
-          emp_code, worker_id, person_id, serial_no, pk_id
-
-  Step 3: For each candidate compute distinct/total ratio.
-          Accept column where ratio >= 0.95 AND distinct = total.
-          Log WARNING if best ratio < 0.95.
-
-  Step 4: Remove fallback chain entirely.
-          Use ONLY detected column. Skip null rows. Log first 5.
-
-  Step 5: Store in IntegrationConnector.config:
-          { detectedEmployeeIdColumn, idColumnConfidence,
-            idColumnDistinct, idColumnTotal, detectedAt }
-
-  Step 6: Delta sync reads stored value. NEVER re-detects.
-
-  Step 7: Store in SyncJob.metadata:
-          { detectedIdColumn, idColumnConfidence }
-
-DO NOT PROCEED past this fix until Employee count ≈ 121,753 for BFL.
+### Compport MySQL Details
+- Instance: `uat-db` in `prj-compport-nonprod-service`
+- This is UAT/non-production. For go-live, switch to production instance.
+- Production instances are in `prj-compport-prod-service`:
+  - `saas-prd-to-as-prod` (db-custom-16-65536) — main production
+  - `as1-prod-database` (db-custom-12-16384)
+- Switching = update `DB_HOST` + `DB_USER` + `DB_PWD` in K8s secret
 
 ---
 
-### BLOCKER 2 — BENEFITS_ENCRYPTION_KEY missing ✅ RESOLVED (2026-04-11)
-Status: ✅ DONE
-Commit: 982e649
-Secret: compportiq-prod-benefits-encryption-key in GCP Secret Manager
-Mounted on Cloud Run API service. App throws on missing. Terraform wired.
+## SECTION 2 — RESOLVED BLOCKERS
+
+All 6 P0 blockers from the original audit are resolved:
+
+### BLOCKER 1 — Employee sync ✅ RESOLVED
+- **Was**: 121,753 rows → 161 in PG (99.9% data loss)
+- **Fix**: PK-first detection via INFORMATION_SCHEMA.KEY_COLUMN_USAGE, 16-column candidate list, no fallback chain, per-row recovery, owner-aware email dedupe, stale pruning
+- **Result**: 123,249/123,249 (100%), 0 errors, 155 stale rows pruned
+- **BFL**: employee_master is EMPTY, data lives in `login_user` (PK: `id`, confidence: 1.000)
+- **Commits**: f38704a, abf5821, f61475c, 7e2c83e, e0624be
+
+### BLOCKER 2 — BENEFITS_ENCRYPTION_KEY ✅ RESOLVED
+- Secret provisioned in GCP Secret Manager, mounted on GKE
+- App throws (not warns) if missing in production
+
+### BLOCKER 3 — PLATFORM_CONFIG_ENCRYPTION_KEY ✅ RESOLVED
+- Same treatment as BLOCKER 2. Hardcoded dev key removed.
+
+### BLOCKER 4 — User→Employee linking ✅ RESOLVED
+- `linkUsersToEmployees()` runs after every full sync
+- Dedupes by both email AND employeeId, bulk raw SQL UPDATE
+
+### BLOCKER 5 — Empty passwordHash ✅ RESOLVED
+- AuthService.login rejects empty/whitespace passwordHash before bcrypt
+
+### BLOCKER 6 — Compensation data ✅ RESOLVED
+- Agents read directly from Compport MySQL via Redis cache
+- TenantSchemaCatalog: 345 tables cataloged for BFL
+- CompportQueryCacheService: Redis cache (5 min TTL) → MySQL fallback
+- 3 copilot tools: list_compport_tables, describe_compport_table, query_compport_table
 
 ---
 
-### BLOCKER 3 — PLATFORM_CONFIG_ENCRYPTION_KEY missing ✅ RESOLVED (2026-04-11)
-Status: ✅ DONE
-Commit: 982e649
-Secret: compportiq-prod-platform-config-encryption-key in GCP Secret Manager
-Mounted on Cloud Run API service. App throws on missing. Terraform wired.
-Hardcoded dev key 'platform-config-dev-key-32char!' removed from fallback.
+## SECTION 3 — MULTI-TENANCY
+
+Three enforcement layers — ALL THREE must hold:
+
+1. **JWT claim** `tenantId` set at login (auth.service.ts:486-529)
+2. **TenantGuard** validates tenant.isActive (60s cache)
+3. **PostgreSQL FORCE RLS** via `forTenant()` → `SET LOCAL app.current_tenant_id`
+
+```typescript
+// MANDATORY for all tenant data:
+await this.db.forTenant(tenantId, (tx) => { ... });
+
+// NEVER:
+await this.db.client.employee.findMany(...); // bypasses RLS
+```
+
+Platform admin: `@UseGuards(JwtAuthGuard, PlatformAdminGuard)` — no TenantGuard.
+Cross-tenant lists use `db.client` intentionally. Per-tenant details use `db.forTenant`.
 
 ---
 
-### BLOCKER 4 — User→Employee link ⚠️ PARTIALLY RESOLVED
-Status: ⚠️ Code deployed, link rate low
-Commit: 982e649 (linkUsersToEmployees), dad1ef6 (dedupe + bulk SQL)
+## SECTION 4 — DATA INGESTION
 
-linkUsersToEmployees() runs after every full sync. Code:
-  - Reads login_user (employee_code, email) from Cloud SQL
-  - Mirrors user sync email synthesis exactly
-  - Dedupes by both email AND employeeId upfront
-  - Bulk raw SQL UPDATE ... FROM (VALUES ...) for speed
-  - Per-row recovery if chunk fails
+### Sync Pipeline
+```
+POST /api/v1/platform-admin/tenants/:id/sync-full
+  → Phase 1 (roles): roles → pages → permissions → 123K users
+  → Phase 2 (employees): detect PK → upsert → prune stale → link users
+  → Phase 3 (catalog): discover all tables → persist to TenantSchemaCatalog
+```
 
-Issue: Most recent run shows linked=0/2 — likely because
-previous runs already linked most users, so the WHERE
-clause (employeeId IS NULL) matches very few.
-[NEEDS-VERIFY: check how many users still have employeeId=null]
+### Agent Data Access (no mirror/copy)
+```
+Agent tool call → Redis cache lookup (5ms hit) → MySQL fallback (100ms miss)
+  - list_compport_tables: reads TenantSchemaCatalog
+  - describe_compport_table: reads catalog metadata + sample row
+  - query_compport_table: parameterized SELECT via CompportQueryCacheService
+  - Cache invalidation: after every sync (full + delta)
+```
 
----
+### Upsert Pattern (DO NOT CHANGE)
+```
+BATCH_SIZE = 5000        (rows per SELECT from MySQL)
+UPSERT_TX_CHUNK = 500    (rows per Prisma transaction)
+TX_TIMEOUT = 300_000ms   (5 minutes per chunk)
+Per-row recovery on chunk failure (no 499-row collateral damage)
+```
 
-### BLOCKER 5 — Empty passwordHash login vulnerability ✅ RESOLVED (2026-04-11)
-Status: ✅ DONE
-Commit: 982e649
-
-AuthService.login now rejects users with empty/whitespace passwordHash
-before bcryptjs.compare. Returns distinct message:
-"This account was provisioned by Compport. Use SSO or contact your
-administrator to set a password."
-
----
-
-### BLOCKER 6 — Compensation data not synced 🔄 IN PROGRESS
-Status: 🔄 Universal mirror sync deployed, catalog persist being fixed
-[CONFIRMED-SCHEMA]: Employee model has baseSalary, totalComp,
-  compaRatio, performanceRating fields in schema.prisma
-[NEEDS-VERIFY]: Which Compport tables hold this data per tenant.
-  Table names vary: salary_details / ctc_details / comp_details
-[NEEDS-VERIFY]: Whether defaultMapping() in inbound-sync.service.ts
-  populates these fields or leaves them null
-
-Impact: WITHOUT this:
-  - Pay equity analysis runs on empty salary data
-  - Budget optimizer has no base to optimize from
-  - Attrition predictor has no comp gap factor
-  - Copilot cannot answer any compensation questions accurately
-  - Simulations have no starting comp data to model from
-
-Architecture change (2026-04-12): Universal mirror sync replaces
-per-table manual wiring. Instead of discovering comp tables one by
-one, we now:
-  Phase 1: SchemaCatalogService.discoverAllTables() walks EVERY
-           table in INFORMATION_SCHEMA and persists to TenantSchemaCatalog
-  Phase 2: MirrorSyncService.syncAllTables() creates per-tenant PG
-           schema (mirror_<slug>) and copies all mirrorable tables
-  Phase 3: Agent tools (list/describe/query) introspect the mirror
-
-Models added: TenantSchemaCatalog, TenantDataMirrorState
-Migration: 20260411150000_universal_schema_catalog
-
-Current status:
-  - Phase 1 discovery: ✅ discovers 345 tables for BFL
-  - Phase 1 persist: 🔄 was failing (sampleRow undefined→null fix deployed)
-  - Phase 2 mirror: ⬜ depends on Phase 1 persist working
-  - Phase 3 tools: ✅ code deployed, waiting for mirror data
-
-Commits: a866a7d (Stage 1), 006014c (Stage 2+3), 1fe2c12 (auto-wire),
-         f78c5c2 (persist fix)
-
-BFL discovery result [CONFIRMED-LOG]:
-  345 base tables found, 345 classified as mirrorable
-  Compensation tables available: [NEEDS-VERIFY — waiting for catalog persist]
+### Auto-Onboarding
+- `createTenant()` with `compportSchema` → auto-triggers `startTenantFullSync()`
+- `onboardFromCompport()` → role sync (sync) + full sync (async background)
 
 ---
 
-## ═══════════════════════════════════════════
-## SECTION 2 — PRODUCT OVERVIEW
-## ═══════════════════════════════════════════
+## SECTION 5 — AI AGENTS (16)
 
-CompportIQ is an AI-powered compensation intelligence layer
-built on top of Compport — a PHP/MySQL B2B SaaS compensation
-platform used by enterprises like BFL, SBI Life, Infosys,
-Standard Bank, ADNOC, Novelis.
+All in `packages/ai/src/graphs/`. All use Azure OpenAI GPT-4o.
+All query data via `db.forTenant()` — tenant-isolated.
 
-Each Compport client = one tenant in CompportIQ.
-Each tenant has their own MySQL schema in Compport Cloud SQL.
-Each tenant is isolated in CompportIQ via PostgreSQL RLS.
+| Agent | File | Key Feature |
+|---|---|---|
+| Copilot | copilot-graph.ts | SSE streaming, role-aware, 15+ tools |
+| Rules Orchestrator | rules-orchestrator-graph.ts | 6 nodes: parse/validate/explain/simulate/apply |
+| Policy Parser | rules/graphs/policy-parser-graph.ts | 5-node: classify/extract/map/validate/calibrate |
+| + 13 others | See packages/ai/src/graphs/ | All working |
 
-Primary data flow:
-  Compport Cloud SQL (MySQL, per-tenant schema)
-    ↓ inbound-sync.service.ts (pull, every 120s delta + on-demand full)
-  CompportIQ PostgreSQL (primary store, RLS-enforced)
-    ↓ LangGraph agents (14 agents, Azure OpenAI GPT-4o)
-    ↓ NestJS/Fastify API
-    ↓ Next.js frontend
+### Copilot System Prompt Rules
+- MANDATORY charts for comparative data (bar for salary/dept, pie for headcount)
+- INR currency: ₹ with lakhs/crores notation
+- NEVER expose table names, column names, or internal IDs
+- Top 12 items per chart, sorted descending
+- Insights paragraph after every chart
+- Action suggestions (drill/export/compare) at end
 
-Write-back flow (implemented in backend, UI not wired):
-  CompportIQ CompRecommendation (human-approved)
-    ↓ write-back.service.ts
-    ↓ Compport MySQL via parameterized SQL
-
----
-
-## ═══════════════════════════════════════════
-## SECTION 3 — TECH STACK
-## ═══════════════════════════════════════════
-## All versions confirmed from package.json files.
-
-Layer                | Technology                     | Version
----------------------|--------------------------------|------------------
-Runtime              | Node.js                        | ≥20 (alpine)
-Package manager      | pnpm                           | 10.29.3
-Monorepo build       | Turborepo                      | 2.3.0
-Language             | TypeScript                     | 5.9.3
-API framework        | NestJS                         | 11.1.14
-HTTP adapter         | Fastify                        | 5.7.4
-Frontend             | Next.js App Router             | 15.5.12
-UI components        | React + Tailwind + shadcn/ui   | 18.x / 4.x
-Data fetching        | TanStack React Query           | 5.90.21
-State                | Zustand                        | 5.0.11
-Validation           | Zod                            | 4.3.6
-ORM                  | Prisma                         | 7.4.2
-PostgreSQL driver    | pg                             | 8.18.0
-MySQL client         | mysql2                         | 3.18.2
-Primary DB           | PostgreSQL 16 Cloud SQL        | ENTERPRISE
-                     |                                | REGIONAL HA
-                     |                                | db-custom-2-8192
-                     |                                | 50GB, asia-south1
-Queue                | BullMQ                         | 5.68.0
-Cache / Queue broker | Redis → GCP Memorystore        | 1GB prod
-Agent framework      | LangGraph                      | 1.1.4
-LangChain core       | @langchain/core                | 1.1.24
-LLM prod             | Azure OpenAI GPT-4o            | 2024-08-01-preview
-                     | asia-south1 endpoint           |
-                     | 50K TPM quota                  |
-LLM dev              | OpenAI GPT-4o                  | —
-Vector search        | ⬜ NOT IMPLEMENTED              | JSON arrays only
-Auth                 | Passport-JWT + bcryptjs        | —
-Logging              | Pino + nestjs-pino             | 10.3.1
-Testing              | Vitest + Supertest + Playwright | 4.0.18
-Hosting              | GCP Cloud Run                  | asia-south1
-IaC                  | Terraform                      | infra/terraform/
-CI/CD                | GitHub Actions + WIF           | .github/workflows/
+### LLM Config
+- Provider: `azure` (prod), `openai` (dev)
+- Model: `gpt-4o`, API version `2024-08-01-preview`
+- Max retries: 6 (exponential backoff ~63s total)
+- 429 errors show "AI service temporarily busy" (not stack trace)
 
 ---
 
-## ═══════════════════════════════════════════
-## SECTION 4 — MULTI-TENANCY MODEL
-## ═══════════════════════════════════════════
+## SECTION 6 — DATABASE SCHEMA
 
-Three enforcement layers — ALL THREE must hold for isolation:
+Source: `packages/database/prisma/schema.prisma` (2200+ lines)
 
-LAYER 1 — JWT claim [CONFIRMED-CODE: jwt.strategy.ts:21-28]
-  Every request carries tenantId in JWT payload.
-  Set at login in auth.service.ts:486-529.
-  NEVER re-derive tenantId from request body.
-  ALWAYS read from req.user.tenantId.
+### Key Models
+- **Tenant**: root of all cascades, compportSchema field
+- **User**: @@unique([tenantId, email]), role is String (Compport role ID or PLATFORM_ADMIN)
+- **Employee**: @@unique([tenantId, employeeCode]), 150+ fields
+- **TenantSchemaCatalog**: per-table metadata from Compport discovery
+- **TenantDataMirrorState**: mirror sync tracking (legacy, being deprecated)
+- **SyncJob**: sync progress + metadata (phase, detectedIdColumn, counts)
+- **CopilotConversation / CopilotMessage**: chat persistence
+- **60+ other models**: rules, cycles, payroll, benefits, compliance, equity, etc.
 
-LAYER 2 — TenantGuard [CONFIRMED-CODE: tenant.guard.ts]
-  Validates tenant.isActive = true.
-  60-second in-memory cache.
-  Applied globally to all non-platform-admin routes.
-
-LAYER 3 — PostgreSQL FORCE RLS [CONFIRMED-CODE: rls-extension.ts]
-  SET LOCAL app.current_tenant_id = $1 inside every transaction.
-  Even a forged JWT cannot read other tenant data at DB level.
-
-forTenant() — MANDATORY pattern for all tenant data:
-  [CONFIRMED-CODE: database.service.ts:62-70]
-  await this.db.forTenant(tenantId, async (tx) => {
-    // ALL queries here are RLS-scoped to tenantId
-    // SET LOCAL means GUC cannot leak across pool connections
-  }, { timeout?, maxWait? });
-
-NEVER do this:
-  await this.db.client.employee.findMany(...)  // bypasses RLS
-  const tenantId = req.body.tenantId           // never trust body
-
-Platform admin bypass [CONFIRMED-CODE: platform-admin.controller.ts]:
-  @UseGuards(JwtAuthGuard, PlatformAdminGuard) — no TenantGuard
-  Cross-tenant list queries use db.client intentionally
-  Per-tenant detail queries MUST still use db.forTenant
-
-RLS tables confirmed [CONFIRMED-CODE: migration 20260227100000
-+ 20260402100000]:
-  users, employees, sync_jobs, integration_connectors,
-  import_jobs, import_ai_analyses, rule_sets, simulation_runs,
-  simulation_scenarios, comp_cycles, payroll_runs, audit_logs,
-  notifications, field_mappings, webhook_endpoints, benefit_plans,
-  benefit_enrollments, enrollment_windows, life_events,
-  saved_reports, policy_documents, policy_chunks,
-  policy_conversions, compliance_scans, compensation_letters,
-  write_back_batches, copilot_conversations + more
-
-⚠️ VERIFY copilot_conversations RLS [NEEDS-VERIFY]:
-  Table created in migration 20260306100000.
-  RLS rollout was 20260402100000.
-  Manually confirm copilot_conversations is in the later migration.
-  A conversation leaking across tenants is a critical trust breach.
-
-Tables intentionally WITHOUT RLS:
-  tenants           — root table, no tenantId column
-  refresh_tokens    — no tenantId, protected via user FK
-  platform_config   — system-wide, no tenant scope
+### Migrations (28 total)
+Latest: `20260411150000_universal_schema_catalog`
+Previous: `20260411140000_drop_employee_email_unique`
 
 ---
 
-## ═══════════════════════════════════════════
-## SECTION 5 — DATA INGESTION PIPELINE
-## ═══════════════════════════════════════════
+## SECTION 7 — ENVIRONMENT VARIABLES
 
-### 5.1 Overview
-Type: Direct MySQL pull (NOT Datastream CDC, NOT Pub/Sub)
-Schedule: BullMQ repeatable job, every 120 seconds per tenant
-Full sync: On-demand via platform admin UI or API
-All ingestion applies to ALL tenants — not BFL-specific.
+### Required in Production
+| Variable | Source | Notes |
+|---|---|---|
+| DATABASE_URL | K8s Secret | PG at 10.203.32.2 |
+| REDIS_URL | K8s Secret | Redis at 10.241.79.227 |
+| JWT_SECRET | K8s Secret | ≥64 chars |
+| BENEFITS_ENCRYPTION_KEY | K8s Secret | ≥32 chars, app throws if missing |
+| PLATFORM_CONFIG_ENCRYPTION_KEY | K8s Secret | ≥32 chars, app throws if missing |
+| INTEGRATION_ENCRYPTION_KEY | K8s Secret | ≥32 chars |
+| AZURE_OPENAI_API_KEY | K8s Secret | Azure OpenAI |
+| AZURE_OPENAI_ENDPOINT | K8s Secret | Azure OpenAI |
+| DB_HOST | K8s Secret | 34.14.218.154 (UAT MySQL) |
+| DB_USER / DB_PWD | K8s Secret | Compport MySQL credentials |
 
-### 5.2 Entry points [CONFIRMED-CODE]
-Full sync:
-  POST /api/v1/platform-admin/tenants/:id/sync-full
-  → platform-admin.service.ts startTenantFullSync
-  → runFullSyncBackground (fire-and-forget, no HTTP wait)
-  → UI polls GET .../sync-jobs/:jobId every 3s
-
-Delta sync:
-  BullMQ realtime-sync every SYNC_INTERVAL_SECONDS (default 120)
-  → sync-scheduler.service.ts
-  → inbound-sync.service.ts syncIncremental
-  → WHERE timestampCol > lastSyncAt
-
-Roles only:
-  POST /api/v1/platform-admin/tenants/:id/sync-roles
-
-### 5.3 Sync sequence — correct order, always
-  a. Discover available tables via INFORMATION_SCHEMA
-  b. Load lookup maps (manage_* → in-memory Maps, not persisted)
-  c. Roles → TenantRole
-  d. Pages → TenantPage
-  e. Permissions → TenantRolePermission
-  f. Employees → Employee (paginated, upsert)   ← BLOCKER 1
-  g. Users → User (dedupe by email, batch upsert)
-  h. User→Employee linking pass                  ← BLOCKER 4
-  i. Manager resolution (second pass after f)    ← broken, auto-fixes
-  j. Compensation data sync                      ← BLOCKER 6
-  k. Performance data sync                       ← BLOCKER 6
-
-### 5.4 What gets synced — ALL TENANTS
-
-Table availability varies per tenant schema.
-NEVER assume a table exists.
-ALWAYS check INFORMATION_SCHEMA first.
-Store available tables in IntegrationConnector.config.availableTables.
-
-CORE EMPLOYEE IDENTITY
-Source (check in this order)   → PG Destination  | Notes
--------------------------------|-----------------|------------------
-employee_master                → Employee        | Primary in most
-login_user                     → Employee        | Fallback if no master
-employees                      → Employee        | Some schemas
-login_user                     → User            | Always present
-
-EMPLOYEE FIELDS MAPPING
-[CONFIRMED-SCHEMA: Employee model in schema.prisma]
-[NEEDS-VERIFY: Which fields defaultMapping() actually populates]
-[NEEDS-VERIFY: Which MySQL column maps to which PG field]
-Verify by reading:
-  inbound-sync.service.ts defaultMapping() function
-
-Known PG Employee fields from schema.prisma:
-  employeeCode     ← source PK column (detected per tenant)
-  email            ← [NEEDS-VERIFY column name]
-  name / firstName / lastName ← [NEEDS-VERIFY column names]
-  department       ← [NEEDS-VERIFY, likely via manage_function]
-  level            ← [NEEDS-VERIFY, likely via manage_level]
-  grade            ← [NEEDS-VERIFY, likely via manage_grade]
-  designation      ← [NEEDS-VERIFY, likely via manage_designation]
-  location / city  ← [NEEDS-VERIFY, likely via manage_city]
-  managerId        ← resolved from manager reference column
-  hireDate         ← [NEEDS-VERIFY column name]
-  terminationDate  ← [NEEDS-VERIFY column name]
-  baseSalary       ← ⬜ NOT SYNCED (BLOCKER 6)
-  totalComp        ← ⬜ NOT SYNCED (BLOCKER 6)
-  compaRatio       ← ⬜ NOT SYNCED (BLOCKER 6)
-  performanceRating← ⬜ NOT SYNCED (BLOCKER 6)
-  gender           ← [NEEDS-VERIFY — needed for pay equity]
-  currency         ← [NEEDS-VERIFY column name]
-
-LOOKUP TABLES (in-memory during sync, resolve FK ids → names)
-manage_function         → Employee.functionName / department
-manage_level            → Employee.level
-manage_grade            → Employee.grade
-manage_designation      → Employee.designation
-manage_city             → Employee.city / location
-manage_subfunction      → Employee.subFunction
-manage_employee_role    → Employee.employeeRole
-manage_employee_type    → Employee.employmentType
-manage_cost_center      → Employee.costCenter
-manage_country          → Employee.country
-manage_business_level_1 → Employee.businessUnit L1
-manage_business_level_2 → Employee.businessUnit L2
-manage_business_level_3 → Employee.businessUnit L3
-manage_education        → Employee.education
-manage_role             → role label
-                          ⚠️ MISSING in BFL schema [CONFIRMED-LOG]
-manage_department       → department [NEEDS-VERIFY if present]
-manage_band             → band/grade band [NEEDS-VERIFY if present]
-
-Missing lookup tables:
-  Log as WARN. Continue sync. Do not fail or stop.
-
-ROLES AND PERMISSIONS [CONFIRMED-LOG: working correctly]
-roles            → TenantRole            (19 synced for BFL)
-pages            → TenantPage            (209 synced for BFL)
-role_permissions → TenantRolePermission  (434 synced for BFL)
-
-COMPENSATION DATA [NEEDS-VERIFY: table names per tenant]
-Run discovery query (Section 1, BLOCKER 6) before implementing.
-Priority 1 (unblocks most agents):
-  salary_details OR ctc_details OR compensation_details OR
-  current_ctc OR emp_salary OR salary_master
-  → Employee.baseSalary, .totalComp, .currency
-
-Priority 2 (enables trend analysis):
-  revision_history OR increment_history OR salary_history OR
-  comp_history
-  → New CompRevision model:
-    { id, tenantId, employeeId, effectiveDate, previousSalary,
-      newSalary, changePercent, changeReason, approvedBy,
-      cycleId, createdAt }
-    [NEEDS-VERIFY: this model does not yet exist in schema.prisma
-     — create migration before implementing sync]
-
-Priority 3 (improves AI accuracy):
-  performance_ratings OR appraisal_data OR kpi_scores
-  → Employee.performanceRating (field exists in schema)
-
-Priority 4 (enables band compliance):
-  grade_band OR salary_bands OR pay_grades
-  → SalaryBand model (exists in schema.prisma [CONFIRMED-SCHEMA])
-
-PERFORMANCE DATA [NEEDS-VERIFY: table names per tenant]
-  performance_ratings / appraisal_data / kpi_scores
-  → Employee.performanceRating
-
-### 5.5 Upsert pattern — DO NOT CHANGE THIS
-[CONFIRMED-CODE: inbound-sync.service.ts ~718-760]
-This pattern was arrived at after fixing transaction timeout
-failures. Keep chunk sizes and timeout values.
-
-  BATCH_SIZE = 5000        (rows per SELECT from MySQL)
-  UPSERT_TX_CHUNK = 500    (rows per Prisma transaction)
-  TX_TIMEOUT = 300_000ms   (5 minutes per chunk transaction)
-
-  await this.db.forTenant(tenantId, async (tx) => {
-    for (const { employeeCode, data } of chunk) {
-      await tx.employee.upsert({
-        where: { tenantId_employeeCode: { tenantId, employeeCode } },
-        create: { tenantId, employeeCode, ...data },
-        update: data,
-      });
-    }
-  }, { timeout: 300_000, maxWait: 30_000 });
-
-What was tried before and FAILED [CONFIRMED from git history]:
-  - Single transaction for 5000 rows → expired transaction error
-  - Candidate fallback chain → collapse bug (current blocker)
-  - Smart detection without PK query → still collapses
-
-### 5.6 Per-tenant connector config
-IntegrationConnector.config must store after first sync:
-  {
-    schemaName,                    // Compport MySQL schema
-    detectedEmployeeIdColumn,      // e.g. 'emp_master_id'
-    idColumnConfidence,            // 0.0 - 1.0
-    idColumnDistinct,              // count
-    idColumnTotal,                 // count
-    detectedAt,                    // ISO timestamp
-    availableTables,               // from INFORMATION_SCHEMA
-    syncedTables,                  // what is actively synced
-    timestampColumn,               // for delta sync
-    lastFullSyncAt,
-    lastDeltaSyncAt
-  }
-
-### 5.7 Write-back pipeline [CONFIRMED-CODE: write-back.service.ts]
-Fully implemented (841 lines) including:
-  - Create batch from approved CompRecommendations
-  - Preview (SQL only, no DB contact)
-  - Dry-run (connects to MySQL, SELECT validators only)
-  - Apply (requires confirmedWithPhrase human gate)
-  - Full rollback states (ROLLING_BACK/ROLLED_BACK/ROLLBACK_FAILED)
-
-Status: ⬜ UI not wired
-  API routes exist and work. Frontend pages exist as placeholders.
-  Wire these pages to the API:
-    POST   /api/v1/compport-bridge/write-back/batches
-    GET    /api/v1/compport-bridge/write-back/batches/:id
-    POST   /api/v1/compport-bridge/write-back/batches/:id/dry-run
-    POST   /api/v1/compport-bridge/write-back/batches/:id/apply
-
-### 5.8 BFL-specific verified facts
-Compport schema name: 250108_1736335952 [CONFIRMED-LOG]
-Primary employee table: employee_master [CONFIRMED-LOG]
-Total rows in employee_master: ~121,753 [CONFIRMED-LOG]
-Current Employee rows in PG: 161 [CONFIRMED-LOG] ← WRONG
-Roles synced: 19 [CONFIRMED-LOG]
-Pages synced: 209 [CONFIRMED-LOG]
-Permissions synced: 434 [CONFIRMED-LOG]
-Users synced: 123,249 [CONFIRMED-LOG]
-Manager resolution: resolved=0, unresolved=123,170 [CONFIRMED-LOG]
-Missing lookup: manage_role [CONFIRMED-LOG]
-Actual employee PK column: [NEEDS-VERIFY — run Phase 1 query]
-Compensation table names: [NEEDS-VERIFY — run discovery query]
+### Static (set in deployment YAML)
+NODE_ENV=production, API_PORT=4000, AI_PROVIDER=azure,
+COMPPORT_MODE=standalone, LOG_LEVEL=info, SHUTDOWN_TIMEOUT=30000
 
 ---
 
-## ═══════════════════════════════════════════
-## SECTION 6 — AGENT ARCHITECTURE
-## ═══════════════════════════════════════════
+## SECTION 8 — RULES FOR THIS CODEBASE
 
-All agents: packages/ai/src/graphs/ [CONFIRMED-CODE]
-All tools: packages/ai/src/tools/ [CONFIRMED-CODE]
-Checkpointer: @langchain/langgraph-checkpoint-postgres
-  (prod) / in-memory (dev) [CONFIRMED-CODE: checkpointer.ts]
+### NEVER do these:
+- `this.db.client` for tenant-scoped data (bypasses RLS)
+- `tenantId` from request body (always from JWT)
+- `??` fallback chains in employee ID extraction
+- `.catch(() => {})` — use `this.logger.error`
+- `console.log` — use Pino logger
+- Hardcode tenant IDs, schema names, or encryption keys
+- Generate random encryption keys at runtime
+- Single transaction for 5000+ row batches (use 500-row chunks)
+- Long-lived HTTP for sync (use fire-and-forget + polling)
 
-Agent                | Status | Notes
----------------------|--------|--------------------------------
-copilot              | ✅     | SSE streaming, role-gated tools
-policy-parser        | ✅     | No HTTP controller, internal
-compliance-scanner   | ✅     | FLSA/pay equity/policy violations
-anomaly-explainer    | ✅     | Payroll anomaly root cause
-attrition-predictor  | ✅     | 6-factor retention risk
-budget-optimizer     | ✅     | Multi-scenario allocation
-calibration-assistant| ✅     | Calibration session guidance
-data-quality         | ✅     | Hygiene issues + fix suggestions
-field-mapping        | ✅     | CSV column auto-mapping
-letter-generator     | ✅     | Offer/raise/promotion letters
-pay-equity           | ✅     | EDGE regression gap analysis
-policy-rag           | ✅     | RAG Q&A (⚠️ JSON, not pgvector)
-report-builder       | ✅     | NL report generation
-simulation           | ✅     | What-if scenario modeling
-rule-analysis        | ✅     | Rule set analysis/comparison
-echo                 | ✅     | Test/debug only
-
-⚠️ ALL AGENTS are operating on 161/121,753 employees (0.2%)
-until BLOCKER 1 is fixed. All agent outputs are unreliable
-until employee sync is corrected.
-
-⚠️ ALL AGENTS that use compensation figures (pay equity,
-budget optimizer, attrition, simulation) are operating on
-EMPTY salary data until BLOCKER 6 is fixed.
-
-Copilot tenant isolation [CONFIRMED-CODE: copilot-tools.ts]:
-  db.forTenant() called on every tool method
-  System prompt is role-aware per Compport role
-  MANAGER: "do NOT show data for employees outside their team"
-  EMPLOYEE: "do NOT show other employees' data"
-  ⚠️ MANAGER scoping broken — User.employeeId = null (BLOCKER 4)
-  DO NOT expose MANAGER role until BLOCKER 4 is fixed
-
-Azure OpenAI config [CONFIRMED-CODE: packages/ai/src/config.ts]:
-  Provider: azure (prod) / openai (dev)
-  Model: gpt-4o
-  Quota: 50K TPM asia-south1
-  ⬜ No 429 retry/backoff implemented — add exponential backoff
+### ALWAYS do these:
+- Query INFORMATION_SCHEMA.KEY_COLUMN_USAGE for PK detection first
+- Store detected id column in IntegrationConnector.config
+- Use `forTenant()` for all tenant-scoped queries
+- Use charts for comparative data (bar/pie/line)
+- Format Indian currency as ₹ with lakhs/crores
+- Per-row recovery on batch failures
+- Cache invalidation after every sync
 
 ---
 
-## ═══════════════════════════════════════════
-## SECTION 7 — DATABASE SCHEMA
-## ═══════════════════════════════════════════
-## Source: packages/database/prisma/schema.prisma (2141 lines)
-## All models confirmed from schema file.
+## SECTION 9 — REMAINING WORK
 
-### 7.1 Key models [CONFIRMED-SCHEMA]
+### P0 (before go-live)
+- [ ] Switch from UAT MySQL to production MySQL
+- [ ] Update CI/CD (GitHub Actions) to deploy to GKE instead of Cloud Run
+- [ ] TLS certificate: verify Active status
+- [ ] Run full sync for BFL on GKE (new empty PG needs data)
+- [ ] Verify copilot works end-to-end on GKE
 
-Tenant
-  id, name, slug, subdomain, customDomain, logoUrl, primaryColor,
-  isActive, compportSchema, plan, settings(Json)
-  → Root of all cascade deletes
+### P1 (first week)
+- [ ] Decommission Cloud Run services
+- [ ] Decommission old resources in compportiq-ai project
+- [ ] Move worker pool to spot instances
+- [ ] Set up Grafana dashboards for API latency, sync throughput, AI token usage
+- [ ] Configure Alertmanager → Slack integration
+- [ ] pgvector for Policy RAG (currently JSON embeddings)
 
-User
-  id, tenantId, email, name, passwordHash, azureAdOid,
-  role(String), employeeId(nullable), avatarUrl,
-  failedLoginAttempts, lockedUntil, lastLoginAt
-  @@unique([tenantId, email])
-  ⚠️ employeeId is null for all 123K synced users (BLOCKER 4)
-
-Employee
-  id, tenantId, employeeCode, email, name, department, level,
-  grade, designation, location, managerId(self-FK SetNull),
-  hireDate, terminationDate, currency,
-  baseSalary, totalComp, compaRatio,    ← ⬜ NOT SYNCED
-  performanceRating,                     ← ⬜ NOT SYNCED
-  gender, dateOfBirth,                   ← [NEEDS-VERIFY populated]
-  functionType, responsibilityLevel,     ← EDGE pay equity fields
-  isPeopleManager, ftePercent,           ← EDGE pay equity fields
-  totalCashComp,                         ← EDGE pay equity fields
-  jobFamily, salaryBandId, jobLevelId,
-  metadata(Json)
-  @@unique([tenantId, employeeCode])     ← collapse key (BLOCKER 1)
-  @@unique([tenantId, email])
-
-IntegrationConnector
-  id, tenantId, name, type(COMPPORT_CLOUDSQL etc),
-  status, config(Json), encryptedCredentials,
-  credentialIv, credentialTag, lastSyncAt
-
-SyncJob
-  id, connectorId, tenantId, direction, entityType,
-  status, totalRecords, processedRecords, failedRecords,
-  skippedRecords, startedAt, completedAt,
-  errorMessage, metadata(Json)
-
-PolicyChunk
-  id, documentId, content, embedding(Json @default("[]"))
-  ← ⬜ NOT pgvector — in-memory similarity only
-
-WriteBackBatch
-  Uses confirmedWithPhrase human gate before apply.
-  Supports full rollback states.
-  ← ⬜ UI not wired
-
-CopilotConversation / CopilotMessage
-  Persistent chat history, tenant+user scoped
-  ⚠️ RLS status needs verification (see Section 4)
-
-CompRevision
-  ← [NEEDS-VERIFY: does this model exist in schema.prisma?]
-  If not, create migration before implementing comp data sync.
-
-### 7.2 Migrations [CONFIRMED-CODE: prisma/migrations/]
-
-Key migrations in order:
-  20260212124233  Initial schema
-  20260227100000  RLS on 39 tables
-  20260303100000  Tenant branding + platform admin
-  20260306100000  Copilot conversations
-  20260309100000  EDGE pay equity fields on Employee
-  20260327100000  RLS auth bypass (enables login flow)
-  20260401100000  Dynamic roles/permissions
-  20260402100000  RLS on missing tables
-  20260402100100  Missing indexes
-  20260402100200  Refresh token rotation
-  20260402100300  Account lockout
-  20260405100000  Security compliance tables
-  20260405120000  Platform config table
-  20260405130000  Write-back rollback statuses
-  20260406100000  Fix user lockout columns
-  20260406110000  Missing tenant FK cascades (12 tables)
-  20260408100000  Reset admin lockout
-  20260408110000  Reset admin password
-  20260408120000  Force reset admin
-
-⚠️ Ghost migration in deploy.yml [CONFIRMED-CODE: deploy.yml:132]:
-  prisma migrate resolve --rolled-back
-    20260409100000_create_missing_connectors 2>/dev/null || true
-  This migration folder does NOT exist in the repo.
-  The || true silently hides errors on every deploy.
-  ACTION: Remove this line from deploy.yml.
-
-### 7.3 pgvector status ⬜ NOT IMPLEMENTED
-PolicyChunk.embedding is Json @default("[]").
-Similarity search runs in-memory over all chunks — not scalable.
-
-Migration needed:
-  CREATE EXTENSION IF NOT EXISTS vector;
-  ALTER TABLE policy_chunks ADD COLUMN embedding_vec vector(1536);
-  UPDATE policy_chunks SET embedding_vec = embedding::vector
-    WHERE embedding != '[]';
-  CREATE INDEX CONCURRENTLY policy_chunks_embedding_hnsw
-    ON policy_chunks USING hnsw (embedding_vec vector_cosine_ops)
-    WITH (m=16, ef_construction=64);
-
-After index verified working:
-  Update policy-rag-tools.ts to use:
-    ORDER BY embedding_vec <=> $1::vector LIMIT 10
-  Drop old Json column.
+### P2 (roadmap)
+- [ ] Claude Sonnet 4 for copilot (better tool-calling, higher quota)
+- [ ] Historical trend analysis (CompRevision model)
+- [ ] Write-back UI wiring (API exists, frontend placeholder)
+- [ ] Token usage dashboard in platform admin
+- [ ] AI model fallback (Azure → OpenAI on failure)
 
 ---
 
-## ═══════════════════════════════════════════
-## SECTION 8 — ENVIRONMENT AND CONFIG
-## ═══════════════════════════════════════════
-
-Variable                      | Status | Source             | Notes
-------------------------------|--------|--------------------|------------------
-DATABASE_URL                  | ✅     | Secret Manager     |
-REDIS_URL                     | ✅     | Secret Manager     |
-JWT_SECRET                    | ✅     | Secret Manager     |
-JWT_EXPIRATION                | ⚠️     | Static: 1d         | Change to 15m
-NEXTAUTH_SECRET               | ✅     | Secret Manager     |
-AZURE_OPENAI_API_KEY          | ✅     | Secret Manager     |
-AZURE_OPENAI_ENDPOINT         | ✅     | Secret Manager     |
-AZURE_OPENAI_DEPLOYMENT_NAME  | ✅     | Static: gpt-4o     |
-AZURE_OPENAI_API_VERSION      | ✅     | Static: 2024-08-01 |
-INTEGRATION_ENCRYPTION_KEY    | ✅     | Secret Manager     | Mounted as
-                              |        |                    | encryption_key
-BENEFITS_ENCRYPTION_KEY       | 🔴     | NOT SET            | BLOCKER 2
-PLATFORM_CONFIG_ENCRYPTION_KEY| 🔴     | NOT SET            | BLOCKER 3
-PII_ENCRYPTION_KEY            | 🔴     | NOT SET            | Fallback for above
-AI_MONTHLY_BUDGET_CENTS       | ⚠️     | Unset (=$50/mo)    | Set to 50000
-                              |        |                    | ($500) for enterprise
-MYSQL_CA_CERT                 | ✅     | Cloud Run mount    |
-MYSQL_CLIENT_CERT             | ✅     | Cloud Run mount    |
-MYSQL_CLIENT_KEY              | ✅     | Cloud Run mount    |
-DB_HOST / DB_USER / DB_PWD    | ✅     | Secret Manager     |
-SYNC_INTERVAL_SECONDS         | ✅     | Unset (=120s)      |
-COMPPORT_MODE                 | ✅     | Static: standalone |
-NODE_ENV                      | ✅     | Static: production |
-
-To generate and store a missing key:
-  openssl rand -hex 32
-  gcloud secrets create SECRET_NAME --data-file=- \
-    <<< "$(openssl rand -hex 32)"
-  Then add mount in infra/terraform/modules/cloudrun/main.tf
-  And add to apps/api/src/config/env.validation.ts as required
-
-⚠️ env.validation.ts only validates DATABASE_URL, JWT_SECRET,
-REDIS_URL on startup. Encryption keys are validated at
-service-instantiation time with warnings — NOT failures.
-This is why the app boots clean with missing keys.
-FIX: Add all three encryption keys to env.validation.ts as required.
-
----
-
-## ═══════════════════════════════════════════
-## SECTION 9 — GO-LIVE CHECKLIST
-## ═══════════════════════════════════════════
-
-### P0 — Cannot ship without these ✋
-
-Employee sync:
-  [ ] Run INFORMATION_SCHEMA PK discovery query for BFL
-  [ ] Confirm actual employee PK column name (update BFL notes)
-  [ ] Fix detectEmployeeIdColumn to query PK constraint first
-  [ ] Remove fallback chain from extraction
-  [ ] Delta sync uses stored detectedEmployeeIdColumn
-  [ ] Employee count in PG ≈ 121,753 for BFL after fix
-  [ ] idColumnConfidence >= 0.95 in SyncJob metadata
-  [ ] Run discovery query for comp/perf tables (BLOCKER 6)
-
-Encryption:
-  [ ] BENEFITS_ENCRYPTION_KEY generated and in Secret Manager
-  [ ] BENEFITS_ENCRYPTION_KEY mounted in Cloud Run
-  [ ] App throws (not warns) on missing BENEFITS_ENCRYPTION_KEY
-  [ ] PLATFORM_CONFIG_ENCRYPTION_KEY generated and set
-  [ ] Existing platform_config rows re-encrypted with new key
-  [ ] App throws (not warns) on missing PLATFORM_CONFIG key
-  [ ] All three encryption keys in env.validation.ts as required
-
-Security:
-  [ ] Empty passwordHash check in AuthService.login
-  [ ] No user can log in with empty password — test this
-  [ ] copilot_conversations RLS confirmed in migration SQL
-  [ ] JWT_EXPIRATION changed to 15m
-  [ ] Silent refresh (api-client.ts) verified working with 15m TTL
-
-Users:
-  [ ] User→Employee linking pass implemented
-  [ ] Link rate > 80% for BFL after fix
-  [ ] MANAGER role copilot tested with linked users
-
-Deploy pipeline:
-  [ ] Ghost migration line removed from deploy.yml:132
-  [ ] Deploy runs clean with no swallowed errors
-
-### P1 — Before first client demo
-
-Observability:
-  [ ] All .catch(() => {}) replaced with structured logger.error
-      Locations: inbound-sync.service.ts:670
-                 compport-cloudsql.service.ts:165,209,273,281
-                 auth.service.ts:120-130
-                 benchmarking/market-data-sync.service.ts:~515
-                 apps/web/analytics/simulations/page.tsx:69
-                 apps/web/login/page.tsx:72,80
-  [ ] /health endpoint checks ingestion last-run per tenant
-  [ ] PermissionGuard fallback fires a metric (not just logs)
-
-LLM reliability:
-  [ ] Azure OpenAI 429 exponential backoff implemented
-      (1s, 2s, 4s, 8s + jitter, max 4 retries)
-  [ ] AI_MONTHLY_BUDGET_CENTS set to 50000 in prod
-
-Infrastructure:
-  [ ] Cloud Run API max_instance_request_concurrency = 80
-  [ ] Cloud Run API memory >= 2048Mi
-  [ ] Cloud Run API CPU >= 2000m
-  [ ] Cloud Run min_instance_count = 1 for both services
-
-Features:
-  [ ] Write-back UI: preview page wired to API
-  [ ] Write-back UI: dry-run page wired to API
-  [ ] Write-back UI: apply with confirmation phrase wired
-  [ ] Platform admin invite: minimum writes to invite_log table
-
-Manager resolution:
-  [ ] After BLOCKER 1 fixed, re-run manager resolution
-  [ ] Confirm manager column name in employee_master for BFL
-      Run: SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
-           WHERE TABLE_NAME='employee_master'
-           AND COLUMN_NAME LIKE '%manager%'
-  [ ] resolved count > 100K for BFL
-
-### P2 — First week in production
-
-Vector search:
-  [ ] pgvector extension enabled on Cloud SQL PG
-  [ ] embedding_vec vector(1536) column added to policy_chunks
-  [ ] Existing JSON embeddings backfilled to vector column
-  [ ] HNSW index created CONCURRENTLY
-  [ ] policy-rag-tools.ts updated to use cosine distance query
-  [ ] Old JSON embedding column dropped
-
-Compensation data:
-  [ ] Discovery query run for all active tenants
-  [ ] Salary/CTC sync implemented for confirmed table names
-  [ ] CompRevision model created if not exists
-  [ ] Revision history sync implemented
-  [ ] Pay equity, budget optimizer, attrition predictor
-      re-tested with real compensation data
-
-Testing:
-  [ ] E2E Playwright tests added to CI pipeline
-  [ ] Integration tests for inbound-sync with real MySQL + PG
-  [ ] Test covers non-standard PK column name detection
-  [ ] Test covers empty-password login rejection
-
-Resilience:
-  [ ] BullMQ dead-letter table for sync jobs (Redis failure)
-  [ ] Terraform remote state backend confirmed (GCS bucket)
-  [ ] DataScopeService cache invalidation on role change
-
----
-
-## ═══════════════════════════════════════════
-## SECTION 10 — RULES FOR THIS CODEBASE
-## ═══════════════════════════════════════════
-
-Every Claude Code session must follow these rules.
-They exist because specific approaches have already failed.
-
-### BEFORE WRITING ANY CODE
-1. Read this entire CONTEXT.md
-2. Read SECTION 1 — ACTIVE BLOCKERS
-3. Read the source files you will modify
-4. Check the checklist status for your work area
-5. If NEEDS-VERIFY items are relevant to your task, verify
-   them by reading the file or running the query FIRST
-
-### INGESTION RULES (highest priority)
-- NEVER use a hardcoded candidate list as the primary detection
-  strategy. ALWAYS query INFORMATION_SCHEMA.KEY_COLUMN_USAGE
-  for the PRIMARY KEY constraint first.
-- NEVER use ?? fallback chains after detection.
-  Use ONLY the detected column. Skip nulls. Log first 5.
-- ALWAYS store detectedEmployeeIdColumn in connector config
-  after first detection.
-- Delta sync MUST read stored column. NEVER re-detect per run.
-- ALWAYS run compensation table discovery query for each tenant
-  before implementing comp data sync.
-- After any sync fix: verify Employee count approaches source
-  row count (not just that sync reports success — check PG table).
-
-### DATABASE RULES
-- NEVER use this.db.client for tenant-scoped data
-- NEVER accept tenantId from request body
-- NEVER string-interpolate values into SQL
-  Use Prisma or $executeRaw with parameterized values
-- Backtick-quote schema and table names in MySQL queries:
-  SELECT * FROM \`${schemaName}\`.\`${tableName}\`
-  (schemaName comes from connector config, not user input)
-
-### LLM RULES
-- NEVER call LLM without the AI cost guard check
-- NEVER build LLM context mixing data from multiple tenants
-- Assert all retrieved records have same tenantId before LLM call
-- ALWAYS implement 429 retry with exponential backoff
-- NEVER return compensation figures without source record citation
-
-### CODE QUALITY RULES
-- NEVER use .catch(() => {}) — use this.logger.error with context
-- NEVER use console.log — use the Pino logger
-- NEVER hardcode tenant IDs, schema names, model names, or keys
-- NEVER add npm dependencies without stating what they replace
-- NEVER leave TODO comments in code — implement or log as blocker
-- NEVER generate random encryption keys as a fallback at runtime
-
-### WHAT HAS FAILED — DO NOT RETRY THESE APPROACHES
-1. Hardcoded candidate list for employee ID detection
-   → Fails for tenants with non-standard PK names
-
-2. Fallback chain (col ?? employee_code ?? employee_id ?? id)
-   → Defeats detection. Causes 121K→161 collapse.
-
-3. Single transaction for full 5000-row batch
-   → Transaction timeout error. Current 500-row chunks work.
-
-4. Sync-full as long-lived HTTP request
-   → Times out. Current fire-and-forget is correct.
-
-5. db.client for platform admin counts
-   → FORCE RLS blocks even owner role. Must use forTenant.
-
-6. Random encryption key generation on startup
-   → Unrecoverable data after restart. Must throw instead.
-
-### UPDATE THIS FILE WHEN
-- Any blocker is resolved → mark ✅ DONE, update checklist
-- BFL employee PK column confirmed → update Section 5.8
-- Compensation table names confirmed → update Section 5.4
-- Any new issue discovered → add to Section 1 or known issues
-- Any migration added → add to Section 7.2
-- Any env var status changes → update Section 8
-- Any agent added or changed → update Section 6
-- CompRevision model added → remove [NEEDS-VERIFY] from Section 7
-
----
-
-## ═══════════════════════════════════════════
-## SECTION 11 — PRODUCT FEATURE MAP
-## ═══════════════════════════════════════════
-
-### Features live and functional
-Feature                   | Needs to work correctly
---------------------------|----------------------------------------
-Copilot NL Q&A            | Employee sync + comp data sync
-Pay equity EDGE regression | Employee sync + comp data + gender field
-Compliance scanning        | Employee sync + comp data
-Attrition risk scoring     | Employee sync + comp data + perf data
-Budget optimizer           | Employee sync + comp data
-Calibration assistant      | Employee sync + cycle data
-Letter generator           | Employee sync (names, roles)
-Simulation / what-if       | Employee sync + comp data
-Policy RAG                 | Policy documents uploaded by tenant
-Report builder             | Any synced data
-Anomaly explainer          | Payroll runs data (separate from sync)
-Rule analysis              | Rule sets defined by tenant
-Field mapping              | CSV imports
-Data quality               | Any synced data
-
-⚠️ Currently ALL features depending on comp figures are running
-on empty fields. Comp data sync (BLOCKER 6) unblocks most agents.
-
-### Missing features — P1 (first release)
-Feature                   | What to build
---------------------------|----------------------------------------
-Comp data sync            | Sync salary/CTC/revision tables
-                          | (BLOCKER 6 — do this first)
-Compa-ratio analysis      | Analytics query on baseSalary vs band
-                          | midpoint. Employee model has compaRatio
-                          | field — needs data.
-Pay compression detection | Flag where junior salary >= senior.
-                          | Query on managerId + baseSalary.
-                          | No new agent needed — analytics query.
-Manager recommendation    | Comp cycle view for MANAGER role showing
-view                      | team comp vs band vs peers. Requires
-                          | BLOCKER 1 + BLOCKER 4 + BLOCKER 6 fixed.
-AI rule authoring         | NL input → policy-parser-graph →
-                          | structured RuleSet. Graph exists.
-                          | Needs: HTTP endpoint + UI wizard
-                          | (ai-rule-wizard.tsx component exists
-                          | in apps/web/src/components/ —
-                          | [NEEDS-VERIFY: is it wired?])
-Cycle readiness score     | Pre-cycle checklist powered by
-                          | data-quality agent + cycle workflow.
-                          | Data quality agent exists — needs
-                          | integration with comp cycle start.
-
-### Missing features — P2 (post-launch roadmap)
-Feature                   | What it needs
---------------------------|----------------------------------------
-Historical trend analysis  | CompRevision model + revision sync
-Promotion readiness scoring| Performance data + tenure + comp gap
-Offer intelligence         | Market data + salary bands + internal
-                          | equity query
-DEI analytics beyond gender| Additional dimension fields on Employee
-                          | (ethnicity, age band, disability —
-                          | [NEEDS-VERIFY: what Compport stores])
-Sync-time anomaly flagging | Comp sync + anomaly-explainer integration
-Confidence scoring on all  | Source citation on every agent output
-agent outputs             | (copilot has it — others do not)
-Token usage dashboard      | AiCostGuard metrics → platform admin UI
-AI model fallback          | Azure → OpenAI direct on failure
-                          | (config.ts has both — just needs
-                          | circuit breaker logic)
-
----
-
-END OF CONTEXT.md.
+END OF CONTEXT.md

@@ -1,203 +1,198 @@
-# Compport AI Platform
+# CompportIQ — AI-Powered Compensation Intelligence Platform
 
-> AI-powered compensation intelligence — 14 agents, 49 pages, 237 API endpoints.
+CompportIQ is an AI layer built on top of [Compport](https://compport.com), a B2B SaaS compensation management platform serving 250+ enterprise customers (BFL, SBI Life, Infosys, Standard Bank, ADNOC, Novelis).
 
-![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)
-![NestJS](https://img.shields.io/badge/NestJS-10-E0234E?logo=nestjs&logoColor=white)
-![Next.js](https://img.shields.io/badge/Next.js-14-000000?logo=next.js&logoColor=white)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
-![LangGraph](https://img.shields.io/badge/LangGraph-1.1-1C3C3C?logo=langchain&logoColor=white)
-
----
-
-## Overview
-
-Compport AI Platform is an AI-powered companion to Compport for compensation intelligence. It combines a modern web dashboard with a robust API layer and a suite of AI agents to automate compensation analysis, compliance scanning, pay-equity auditing, letter generation, and more.
-
-The platform is built as a **pnpm monorepo** with a Next.js 14 frontend, a NestJS 10 API (on Fastify), and a LangGraph-based AI layer. Data is persisted in PostgreSQL 16 via Prisma, with Redis 7 powering BullMQ job queues for background processing. All AI agents run as LangGraph state-machine graphs backed by OpenAI GPT-4o.
-
-The system ships with 14 AI agent graphs, 49 frontend pages (including auth, dashboard, analytics, compliance, benefits, payroll, integrations, and settings), and 237 REST API endpoints exposed via Swagger.
-
----
+Each Compport customer = one tenant in CompportIQ. The platform syncs data from Compport's MySQL database, applies 16 AI agents for analysis, and provides an intelligent copilot for HR professionals.
 
 ## Architecture
 
 ```
-┌─────────────┐     REST/SSE      ┌──────────────┐     Prisma      ┌──────────────┐
-│  Next.js 14  │ ───────────────▶ │  NestJS 10   │ ─────────────▶ │ PostgreSQL 16 │
-│  (Frontend)  │                  │  (API)       │                └──────────────┘
-└─────────────┘                  │              │     BullMQ      ┌──────────────┐
-                                  │              │ ─────────────▶ │   Redis 7     │
-                                  └──────┬───────┘                └──────────────┘
-                                         │ LangGraph
-                                  ┌──────▼───────┐
-                                  │  AI Agents    │──── OpenAI GPT-4o
-                                  │  (14 graphs)  │
-                                  └──────────────┘
+                         ┌─────────────────────────────────────────────┐
+                         │         GKE Cluster (asia-south1)           │
+                         │         compportiq GCP project              │
+                         │                                             │
+  compportiq.ai ────────▶│  ┌─────────┐  ┌─────────┐  ┌────────────┐ │
+  *.compportiq.ai        │  │ API ×3  │  │ Web ×2  │  │ Workers ×2 │ │
+  (34.120.125.227)       │  │ NestJS  │  │ Next.js │  │ BullMQ     │ │
+                         │  └────┬────┘  └─────────┘  └──────┬─────┘ │
+                         │       │                            │       │
+                         │  ┌────▼────────────────────────────▼────┐  │
+                         │  │         Redis (10.241.79.227)        │  │
+                         │  │    Query Cache + Job Queue           │  │
+                         │  └─────────────────────────────────────┘  │
+                         │       │                                    │
+                         │  ┌────▼──────────────────────────────┐    │
+                         │  │  PostgreSQL 16 (10.203.32.2)      │    │
+                         │  │  60+ models, RLS, 28 migrations   │    │
+                         │  └───────────────────────────────────┘    │
+                         │                                             │
+                         │  ┌─────────────────────────────────────┐   │
+                         │  │  Prometheus + Grafana + Alertmanager │   │
+                         │  └─────────────────────────────────────┘   │
+                         └───────────────────┬─────────────────────────┘
+                                             │ Cloud NAT
+                                             ▼
+                         ┌─────────────────────────────────────────────┐
+                         │    Compport MySQL (34.14.218.154)            │
+                         │    345 tables per tenant, 5.4M+ rows        │
+                         │    Agents query via Redis cache (5 min TTL)  │
+                         └─────────────────────────────────────────────┘
 ```
 
----
+## Tech Stack
 
-## Quick Start
-
-### Prerequisites
-
-| Tool    | Version |
-| ------- | ------- |
-| Node.js | ≥ 20.0  |
-| pnpm    | ≥ 10.x  |
-| Docker  | Latest  |
-
-### Setup
-
-```bash
-# 1. Clone the repository
-git clone <repo-url> && cd compensation-platform
-
-# 2. Install dependencies
-pnpm install
-
-# 3. Configure environment
-cp .env.example .env
-# Edit .env — at minimum set OPENAI_API_KEY
-
-# 4. Start infrastructure (PostgreSQL + Redis)
-docker compose up -d
-
-# 5. Run database migrations and seed
-pnpm db:migrate
-pnpm db:seed
-
-# 6. Start development servers
-pnpm dev
-```
-
-The web app runs at **http://localhost:3000** and the API at **http://localhost:4000**.
-
----
+| Layer | Technology | Version |
+|---|---|---|
+| Runtime | Node.js (Alpine) | ≥20 |
+| Package Manager | pnpm | 10.29.3 |
+| Build | Turborepo | 2.3.0 |
+| Language | TypeScript | 5.9.3 |
+| API Framework | NestJS + Fastify | 11.1.14 / 5.7.4 |
+| Frontend | Next.js + React + Tailwind + shadcn/ui | 15.5.12 / 18.x / 4.x |
+| State / Data | TanStack React Query + Zustand | 5.90.21 / 5.0.11 |
+| ORM | Prisma | 7.4.2 |
+| Primary DB | PostgreSQL 16 (Cloud SQL ENTERPRISE, REGIONAL HA) | 50GB SSD |
+| Secondary DB | MySQL 8.0 (Compport) | mysql2 3.18.2 |
+| Queue | BullMQ + ioredis | 5.68.0 / 5.9.2 |
+| AI Framework | LangGraph + @langchain/core + @langchain/openai | 1.1.4 / 1.1.24 / 1.2.7 |
+| LLM (prod) | Azure OpenAI GPT-4o | 2024-08-01-preview |
+| LLM (dev) | OpenAI GPT-4o | — |
+| Auth | JWT + Passport + bcryptjs + CSRF | — |
+| Logging | Pino + nestjs-pino | 10.3.1 |
+| Testing | Vitest + Supertest + Playwright | 4.0.18 / 7.2.2 / 1.58.2 |
+| Hosting | GKE (Kubernetes) | asia-south1 |
+| Monitoring | Prometheus + Grafana + Alertmanager | kube-prometheus-stack |
+| CI/CD | GitHub Actions + Workload Identity Federation | — |
+| IaC | Terraform | 1.5.7 |
 
 ## Project Structure
 
 ```
-compensation-platform/
+comp-ai/
 ├── apps/
-│   ├── api/             # NestJS 10 REST API (Fastify)
-│   └── web/             # Next.js 14 frontend (React 18, Tailwind CSS 4)
+│   ├── api/                    # NestJS REST API (30+ modules)
+│   │   ├── src/
+│   │   │   ├── auth/           # JWT + Passport + CSRF + account lockout
+│   │   │   ├── common/         # Guards, middleware, interceptors
+│   │   │   ├── database/       # Prisma client + forTenant() RLS wrapper
+│   │   │   ├── modules/
+│   │   │   │   ├── compport-bridge/  # MySQL sync + query cache + write-back
+│   │   │   │   ├── copilot/          # AI Copilot (SSE streaming)
+│   │   │   │   ├── platform-admin/   # Tenant management + onboarding
+│   │   │   │   ├── rules/            # Rules engine + AI wizard + CSV upload
+│   │   │   │   ├── cycle/            # Comp cycles + calibration + budget
+│   │   │   │   ├── payroll/          # Payroll + anomaly detection
+│   │   │   │   ├── analytics/        # Pay equity + simulations
+│   │   │   │   └── ...              # benefits, compliance, equity, etc.
+│   │   │   └── main.ts
+│   │   └── Dockerfile
+│   └── web/                    # Next.js 15 (49 pages)
+│       ├── src/app/            # App Router pages
+│       ├── src/components/     # Charts, copilot panel, sync banner
+│       ├── src/hooks/          # React Query hooks
+│       └── Dockerfile
 ├── packages/
-│   ├── ai/              # LangGraph AI agent graphs & tools
-│   ├── database/        # Prisma schema, migrations, seed
-│   ├── shared/          # Shared types, rules engine, data-hygiene utils
-│   └── ui/              # Shared React UI components
-├── tests/
-│   └── e2e/             # Playwright end-to-end tests
-├── docker-compose.yml   # PostgreSQL 16 + Redis 7
-├── turbo.json           # Turborepo pipeline config
-└── pnpm-workspace.yaml  # Workspace definition
+│   ├── ai/                     # 16 LangGraph agents + tools
+│   │   └── src/graphs/         # copilot, rules-orchestrator, compliance, etc.
+│   ├── database/               # Prisma schema (2200+ lines, 60+ models)
+│   │   └── prisma/migrations/  # 28 migrations with RLS policies
+│   ├── shared/                 # Rules engine, data hygiene, encryption
+│   └── ui/                     # Shared UI components
+├── infra/
+│   ├── terraform/modules/      # gke, cloudsql, memorystore, vpc, secrets
+│   └── k8s/                    # K8s manifests + monitoring
+├── context.md                  # Engineering ground truth
+└── README.md
 ```
 
----
+## AI Agents (16)
 
-## Available Scripts
+| Agent | Purpose |
+|---|---|
+| **Copilot** | Conversational Q&A with tool-calling, role-aware prompts, SSE streaming |
+| **Rules Orchestrator** | Full rules lifecycle: parse → validate → explain → simulate → apply |
+| **Policy Parser** | PDF/text → structured rules (5-node LangGraph pipeline) |
+| **Compliance Scanner** | FLSA, pay equity, policy violation detection |
+| **Anomaly Explainer** | Payroll anomaly root-cause analysis |
+| **Attrition Predictor** | 6-factor retention risk scoring |
+| **Budget Optimizer** | Multi-scenario budget allocation |
+| **Calibration Assistant** | Calibration session guidance |
+| **Data Quality** | Data hygiene audit + fix suggestions |
+| **Field Mapping** | CSV/Excel column auto-mapping |
+| **Letter Generator** | Offer/raise/promotion/bonus letter generation |
+| **Pay Equity** | EDGE regression gap analysis |
+| **Policy RAG** | Retrieval-augmented policy Q&A |
+| **Report Builder** | Natural language compensation report generation |
+| **Simulation** | What-if scenario modeling |
+| **Rule Analysis** | Rule set analysis and comparison |
 
-Run from the repository root:
+## Multi-Tenancy (3 layers)
 
-| Command           | Description                                |
-| ----------------- | ------------------------------------------ |
-| `pnpm dev`        | Start all apps in development (watch mode) |
-| `pnpm build`      | Build all packages and apps                |
-| `pnpm lint`       | Lint all packages with ESLint              |
-| `pnpm test`       | Run unit tests (Vitest)                    |
-| `pnpm test:e2e`   | Run Playwright end-to-end tests            |
-| `pnpm format`     | Format code with Prettier                  |
-| `pnpm db:migrate` | Run Prisma database migrations             |
-| `pnpm db:seed`    | Seed the database with demo data           |
+1. **JWT claim**: `tenantId` in every token
+2. **TenantGuard**: validates tenant is active (60s cache)
+3. **PostgreSQL FORCE RLS**: `SET LOCAL app.current_tenant_id` via `forTenant()`
 
----
+```typescript
+// ALWAYS:
+await this.db.forTenant(tenantId, (tx) => tx.employee.findMany());
 
-## AI Capabilities
+// NEVER:
+await this.db.client.employee.findMany(); // bypasses RLS
+```
 
-The platform includes **14 LangGraph agent graphs**, each purpose-built for a compensation domain:
+## Data Flow
 
-| Agent                     | Description                                                                       |
-| ------------------------- | --------------------------------------------------------------------------------- |
-| **Copilot**               | Conversational AI assistant for compensation Q&A                                  |
-| **Pay Equity**            | Analyzes pay gaps across demographics and recommends remediation                  |
-| **Anomaly Explainer**     | Detects and explains payroll anomalies with root-cause analysis                   |
-| **Compliance Scanner**    | Scans compensation data against labor law and policy rules                        |
-| **Data Quality**          | Audits data hygiene issues — missing fields, outliers, dupes                      |
-| **Field Mapping**         | Auto-maps imported CSV/Excel columns to internal schema fields                    |
-| **Letter Generator**      | Generates personalized compensation letters (offer, revision)                     |
-| **Report Builder**        | Builds custom compensation reports with AI-driven insights                        |
-| **Simulation**            | Models "what-if" scenarios for budget changes and merit pools                     |
-| **Policy RAG**            | Semantic search over company policy documents with AI-powered Q&A and citations   |
-| **Predictive Attrition**  | 6-factor retention risk scoring with AI-generated retention recommendations       |
-| **Calibration Assistant** | AI-suggested compensation adjustments based on equity, retention risk, and budget |
-| **Budget Optimizer**      | Multi-scenario budget allocation optimization with impact predictions             |
+```
+Compport MySQL (per-tenant schema)
+  ↓ Full sync: employees, users, roles, pages, permissions (on-demand)
+  ↓ Delta sync: every 2 minutes via BullMQ (changed records only)
+CompportIQ PostgreSQL (typed Prisma models + RLS)
 
----
+Compport MySQL (same)
+  ↓ Agent tool queries via Redis cache (5 min TTL, event-driven invalidation)
+AI Copilot → charts + insights + export (CSV/PDF)
+```
+
+## Quick Start
+
+```bash
+# Prerequisites: Node 20+, pnpm 10+, Docker
+docker compose up -d          # PostgreSQL + Redis
+pnpm install
+pnpm --filter @compensation/database exec prisma migrate dev
+pnpm --filter @compensation/database exec prisma db seed
+pnpm dev                      # API on :4000, Web on :3000
+```
+
+## Deployment
+
+```bash
+# GKE (production)
+gcloud container clusters get-credentials compportiq-prod-cluster \
+  --region asia-south1 --project compportiq
+kubectl apply -f infra/k8s/base/
+kubectl get pods -n compportiq
+
+# CI/CD: push to main → GitHub Actions → build + deploy
+```
 
 ## Environment Variables
 
-Copy `.env.example` to `.env` and configure:
+| Variable | Required | Notes |
+|---|---|---|
+| `DATABASE_URL` | Yes | PostgreSQL connection string |
+| `REDIS_URL` | Yes | Redis connection string |
+| `JWT_SECRET` | Yes | ≥64 char random string |
+| `BENEFITS_ENCRYPTION_KEY` | Yes (prod) | ≥32 char, AES-256-GCM for PHI |
+| `PLATFORM_CONFIG_ENCRYPTION_KEY` | Yes (prod) | ≥32 char, for platform secrets |
+| `INTEGRATION_ENCRYPTION_KEY` | Yes | ≥32 char, for connector credentials |
+| `AZURE_OPENAI_API_KEY` | Yes (prod) | Azure OpenAI key |
+| `AZURE_OPENAI_ENDPOINT` | Yes (prod) | Azure OpenAI endpoint URL |
+| `DB_HOST` / `DB_USER` / `DB_PWD` | Yes | Compport MySQL credentials |
+| `AI_PROVIDER` | No | `azure` (prod) / `openai` (dev) |
 
-| Variable              | Description                                                  | Default                                                         |
-| --------------------- | ------------------------------------------------------------ | --------------------------------------------------------------- |
-| `DATABASE_URL`        | PostgreSQL connection string                                 | `postgresql://postgres:postgres@localhost:5432/compensation_db` |
-| `REDIS_URL`           | Redis connection string                                      | `redis://localhost:6379`                                        |
-| `NEXT_PUBLIC_API_URL` | API URL for the frontend                                     | `http://localhost:4000`                                         |
-| `NEXTAUTH_URL`        | NextAuth callback URL                                        | `http://localhost:3000`                                         |
-| `NEXTAUTH_SECRET`     | NextAuth session secret                                      | _(change in production)_                                        |
-| `API_PORT`            | NestJS API server port                                       | `4000`                                                          |
-| `JWT_SECRET`          | JWT signing secret                                           | _(change in production)_                                        |
-| `JWT_EXPIRATION`      | JWT token TTL                                                | `1d`                                                            |
-| `CORS_ORIGINS`        | Allowed CORS origins (comma-separated)                       | `http://localhost:3000`                                         |
-| `OPENAI_API_KEY`      | OpenAI API key for AI agents                                 | _(required)_                                                    |
-| `OPENAI_MODEL`        | OpenAI model name                                            | `gpt-4o`                                                        |
-| `NODE_ENV`            | Environment (`development` / `production`)                   | `development`                                                   |
-| `COMPPORT_MODE`       | Integration mode: `standalone`, `shared_db`, or `api_bridge` | `standalone`                                                    |
-
----
-
-## API Documentation
-
-Interactive Swagger documentation is available in development at:
-
-```
-http://localhost:4000/api-docs
-```
-
-All endpoints are prefixed with `/api/v1`. Bearer JWT authentication is required for protected routes.
-
----
-
-## Demo Credentials
-
-After running `pnpm db:seed`:
-
-| Email          | Password    | Role  |
-| -------------- | ----------- | ----- |
-| admin@acme.com | Admin123!@# | Admin |
-
----
-
-## Tech Stack
-
-| Layer    | Technology                         | Version |
-| -------- | ---------------------------------- | ------- |
-| Language | TypeScript                         | 5.9     |
-| Backend  | NestJS (Fastify)                   | 10.4    |
-| Frontend | Next.js (React 18, Tailwind CSS 4) | 14.2    |
-| Database | PostgreSQL                         | 16      |
-| ORM      | Prisma                             | Latest  |
-| AI / LLM | LangGraph + OpenAI GPT-4o          | 1.1     |
-| Queue    | BullMQ (Redis)                     | 5.x     |
-| Cache    | Redis                              | 7       |
-| Testing  | Vitest + Playwright                | 4.x     |
-| Monorepo | Turborepo + pnpm workspaces        | 2.x     |
-| Linting  | ESLint 9 + Prettier                | 9.x     |
-
----
+See [context.md](context.md) for the complete engineering reference.
 
 ## License
 
-Proprietary — © Compport. All rights reserved.
+Proprietary. Copyright Compport Technologies.
