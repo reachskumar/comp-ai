@@ -88,7 +88,8 @@ export class CompportQueryCacheService {
       rowCount: number;
       columnCount: number;
       columns: string[];
-      lastDiscoveredAt: string | null;
+      lastSyncAt: string | null;
+      status: string;
     }>
   > {
     const catalog = await this.catalogService.getCatalog(tenantId);
@@ -97,7 +98,8 @@ export class CompportQueryCacheService {
       rowCount: e.rowCount,
       columnCount: e.columns.length,
       columns: e.columns.map((c) => c.name),
-      lastDiscoveredAt: null, // from discoveredAt if needed
+      lastSyncAt: null,
+      status: 'READY',
     }));
   }
 
