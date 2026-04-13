@@ -51,9 +51,58 @@ export function parseChartBlock(code: string): ChartConfig | null {
     if (parsed.type === 'pie' && (!parsed.nameKey || !parsed.valueKey)) return null;
     if (parsed.type === 'radar' && (!parsed.xKey || !parsed.yKeys)) return null;
     if (!['pie', 'radar'].includes(parsed.type) && (!parsed.xKey || !parsed.yKeys)) return null;
-    return parsed as ChartConfig;
+
+    // Post-process: sort, limit, truncate — so the chart is always clean
+    // regardless of what the LLM sent.
+    const config = parsed as ChartConfig;
+    preprocessChartData(config);
+    return config;
   } catch {
     return null;
+  }
+}
+
+/** Post-process chart data in the frontend so we don't depend on the LLM
+ *  to sort/limit/truncate consistently. */
+function preprocessChartData(config: ChartConfig): void {
+  if (!config.data || config.data.length === 0) return;
+
+  const MAX_ITEMS = 12;
+  const MAX_LABEL_LEN = 20;
+
+  // For bar/line/area charts with a numeric Y-axis: sort descending by primary Y key
+  if (['bar', 'line', 'area'].includes(config.type) && config.yKeys?.length) {
+    const primaryY = config.yKeys[0]!;
+    config.data.sort((a, b) => {
+      const aVal = Number(a[primaryY] ?? 0);
+      const bVal = Number(b[primaryY] ?? 0);
+      return bVal - aVal;
+    });
+  }
+
+  // Limit to MAX_ITEMS
+  if (['bar', 'pie'].includes(config.type) && config.data.length > MAX_ITEMS) {
+    config.data = config.data.slice(0, MAX_ITEMS);
+  }
+
+  // Truncate long X-axis labels
+  if (config.xKey) {
+    for (const row of config.data) {
+      const label = String(row[config.xKey] ?? '');
+      if (label.length > MAX_LABEL_LEN) {
+        row[config.xKey] = label.substring(0, MAX_LABEL_LEN) + '…';
+      }
+    }
+  }
+
+  // Same for pie chart nameKey
+  if (config.nameKey) {
+    for (const row of config.data) {
+      const label = String(row[config.nameKey] ?? '');
+      if (label.length > MAX_LABEL_LEN) {
+        row[config.nameKey] = label.substring(0, MAX_LABEL_LEN) + '…';
+      }
+    }
   }
 }
 
@@ -184,7 +233,7 @@ export function CopilotChart({ config }: { config: ChartConfig }) {
         </div>
       </div>
       <div ref={chartRef} className="w-full">
-        <rc.ResponsiveContainer width="100%" height={220}>
+        <rc.ResponsiveContainer width="100%" height={300}>
           {renderChart(config, rc)}
         </rc.ResponsiveContainer>
       </div>
@@ -259,7 +308,7 @@ function renderChart(config: ChartConfig, rc: RC): React.ReactElement {
       <rc.LineChart data={data} margin={MARGIN}>
         <CG strokeDasharray="3 3" className="stroke-muted" />
         <XA dataKey={xKey} tick={TICK} />
-        <YA tick={TICK} />
+        <YA tick={TICK} tickFormatter={formatIndianNumber} width={55} />
         <TT contentStyle={TT_STYLE} />
         <LG wrapperStyle={{ fontSize: '10px' }} />
         {(yKeys ?? []).map((key, i) => (
@@ -315,7 +364,7 @@ function renderChart(config: ChartConfig, rc: RC): React.ReactElement {
         </defs>
         <CG strokeDasharray="3 3" className="stroke-muted" />
         <XA dataKey={xKey} tick={TICK} />
-        <YA tick={TICK} />
+        <YA tick={TICK} tickFormatter={formatIndianNumber} width={55} />
         <TT contentStyle={TT_STYLE} />
         <LG wrapperStyle={{ fontSize: '10px' }} />
         {(yKeys ?? []).map((key, i) => (
@@ -354,21 +403,25 @@ function renderChart(config: ChartConfig, rc: RC): React.ReactElement {
     );
   }
 
-  // Default: bar chart — angled labels for long category names
+  // Default: bar chart — angled labels, INR formatting, sorted data
   return (
     <rc.BarChart data={data} margin={BAR_MARGIN}>
       <CG strokeDasharray="3 3" className="stroke-muted" />
       <XA
         dataKey={xKey}
-        tick={ANGLED_TICK}
-        angle={-35}
-        textAnchor="end"
+        tick={{ ...ANGLED_TICK, angle: -35, textAnchor: 'end' }}
         interval={0}
         height={60}
-        tickFormatter={(v: unknown) => truncateLabel(v)}
       />
-      <YA tick={TICK} tickFormatter={formatIndianNumber} />
-      <TT contentStyle={TT_STYLE} formatter={formatIndianCurrency} />
+      <YA
+        tick={TICK}
+        tickFormatter={formatIndianNumber}
+        width={55}
+      />
+      <TT
+        contentStyle={TT_STYLE}
+        formatter={(value: number | string) => [`₹${Number(value).toLocaleString('en-IN')}`, '']}
+      />
       <LG wrapperStyle={{ fontSize: '10px' }} />
       {(yKeys ?? []).map((key, i) => (
         <rc.Bar
