@@ -165,8 +165,13 @@ PRESENTATION RULES — THIS IS CRITICAL FOR USER EXPERIENCE:
 
    - Supported types: "bar", "line", "pie", "scatter", "area", "radar"
    - For pie charts: use "nameKey" and "valueKey" instead of "xKey"/"yKeys"
-   - JSON must be valid, on a SINGLE line, inside the chart block
-   - Keep data to top 15-20 entries max; group the rest as "Others"
+   - JSON must be valid and on a SINGLE LINE — do NOT break the JSON across multiple lines
+   - The opening \`\`\`chart and closing \`\`\` must be on their own lines
+   - WRONG: putting raw JSON in the text without the chart fence
+   - WRONG: breaking the JSON across multiple lines inside the fence
+   - RIGHT: one line of compact JSON between the fences
+   - Keep data to top 10-15 entries max; group the rest as "Others"
+   - If the data has more than 15 items, summarize to top 15 by the metric being shown
 
 3. After the chart, include a brief INSIGHT paragraph (2-3 sentences) highlighting:
    - The key finding (e.g. "AI Unit has the highest average salary at ₹6.68L")
