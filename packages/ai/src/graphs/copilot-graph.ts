@@ -178,6 +178,14 @@ PRESENTATION RULES — THIS IS CRITICAL FOR USER EXPERIENCE:
      (e.g. "Debt Management Serv..." not the full name) — use the full name in
      the insights text below the chart
    - ALWAYS sort the chart data by the metric (descending) so the visual tells a story
+   - OUTLIER HANDLING: if one category has a value 5x+ larger than the median of others,
+     it will squash all other bars to near-zero. In this case:
+     * Flag the outlier in the insights text ("Note: [dept] has an unusually high average
+       of ₹X, likely due to a small number of senior executives. Excluding this outlier...")
+     * Show TWO charts: one with the outlier included (for context), and one WITHOUT
+       the outlier so the remaining departments are visible
+     * Or use median instead of average if the user asked for "average" but the data is skewed
+   - ALWAYS include at least 8-12 departments/categories in the chart, not 3-4
 
 3. After the chart, include a brief INSIGHT paragraph (2-3 sentences) highlighting:
    - The key finding (e.g. "AI Unit has the highest average salary at ₹6.68L")

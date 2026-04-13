@@ -209,6 +209,23 @@ function truncateLabel(value: unknown, maxLen = 18): string {
   return s.length > maxLen ? s.substring(0, maxLen) + '…' : s;
 }
 
+/** Format large numbers in Indian notation for Y-axis */
+function formatIndianNumber(v: number | string): string {
+  const n = Number(v);
+  if (isNaN(n)) return String(v);
+  if (n >= 10000000) return `${(n / 10000000).toFixed(1)}Cr`;
+  if (n >= 100000) return `${(n / 100000).toFixed(1)}L`;
+  if (n >= 1000) return `${(n / 1000).toFixed(0)}K`;
+  return String(n);
+}
+
+/** Format values as ₹ with Indian locale for tooltips */
+function formatIndianCurrency(value: number | string): string {
+  const n = Number(value);
+  if (isNaN(n)) return String(value);
+  return `₹${n.toLocaleString('en-IN')}`;
+}
+
 function renderChart(config: ChartConfig, rc: RC): React.ReactElement {
   const { type, data, xKey, yKeys, nameKey, valueKey } = config;
   const { CartesianGrid: CG, XAxis: XA, YAxis: YA, Tooltip: TT, Legend: LG } = rc;
@@ -350,19 +367,8 @@ function renderChart(config: ChartConfig, rc: RC): React.ReactElement {
         height={60}
         tickFormatter={(v: unknown) => truncateLabel(v)}
       />
-      <YA tick={TICK} tickFormatter={(v: unknown) => {
-        const n = Number(v);
-        if (isNaN(n)) return String(v);
-        if (n >= 10000000) return `${(n / 10000000).toFixed(1)}Cr`;
-        if (n >= 100000) return `${(n / 100000).toFixed(1)}L`;
-        if (n >= 1000) return `${(n / 1000).toFixed(0)}K`;
-        return String(n);
-      }} />
-      <TT contentStyle={TT_STYLE} formatter={(value: unknown) => {
-        const n = Number(value);
-        if (isNaN(n)) return String(value);
-        return `₹${n.toLocaleString('en-IN')}`;
-      }} />
+      <YA tick={TICK} tickFormatter={formatIndianNumber} />
+      <TT contentStyle={TT_STYLE} formatter={formatIndianCurrency} />
       <LG wrapperStyle={{ fontSize: '10px' }} />
       {(yKeys ?? []).map((key, i) => (
         <rc.Bar
