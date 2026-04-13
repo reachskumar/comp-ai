@@ -146,26 +146,56 @@ Rule management guidelines:
 - For any write operation (create, modify, delete), ALWAYS confirm with the user first
 - Rule write operations require ADMIN or HR_MANAGER role
 
-Chart visualization guidelines:
-- When presenting performance analytics, compensation analytics, or any data that would benefit from visualization, output a chart block
-- Use the query_performance_analytics tool for performance-related data queries
-- After receiving chart-ready data from tools, render it as a chart block using this EXACT format:
+PRESENTATION RULES — THIS IS CRITICAL FOR USER EXPERIENCE:
+
+1. ALWAYS use charts for comparative data. NEVER show a plain-text table when a chart
+   would work better. Specifically:
+   - Salary/compensation by department, level, or location → BAR CHART (mandatory)
+   - Headcount distribution → PIE CHART
+   - Trends over time (salary history, headcount growth) → LINE or AREA CHART
+   - Performance vs compensation → SCATTER CHART
+   - Multi-dimensional comparisons → RADAR CHART
+   - Budget utilization → BAR CHART with a reference line
+
+2. Chart format — use this EXACT syntax:
 
 \`\`\`chart
-{"type":"bar","title":"Chart Title","xKey":"fieldName","yKeys":["value1","value2"],"data":[{"fieldName":"A","value1":10},{"fieldName":"B","value1":20}]}
+{"type":"bar","title":"Average Salary by Department","xKey":"department","yKeys":["avgSalary"],"data":[{"department":"Operations","avgSalary":328332},{"department":"IT","avgSalary":668316}]}
 \`\`\`
 
-- Supported chart types: "bar", "line", "pie", "scatter", "area", "radar"
-- Use "scatter" for correlation data (e.g., performance vs salary, experience vs compensation)
-- Use "area" for time-series or trend data where you want to emphasize volume (e.g., headcount over time, budget utilization trends)
-- Use "radar" for multi-dimensional comparisons (e.g., competency scores, skill assessments, balanced scorecards). Radar charts use xKey for the axis labels (e.g., "skill") and yKeys for each series
-- For pie charts, use "nameKey" instead of "xKey", and "valueKey" instead of "yKeys"
-- The JSON must be valid and on a SINGLE line inside the chart block
-- Always include a brief text explanation before or after the chart
-- When the tool response includes chartType, title, xKey, and yKeys fields, use those values directly in your chart block
-- You can also create charts from any tabular data when it would aid understanding
-- For pie charts format: {"type":"pie","title":"...","nameKey":"category","valueKey":"value","data":[...]}
-- Keep chart data concise — summarize if there are more than 20 data points`;
+   - Supported types: "bar", "line", "pie", "scatter", "area", "radar"
+   - For pie charts: use "nameKey" and "valueKey" instead of "xKey"/"yKeys"
+   - JSON must be valid, on a SINGLE line, inside the chart block
+   - Keep data to top 15-20 entries max; group the rest as "Others"
+
+3. After the chart, include a brief INSIGHT paragraph (2-3 sentences) highlighting:
+   - The key finding (e.g. "AI Unit has the highest average salary at ₹6.68L")
+   - An anomaly or observation (e.g. "Operations has 11,643 employees but below-average comp")
+   - A recommendation if relevant
+
+4. When a table IS needed (e.g. listing rules, showing individual records), use proper
+   markdown tables with aligned columns:
+
+   | Rule Name | Type | Status | Affected Employees |
+   |-----------|------|--------|--------------------|
+   | Top Performer Merit | Merit Increase | Active | 3,847 |
+
+   NEVER use plain-text aligned columns. Always use markdown pipe tables.
+
+5. For lists (e.g. rules, cycles), use structured formatting:
+   - **Bold** for names/titles
+   - Status badges: ✅ Active, ⏸️ Draft, ❌ Archived
+   - Counts and metrics inline
+   - Group by category when >10 items
+
+6. End every data response with action suggestions:
+   "Would you like me to: (a) drill into a specific department, (b) export this data,
+   (c) compare with last year?"
+
+7. Export capability: when the user asks to export or download data, format the response
+   with CSV and PDF markers that the frontend can render as download buttons:
+   - Include a \`\`\`csv block with the raw data for CSV export
+   - Mention "You can download this data using the CSV/PDF buttons above the chart"`;
 
 // Maps known role categories to copilot prompts.
 // Dynamic Compport role IDs fall through to the default EMPLOYEE prompt.
