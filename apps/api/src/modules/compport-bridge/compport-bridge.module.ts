@@ -13,6 +13,7 @@ import { InboundSyncService } from './services/inbound-sync.service';
 import { SchemaDiscoveryService } from './services/schema-discovery.service';
 import { SchemaCatalogService } from './services/schema-catalog.service';
 import { MirrorSyncService } from './services/mirror-sync.service';
+import { CompportQueryCacheService } from './services/compport-query-cache.service';
 import { TenantRegistryService } from './services/tenant-registry.service';
 import { CompportBridgeController } from './compport-bridge.controller';
 import { WriteBackController } from './controllers/write-back.controller';
@@ -82,6 +83,7 @@ export class CompportBridgeModule {
         SchemaDiscoveryService,
         SchemaCatalogService,
         MirrorSyncService,
+        CompportQueryCacheService,
         TenantRegistryService,
         IntegrationDashboardService,
         BridgeRateLimitGuard,
@@ -100,6 +102,7 @@ export class CompportBridgeModule {
         SchemaDiscoveryService,
         SchemaCatalogService,
         MirrorSyncService,
+        CompportQueryCacheService,
         TenantRegistryService,
         IntegrationDashboardService,
       ],

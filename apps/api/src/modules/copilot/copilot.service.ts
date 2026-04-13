@@ -12,6 +12,8 @@ import {
 import { HumanMessage, AIMessage, type BaseMessage } from '@langchain/core/messages';
 import { Prisma } from '@compensation/database';
 import { DataScopeService, type DataScope } from '../../common';
+import { CompportQueryCacheService } from '../compport-bridge/services/compport-query-cache.service';
+import { CompportCloudSqlService } from '../compport-bridge/services/compport-cloudsql.service';
 
 @Injectable()
 export class CopilotService implements CopilotDbAdapter {
@@ -20,119 +22,76 @@ export class CopilotService implements CopilotDbAdapter {
   constructor(
     private readonly db: DatabaseService,
     private readonly dataScopeService: DataScopeService,
+    private readonly queryCache: CompportQueryCacheService,
+    private readonly cloudSql: CompportCloudSqlService,
   ) {}
 
   // ─── Mirror Adapter (universal Compport data access) ────────
+  //
+  // Event-driven + cached architecture. Agent tools hit Redis cache
+  // first (<5ms), fallback to Compport MySQL on cache miss (~100ms).
+  // No mirror PG schema, no 5.4M-row copy, no type-mapping bugs.
 
   get mirrorAdapter(): MirrorDbAdapter {
+    const cache = this.queryCache;
+    const cloudSql = this.cloudSql;
     const db = this.db;
     return {
       async listMirrorTables(tenantId) {
-        const states = await db.forTenant(tenantId, (tx) =>
-          tx.tenantDataMirrorState.findMany({
-            where: { tenantId },
-            orderBy: { sourceTable: 'asc' },
-          }),
-        );
-        const catalogs = await db.forTenant(tenantId, (tx) =>
-          tx.tenantSchemaCatalog.findMany({
-            where: { tenantId },
-            select: { tableName: true, columns: true },
-          }),
-        );
-        const colMap = new Map<string, string[]>();
-        for (const c of catalogs) {
-          const cols = Array.isArray(c.columns) ? (c.columns as Array<{ name: string }>).map((x) => x.name) : [];
-          colMap.set(c.tableName, cols);
-        }
-        return states.map((s) => ({
-          tableName: s.sourceTable,
-          rowCount: s.rowCount,
-          columnCount: colMap.get(s.sourceTable)?.length ?? 0,
-          columns: colMap.get(s.sourceTable) ?? [],
-          lastSyncAt: s.lastFullSyncAt?.toISOString() ?? s.lastDeltaSyncAt?.toISOString() ?? null,
-          status: s.status,
-        }));
+        return cache.listTables(tenantId);
       },
 
       async describeMirrorTable(tenantId, tableName) {
-        const cat = await db.forTenant(tenantId, (tx) =>
-          tx.tenantSchemaCatalog.findFirst({
-            where: { tenantId, tableName },
-          }),
-        );
-        if (!cat) return null;
-        const columns = Array.isArray(cat.columns)
-          ? (cat.columns as Array<{ name: string; dataType: string; nullable: boolean }>)
-          : [];
-        return {
-          tableName: cat.tableName,
-          columns: columns.map((c) => ({ name: c.name, dataType: c.dataType, nullable: c.nullable })),
-          rowCount: cat.rowCount,
-          sampleRow: (cat.sampleRow as Record<string, unknown> | null) ?? null,
-          primaryKey: cat.primaryKeyColumns,
-        };
+        return cache.describeTable(tenantId, tableName);
       },
 
       async queryMirrorTable(tenantId, tableName, filters) {
-        // Look up the tenant's mirror schema from mirror state
-        const state = await db.forTenant(tenantId, (tx) =>
-          tx.tenantDataMirrorState.findFirst({
-            where: { tenantId, sourceTable: tableName, status: 'READY' },
-            select: { mirrorSchema: true, mirrorTable: true },
-          }),
-        );
-        if (!state) return [];
+        // Get the tenant's Compport schema name from the Tenant record
+        const tenant = await db.client.tenant.findUnique({
+          where: { id: tenantId },
+          select: { compportSchema: true },
+        });
+        if (!tenant?.compportSchema) {
+          return [{ error: 'Tenant has no Compport schema configured' }];
+        }
 
-        // Validate table/column names against the catalog to prevent injection
-        const cat = await db.forTenant(tenantId, (tx) =>
-          tx.tenantSchemaCatalog.findFirst({
-            where: { tenantId, tableName },
-            select: { columns: true },
-          }),
-        );
-        const validColumns = new Set<string>(
-          Array.isArray(cat?.columns) ? (cat!.columns as Array<{ name: string }>).map((c) => c.name) : [],
-        );
-
-        // Build SELECT
-        const selectCols = filters?.columns?.length
-          ? filters.columns.filter((c) => validColumns.has(c)).map((c) => `"${c}"`).join(', ') || '*'
-          : '*';
-
-        // Build WHERE
-        const params: unknown[] = [];
-        let whereSql = '';
-        if (filters?.where && Object.keys(filters.where).length > 0) {
-          const conditions: string[] = [];
-          for (const [col, val] of Object.entries(filters.where)) {
-            if (!validColumns.has(col)) continue; // skip unknown columns
-            params.push(val);
-            conditions.push(`"${col}" = $${params.length}`);
+        // Ensure Cloud SQL is connected for this query
+        if (!cloudSql.isConnected) {
+          // Try to find connector and connect
+          try {
+            const connector = await db.forTenant(tenantId, (tx) =>
+              tx.integrationConnector.findFirst({
+                where: { tenantId, connectorType: 'COMPPORT_CLOUDSQL', status: 'ACTIVE' },
+                select: { id: true, config: true },
+              }),
+            );
+            if (connector) {
+              const cfg = (connector.config as Record<string, string>) ?? {};
+              await cloudSql.connect({
+                host: process.env['DB_HOST'] ?? '',
+                port: parseInt(process.env['DB_PORT'] ?? '3306', 10),
+                user: process.env['DB_USER'] ?? '',
+                password: process.env['DB_PWD'] ?? '',
+                database: cfg['schemaName'] ?? tenant.compportSchema,
+                sslCa: process.env['MYSQL_CA_CERT'],
+                sslCert: process.env['MYSQL_CLIENT_CERT'],
+                sslKey: process.env['MYSQL_CLIENT_KEY'],
+              });
+            }
+          } catch (err) {
+            return [{
+              error: `Cannot connect to Compport Cloud SQL: ${(err as Error).message?.substring(0, 150)}`,
+            }];
           }
-          if (conditions.length > 0) {
-            whereSql = ` WHERE ${conditions.join(' AND ')}`;
-          }
         }
 
-        // Build ORDER BY
-        let orderSql = '';
-        if (filters?.orderBy && validColumns.has(filters.orderBy)) {
-          const dir = filters.orderDir === 'DESC' ? 'DESC' : 'ASC';
-          orderSql = ` ORDER BY "${filters.orderBy}" ${dir}`;
-        }
-
-        const limit = Math.min(filters?.limit ?? 50, 200);
-        params.push(limit);
-
-        const sql = `SELECT ${selectCols} FROM "${state.mirrorSchema}"."${state.mirrorTable}"${whereSql}${orderSql} LIMIT $${params.length}`;
-
-        try {
-          const rows = await db.client.$queryRawUnsafe<Record<string, unknown>[]>(sql, ...params);
-          return rows;
-        } catch (err) {
-          return [{ error: `Query failed: ${(err as Error).message?.substring(0, 200)}` }];
-        }
+        return cache.queryTable(
+          tenantId,
+          tenant.compportSchema,
+          tableName,
+          cloudSql,
+          filters,
+        );
       },
     };
   }

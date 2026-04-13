@@ -5,6 +5,7 @@ import { ConnectionManagerService } from './connection-manager.service';
 import { CredentialVaultService } from '../../integrations/services/credential-vault.service';
 import { FieldMappingService } from '../../integrations/services/field-mapping.service';
 import { CloudSqlEmployeeRowSchema } from '../schemas/compport-data.schemas';
+import { CompportQueryCacheService } from './compport-query-cache.service';
 
 const BATCH_SIZE = 5000;
 /** Per-Prisma-tx upsert chunk size. Smaller than BATCH_SIZE so each transaction
@@ -86,6 +87,7 @@ export class InboundSyncService {
     private readonly connectionManager: ConnectionManagerService,
     private readonly credentialVault: CredentialVaultService,
     private readonly fieldMappingService: FieldMappingService,
+    private readonly queryCache: CompportQueryCacheService,
   ) {}
 
   /**
@@ -141,6 +143,8 @@ export class InboundSyncService {
         mappings,
         lastSyncAt,
       );
+      // Invalidate query cache after sync so agent sees fresh data
+      await this.queryCache.invalidateTenant(tenantId).catch(() => {});
       return result;
     } finally {
       await this.cloudSql.disconnect();
@@ -219,6 +223,8 @@ export class InboundSyncService {
         timestampCol,
       );
 
+      // Invalidate query cache after delta sync
+      await this.queryCache.invalidateTenant(tenantId).catch(() => {});
       return result;
     } catch (err) {
       // Update sync job as failed
