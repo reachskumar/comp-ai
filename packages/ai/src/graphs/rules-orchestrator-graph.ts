@@ -16,11 +16,9 @@
  *   - "apply these rules" → apply node (with confirmation gate)
  */
 
-import { Annotation, StateGraph, START, END } from '@langchain/langgraph';
-import { MessagesAnnotation } from '@langchain/core/messages';
-import { ChatOpenAI } from '@langchain/openai';
+import { Annotation, StateGraph, START, END, MessagesAnnotation } from '@langchain/langgraph';
+import type { ChatOpenAI } from '@langchain/openai';
 import { HumanMessage, SystemMessage, AIMessage } from '@langchain/core/messages';
-import { z } from 'zod';
 
 // ─── State Schema ────────────────────────────────────────
 
@@ -243,7 +241,7 @@ Return ONLY the JSON array, no markdown fences.`;
 
   const summary = parsedRules.length > 0
     ? `I extracted ${parsedRules.length} rule(s):\n\n` +
-      parsedRules.map((r, i) =>
+      parsedRules.map((r: ParsedRule, i: number) =>
         `${i + 1}. **${r.name}** (${r.type})\n   ${r.description || 'No description'}`
       ).join('\n\n') +
       `\n\nWould you like me to validate these rules, simulate their impact, or apply them?`
@@ -275,7 +273,7 @@ async function validateNode(
   const validOperators = new Set(['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'in', 'notIn', 'between']);
   const validActions = new Set(['setMerit', 'setBonus', 'setLTI', 'applyCap', 'applyFloor', 'prorate', 'applyMultiplier', 'flag', 'block']);
 
-  const report: ValidationResult[] = rules.map((rule) => {
+  const report: ValidationResult[] = rules.map((rule: ParsedRule) => {
     const errors: string[] = [];
     const warnings: string[] = [];
 
@@ -430,7 +428,7 @@ async function applyNode(
   }
 
   if (!state.applyConfirmed) {
-    const preview = state.parsedRules.map((r, i) =>
+    const preview = state.parsedRules.map((r: ParsedRule, i: number) =>
       `${i + 1}. **${r.name}** (${r.type}) — ${r.description || 'No description'}`
     ).join('\n');
 
@@ -450,7 +448,7 @@ async function applyNode(
     messages: [new AIMessage(
       `✅ Rules have been queued for application.\n\n` +
       `The following rules will be applied during the next sync cycle:\n\n` +
-      state.parsedRules.map((r, i) =>
+      state.parsedRules.map((r: ParsedRule, i: number) =>
         `${i + 1}. **${r.name}** → Applied to ${r.type} module`
       ).join('\n') +
       `\n\nYou can check the status in the Rules section of the platform.`,
