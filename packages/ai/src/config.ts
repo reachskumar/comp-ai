@@ -3,7 +3,7 @@
  * Supports both OpenAI and Azure OpenAI providers via AI_PROVIDER env var.
  */
 
-export type AIProvider = 'openai' | 'azure';
+export type AIProvider = 'openai' | 'azure' | 'anthropic';
 
 export interface ModelConfig {
   /** Model name / deployment name (e.g. "gpt-4o") */
@@ -42,13 +42,13 @@ export interface AIConfig {
  * Model tiers for cost/quality optimization across agents.
  *
  * Tier 1 (REASONING): Complex financial analysis, compliance, multi-step planning
- *   → Best available model (Claude Sonnet 4 or GPT-4o)
+ *   → Best available model (Claude Opus 4)
  *
  * Tier 2 (INTERACTIVE): Real-time chat, streaming, tool-calling Q&A
- *   → Fast + good quality (GPT-4o-mini or Claude Haiku)
+ *   → Claude Opus 4 (best instruction following + no hallucination)
  *
  * Tier 3 (BATCH): Background processing, template generation, simple classification
- *   → Cost-optimized (GPT-4o-mini)
+ *   → Claude Opus 4 (unified model for consistency)
  */
 export type ModelTier = 'reasoning' | 'interactive' | 'batch';
 
@@ -123,6 +123,29 @@ export function loadAIConfig(): AIConfig {
         model: deploymentName,
         temperature: 0.2,
         maxTokens: 2048,
+      },
+      graphModels: GRAPH_MODEL_DEFAULTS,
+    };
+  }
+
+  // Anthropic (Claude)
+  if (provider === 'anthropic') {
+    const apiKey = process.env['ANTHROPIC_API_KEY'] ?? '';
+    if (!apiKey) {
+      throw new Error(
+        'ANTHROPIC_API_KEY environment variable is required when AI_PROVIDER=anthropic.',
+      );
+    }
+
+    const model = process.env['ANTHROPIC_MODEL'] ?? 'claude-opus-4-20250514';
+
+    return {
+      provider: 'anthropic',
+      apiKey,
+      defaultModel: {
+        model,
+        temperature: 0.2,
+        maxTokens: 4096,
       },
       graphModels: GRAPH_MODEL_DEFAULTS,
     };
@@ -226,6 +249,19 @@ export async function createChatModel(
   const timeout = parseInt(process.env['AI_TIMEOUT_MS'] ?? '', 10) || DEFAULT_TIMEOUT_MS;
   const maxRetries = parseInt(process.env['AI_MAX_RETRIES'] ?? '', 10) || DEFAULT_MAX_RETRIES;
   const callbacks = createUsageLoggingCallbacks(graphType);
+
+  if (aiConfig.provider === 'anthropic') {
+    const { ChatAnthropic } = await import('@langchain/anthropic');
+    return new ChatAnthropic({
+      anthropicApiKey: aiConfig.apiKey,
+      model: modelConfig.model,
+      temperature: modelConfig.temperature,
+      maxTokens: modelConfig.maxTokens,
+      timeout,
+      maxRetries,
+      callbacks,
+    });
+  }
 
   if (aiConfig.provider === 'azure' && aiConfig.azure) {
     const { AzureChatOpenAI } = await import('@langchain/openai');
