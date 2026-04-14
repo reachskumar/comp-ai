@@ -321,29 +321,27 @@ export default function AICopilotPage() {
 // ─── Sub-components ─────────────────────────────────────
 
 function WelcomeScreen({ onPromptClick }: { onPromptClick: (p: string) => void }) {
+  // Show only first 4 prompts for a cleaner welcome
+  const prompts = SUGGESTED_PROMPTS.slice(0, 4);
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-8 py-16">
-      <div className="relative">
-        <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500/15 to-violet-500/15 dark:from-indigo-500/20 dark:to-violet-500/20">
-          <Sparkles className="h-10 w-10 text-primary" />
-        </div>
-        <div className="absolute -right-1 -top-1 h-4 w-4 rounded-full bg-green-500 border-2 border-background" />
+    <div className="flex h-full flex-col items-center justify-center gap-6 py-16">
+      <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
+        <Sparkles className="h-6 w-6 text-primary" />
       </div>
-      <div className="text-center space-y-2">
-        <h2 className="text-2xl font-bold tracking-tight">AI Compensation Copilot</h2>
-        <p className="text-muted-foreground max-w-md text-base leading-relaxed">
-          Ask questions about employees, salaries, compensation cycles, payroll, and rules — powered
-          by your live data.
+      <div className="text-center space-y-1.5">
+        <h2 className="text-xl font-semibold tracking-tight">AI Copilot</h2>
+        <p className="text-muted-foreground text-sm max-w-sm">
+          Ask anything about your compensation data
         </p>
       </div>
-      <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3 max-w-2xl">
-        {SUGGESTED_PROMPTS.map((prompt) => (
+      <div className="grid gap-2 sm:grid-cols-2 max-w-lg w-full">
+        {prompts.map((prompt) => (
           <button
             key={prompt}
             onClick={() => onPromptClick(prompt)}
-            className="rounded-xl border border-border/60 bg-card/80 backdrop-blur-sm px-4 py-3 text-left text-sm transition-all duration-150 hover:bg-accent hover:border-primary/20 hover:shadow-sm group"
+            className="rounded-lg border border-border/60 px-3 py-2.5 text-left text-sm text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground"
           >
-            <span className="group-hover:text-primary transition-colors">{prompt}</span>
+            {prompt}
           </button>
         ))}
       </div>
@@ -390,9 +388,9 @@ function MessageBubble({ message, isStreaming }: { message: ChatMessage; isStrea
   return (
     <div className={`flex gap-3 ${isUser ? 'justify-end' : ''}`}>
       {!isUser && (
-        <Avatar className="h-8 w-8 shrink-0 mt-0.5 ring-2 ring-primary/10">
-          <AvatarFallback className="bg-gradient-to-br from-primary/15 to-primary/10 text-primary">
-            <Bot className="h-4 w-4" />
+        <Avatar className="h-7 w-7 shrink-0 mt-0.5">
+          <AvatarFallback className="bg-primary/10 text-primary text-xs">
+            <Bot className="h-3.5 w-3.5" />
           </AvatarFallback>
         </Avatar>
       )}
