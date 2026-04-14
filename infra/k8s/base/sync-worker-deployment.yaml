@@ -38,7 +38,9 @@ spec:
             - name: COMPPORT_MODE
               value: "standalone"
             - name: AI_PROVIDER
-              value: "azure"
+              value: "anthropic"
+            - name: ANTHROPIC_MODEL
+              value: "claude-opus-4-6"
             - name: SHUTDOWN_TIMEOUT
               value: "60000"
             - name: MYSQL_CA_CERT

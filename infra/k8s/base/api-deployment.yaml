@@ -40,13 +40,11 @@ spec:
             - name: COMPPORT_MODE
               value: "standalone"
             - name: AI_PROVIDER
-              value: "azure"
+              value: "anthropic"
+            - name: ANTHROPIC_MODEL
+              value: "claude-opus-4-6"
             - name: SHUTDOWN_TIMEOUT
               value: "30000"
-            - name: AZURE_OPENAI_DEPLOYMENT_NAME
-              value: "gpt-4o"
-            - name: AZURE_OPENAI_API_VERSION
-              value: "2024-08-01-preview"
             - name: MYSQL_CA_CERT
               value: "/keys/server-ca.pem"
             - name: MYSQL_CLIENT_CERT
