@@ -16,17 +16,9 @@ spec:
         app: sync-worker
     spec:
       serviceAccountName: compportiq-api
-      # TODO: Move to worker node pool when spot instances are available
-      # tolerations:
-      #   - key: "workload"
-      #     value: "sync"
-      #     effect: "NoSchedule"
-      # nodeSelector:
-      #   pool: workers
       containers:
         - name: sync-worker
           image: asia-south1-docker.pkg.dev/compportiq/compportiq-prod-docker/api:latest
-          # Same image + entrypoint as API — BullMQ runs inside NestJS
           command: ["node"]
           args: ["--max-old-space-size=4096", "--experimental-require-module", "apps/api/dist/main.js"]
           resources:
@@ -40,7 +32,7 @@ spec:
             - name: NODE_ENV
               value: "production"
             - name: API_PORT
-              value: "4001"  # Different port, not exposed
+              value: "4001"
             - name: LOG_LEVEL
               value: "info"
             - name: COMPPORT_MODE
@@ -48,13 +40,27 @@ spec:
             - name: AI_PROVIDER
               value: "azure"
             - name: SHUTDOWN_TIMEOUT
-              value: "60000"  # Longer shutdown for workers
+              value: "60000"
+            - name: MYSQL_CA_CERT
+              value: "/keys/server-ca.pem"
+            - name: MYSQL_CLIENT_CERT
+              value: "/keys/app-cert.pem"
+            - name: MYSQL_CLIENT_KEY
+              value: "/keys/app-key.pem"
           envFrom:
             - secretRef:
                 name: api-secrets
+          volumeMounts:
+            - name: mysql-certs
+              mountPath: /keys
+              readOnly: true
           livenessProbe:
             httpGet:
               path: /health
               port: 4001
             initialDelaySeconds: 15
             periodSeconds: 60
+      volumes:
+        - name: mysql-certs
+          secret:
+            secretName: mysql-certs

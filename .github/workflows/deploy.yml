@@ -1,4 +1,4 @@
-name: Deploy to Production (GCP)
+name: Deploy to Production (GKE)
 
 on:
   workflow_dispatch:
@@ -20,8 +20,8 @@ env:
   GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
   GCP_REGION: asia-south1
   AR_REPO: compportiq-prod-docker
-  API_SERVICE: compportiq-prod-api
-  WEB_SERVICE: compportiq-prod-web
+  GKE_CLUSTER: compportiq-prod-cluster
+  K8S_NAMESPACE: compportiq
 
 permissions:
   id-token: write
@@ -48,6 +48,9 @@ jobs:
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
+
+      - name: Install GKE auth plugin
+        run: gcloud components install gke-gcloud-auth-plugin --quiet
 
       # ─── Configure Docker for Artifact Registry ───────────────
       - name: Configure Docker
@@ -80,181 +83,103 @@ jobs:
             ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/web:${{ steps.tag.outputs.TAG }}
             ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/web:latest
 
-      # ─── Save current revisions for rollback ──────────────────
-      - name: Save current API revision
-        id: prev_api
+      # ─── Get GKE credentials ──────────────────────────────────
+      - name: Get GKE credentials
         run: |
-          REV=$(gcloud run services describe ${{ env.API_SERVICE }} \
-            --region=${{ env.GCP_REGION }} \
-            --format='value(status.latestReadyRevisionName)' 2>/dev/null || echo "")
-          echo "REVISION=$REV" >> $GITHUB_OUTPUT
-          echo "Previous API revision: $REV"
+          gcloud container clusters get-credentials ${{ env.GKE_CLUSTER }} \
+            --region ${{ env.GCP_REGION }} --project ${{ env.GCP_PROJECT }}
 
-      - name: Save current Web revision
-        id: prev_web
-        run: |
-          REV=$(gcloud run services describe ${{ env.WEB_SERVICE }} \
-            --region=${{ env.GCP_REGION }} \
-            --format='value(status.latestReadyRevisionName)' 2>/dev/null || echo "")
-          echo "REVISION=$REV" >> $GITHUB_OUTPUT
-          echo "Previous Web revision: $REV"
-
-      # ─── Resolve VPC connector ─────────────────────────────
-      - name: Get VPC connector
-        id: vpc
-        run: |
-          # Cloud Run v2 stores connector in annotations, not in the v2 vpcAccess field
-          CONNECTOR=$(gcloud run services describe ${{ env.API_SERVICE }} \
-            --region=${{ env.GCP_REGION }} \
-            --format='value(spec.template.metadata.annotations["run.googleapis.com/vpc-access-connector"])' 2>/dev/null || true)
-          if [ -z "$CONNECTOR" ]; then
-            # Fallback: construct from known naming convention
-            CONNECTOR="projects/${{ env.GCP_PROJECT }}/locations/${{ env.GCP_REGION }}/connectors/${{ env.GCP_PROJECT }}-prod-conn"
-          fi
-          echo "CONNECTOR=$CONNECTOR" >> "$GITHUB_OUTPUT"
-          echo "Using VPC connector: $CONNECTOR"
-
-      # ─── Run database migrations BEFORE deploying containers ─
+      # ─── Run database migrations ──────────────────────────────
       - name: Run Prisma migrations
         run: |
-          # Migrations run BEFORE container deploy so new tables exist
-          # when the updated application starts up.
-          gcloud run jobs create migrate-${{ steps.tag.outputs.TAG }} \
-            --image=${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/api:${{ steps.tag.outputs.TAG }} \
-            --region=${{ env.GCP_REGION }} \
-            --service-account=compportiq-prod-api@${{ env.GCP_PROJECT }}.iam.gserviceaccount.com \
-            --set-secrets=DATABASE_URL=compportiq-prod-database-url:latest \
-            --vpc-connector=${{ steps.vpc.outputs.CONNECTOR }} \
-            --max-retries=0 \
-            --task-timeout=300s \
-            --memory=1Gi \
-            --command="sh" \
-            --args="-c,cd /app/packages/database && node_modules/.bin/prisma migrate deploy" \
-            --quiet
+          API_IMAGE="${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/api:${{ steps.tag.outputs.TAG }}"
+          DB_URL=$(kubectl get secret api-secrets -n ${{ env.K8S_NAMESPACE }} \
+            -o jsonpath='{.data.DATABASE_URL}' | base64 -d)
 
-          gcloud run jobs execute migrate-${{ steps.tag.outputs.TAG }} \
-            --region=${{ env.GCP_REGION }} \
-            --wait \
-            --quiet
+          kubectl run migrate-${{ steps.tag.outputs.TAG }} \
+            -n ${{ env.K8S_NAMESPACE }} \
+            --image="$API_IMAGE" \
+            --restart=Never \
+            --env="DATABASE_URL=$DB_URL" \
+            --command -- sh -c "cd /app/packages/database && node_modules/.bin/prisma migrate deploy"
 
-          echo "✅ Database migrations applied successfully"
+          kubectl wait --for=condition=Ready pod/migrate-${{ steps.tag.outputs.TAG }} \
+            -n ${{ env.K8S_NAMESPACE }} --timeout=60s 2>/dev/null || true
 
-      # ─── Seed Database (optional) ─────────────────────────────
-      - name: Seed Platform Admin user
-        if: ${{ github.event.inputs.run_seed == 'true' }}
+          kubectl wait --for=jsonpath='{.status.phase}'=Succeeded \
+            pod/migrate-${{ steps.tag.outputs.TAG }} \
+            -n ${{ env.K8S_NAMESPACE }} --timeout=300s
+
+          echo "✅ Database migrations applied"
+          kubectl logs migrate-${{ steps.tag.outputs.TAG }} -n ${{ env.K8S_NAMESPACE }} | tail -5
+          kubectl delete pod migrate-${{ steps.tag.outputs.TAG }} -n ${{ env.K8S_NAMESPACE }} --ignore-not-found
+
+      # ─── Deploy to GKE ───────────────────────────────────────
+      - name: Deploy API
         run: |
-          echo "🌱 Running production seed (Platform Admin only)..."
-          gcloud run jobs create seed-${{ steps.tag.outputs.TAG }} \
-            --image=${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/api:${{ steps.tag.outputs.TAG }} \
-            --region=${{ env.GCP_REGION }} \
-            --service-account=compportiq-prod-api@${{ env.GCP_PROJECT }}.iam.gserviceaccount.com \
-            --set-secrets=DATABASE_URL=compportiq-prod-database-url:latest \
-            --vpc-connector=${{ steps.vpc.outputs.CONNECTOR }} \
-            --max-retries=0 \
-            --task-timeout=600s \
-            --memory=1Gi \
-            --set-env-vars=NODE_TLS_REJECT_UNAUTHORIZED=0 \
-            --command="sh" \
-            --args="-c,cd /app/packages/database && node_modules/.bin/tsx prisma/seed-prod.ts" \
-            --quiet
+          API_IMAGE="${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/api:${{ steps.tag.outputs.TAG }}"
+          kubectl set image deployment/api api="$API_IMAGE" -n ${{ env.K8S_NAMESPACE }}
+          kubectl set image deployment/sync-worker sync-worker="$API_IMAGE" -n ${{ env.K8S_NAMESPACE }}
+          kubectl rollout status deployment/api -n ${{ env.K8S_NAMESPACE }} --timeout=120s
+          kubectl rollout status deployment/sync-worker -n ${{ env.K8S_NAMESPACE }} --timeout=120s
+          echo "✅ API + Sync Workers deployed"
 
-          gcloud run jobs execute seed-${{ steps.tag.outputs.TAG }} \
-            --region=${{ env.GCP_REGION }} \
-            --wait \
-            --quiet
-
-          echo "✅ Database seeded successfully"
-
-      # ─── Deploy to Cloud Run ─────────────────────────────────
-      - name: Deploy API to Cloud Run
-        uses: google-github-actions/deploy-cloudrun@v2
-        with:
-          service: ${{ env.API_SERVICE }}
-          region: ${{ env.GCP_REGION }}
-          image: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/api:${{ steps.tag.outputs.TAG }}
-
-      - name: Deploy Web to Cloud Run
-        uses: google-github-actions/deploy-cloudrun@v2
-        with:
-          service: ${{ env.WEB_SERVICE }}
-          region: ${{ env.GCP_REGION }}
-          image: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/web:${{ steps.tag.outputs.TAG }}
+      - name: Deploy Web
+        run: |
+          WEB_IMAGE="${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/web:${{ steps.tag.outputs.TAG }}"
+          kubectl set image deployment/web web="$WEB_IMAGE" -n ${{ env.K8S_NAMESPACE }}
+          kubectl rollout status deployment/web -n ${{ env.K8S_NAMESPACE }} --timeout=120s
+          echo "✅ Web deployed"
 
       # ─── Health Check ────────────────────────────────────────
       - name: Verify API health
         id: api_health
         continue-on-error: true
         run: |
-          API_URL=$(gcloud run services describe ${{ env.API_SERVICE }} \
-            --region=${{ env.GCP_REGION }} \
-            --format='value(status.url)')
-          echo "API URL: $API_URL"
-          # Retry up to 5 times with 10s interval (Cloud Run cold start)
           for i in 1 2 3 4 5; do
-            if curl -sf "${API_URL}/health"; then
+            HEALTH=$(kubectl exec -n ${{ env.K8S_NAMESPACE }} deployment/api -- \
+              curl -sf http://localhost:4000/health 2>/dev/null || echo '{"status":"error"}')
+            STATUS=$(echo "$HEALTH" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status','error'))" 2>/dev/null || echo "error")
+            if [ "$STATUS" = "ok" ]; then
               echo "✅ API health check passed (attempt $i)"
+              echo "$HEALTH"
               exit 0
             fi
-            echo "Attempt $i failed, retrying in 10s..."
+            echo "Attempt $i: status=$STATUS, retrying in 10s..."
             sleep 10
           done
           echo "❌ API health check failed after 5 attempts"
           exit 1
 
-      - name: Verify Web health
-        id: web_health
-        continue-on-error: true
-        run: |
-          WEB_URL=$(gcloud run services describe ${{ env.WEB_SERVICE }} \
-            --region=${{ env.GCP_REGION }} \
-            --format='value(status.url)')
-          echo "Web URL: $WEB_URL"
-          for i in 1 2 3 4 5; do
-            if curl -sf "${WEB_URL}" -o /dev/null; then
-              echo "✅ Web health check passed (attempt $i)"
-              exit 0
-            fi
-            echo "Attempt $i failed, retrying in 10s..."
-            sleep 10
-          done
-          echo "❌ Web health check failed after 5 attempts"
-          exit 1
-
       # ─── Rollback on failure ─────────────────────────────────
-      - name: Rollback API on failure
-        if: steps.api_health.outcome == 'failure' && steps.prev_api.outputs.REVISION != ''
+      - name: Rollback on failure
+        if: steps.api_health.outcome == 'failure'
         run: |
-          echo "⚠️ Rolling back API to revision: ${{ steps.prev_api.outputs.REVISION }}"
-          gcloud run services update-traffic ${{ env.API_SERVICE }} \
-            --region=${{ env.GCP_REGION }} \
-            --to-revisions=${{ steps.prev_api.outputs.REVISION }}=100
-
-      - name: Rollback Web on failure
-        if: steps.web_health.outcome == 'failure' && steps.prev_web.outputs.REVISION != ''
-        run: |
-          echo "⚠️ Rolling back Web to revision: ${{ steps.prev_web.outputs.REVISION }}"
-          gcloud run services update-traffic ${{ env.WEB_SERVICE }} \
-            --region=${{ env.GCP_REGION }} \
-            --to-revisions=${{ steps.prev_web.outputs.REVISION }}=100
-
-      - name: Fail if health checks failed
-        if: steps.api_health.outcome == 'failure' || steps.web_health.outcome == 'failure'
-        run: |
-          echo "❌ Deployment failed — rolled back to previous revisions"
+          echo "⚠️ Rolling back deployments..."
+          kubectl rollout undo deployment/api -n ${{ env.K8S_NAMESPACE }}
+          kubectl rollout undo deployment/sync-worker -n ${{ env.K8S_NAMESPACE }}
+          kubectl rollout undo deployment/web -n ${{ env.K8S_NAMESPACE }}
+          echo "❌ Deployment failed — rolled back"
           exit 1
 
-      # ─── Cleanup jobs ──────────────────────────────────────
-      - name: Delete migration job
-        if: always()
+      # ─── Seed (optional) ─────────────────────────────────────
+      - name: Seed Platform Admin user
+        if: ${{ github.event.inputs.run_seed == 'true' }}
         run: |
-          gcloud run jobs delete migrate-${{ steps.tag.outputs.TAG }} \
-            --region=${{ env.GCP_REGION }} \
-            --quiet 2>/dev/null || true
+          API_IMAGE="${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/api:${{ steps.tag.outputs.TAG }}"
+          DB_URL=$(kubectl get secret api-secrets -n ${{ env.K8S_NAMESPACE }} \
+            -o jsonpath='{.data.DATABASE_URL}' | base64 -d)
 
-      - name: Delete seed job
-        if: always()
-        run: |
-          gcloud run jobs delete seed-${{ steps.tag.outputs.TAG }} \
-            --region=${{ env.GCP_REGION }} \
-            --quiet 2>/dev/null || true
+          kubectl run seed-${{ steps.tag.outputs.TAG }} \
+            -n ${{ env.K8S_NAMESPACE }} \
+            --image="$API_IMAGE" \
+            --restart=Never \
+            --env="DATABASE_URL=$DB_URL" \
+            --command -- sh -c "cd /app/packages/database && node_modules/.bin/tsx prisma/seed-prod.ts"
 
+          kubectl wait --for=jsonpath='{.status.phase}'=Succeeded \
+            pod/seed-${{ steps.tag.outputs.TAG }} \
+            -n ${{ env.K8S_NAMESPACE }} --timeout=120s
+
+          echo "✅ Database seeded"
+          kubectl delete pod seed-${{ steps.tag.outputs.TAG }} -n ${{ env.K8S_NAMESPACE }} --ignore-not-found

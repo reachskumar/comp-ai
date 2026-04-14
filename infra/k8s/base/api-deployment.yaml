@@ -47,9 +47,19 @@ spec:
               value: "gpt-4o"
             - name: AZURE_OPENAI_API_VERSION
               value: "2024-08-01-preview"
+            - name: MYSQL_CA_CERT
+              value: "/keys/server-ca.pem"
+            - name: MYSQL_CLIENT_CERT
+              value: "/keys/app-cert.pem"
+            - name: MYSQL_CLIENT_KEY
+              value: "/keys/app-key.pem"
           envFrom:
             - secretRef:
                 name: api-secrets
+          volumeMounts:
+            - name: mysql-certs
+              mountPath: /keys
+              readOnly: true
           livenessProbe:
             httpGet:
               path: /health
@@ -74,6 +84,10 @@ spec:
             periodSeconds: 5
             failureThreshold: 24  # 120s startup window
 
+      volumes:
+        - name: mysql-certs
+          secret:
+            secretName: mysql-certs
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
