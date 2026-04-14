@@ -78,6 +78,38 @@ function preprocessChartData(config: ChartConfig): void {
       const bVal = Number(b[primaryY] ?? 0);
       return bVal - aVal;
     });
+
+    // Outlier removal: if the top value is 5x+ the median of the rest,
+    // it squashes all other bars to near-zero making the chart unreadable.
+    // Remove outliers and add a note to the title.
+    if (config.data.length >= 3) {
+      const values = config.data.map((d) => Number(d[primaryY] ?? 0)).filter((v) => v > 0);
+      if (values.length >= 3) {
+        const sorted = [...values].sort((a, b) => a - b);
+        const median = sorted[Math.floor(sorted.length / 2)]!;
+        const topValue = values[0]!;
+        if (median > 0 && topValue / median > 5) {
+          // Remove all outliers (values > 5x median)
+          const threshold = median * 5;
+          const outliers = config.data.filter((d) => Number(d[primaryY] ?? 0) > threshold);
+          config.data = config.data.filter((d) => Number(d[primaryY] ?? 0) <= threshold);
+          if (outliers.length > 0 && config.data.length >= 2) {
+            const outlierNames = outliers
+              .map((d) => config.xKey ? String(d[config.xKey] ?? '') : '')
+              .filter(Boolean)
+              .join(', ');
+            const outlierVal = outliers.map((d) => Number(d[primaryY] ?? 0));
+            const maxOutlier = Math.max(...outlierVal);
+            const formatted = maxOutlier >= 10000000
+              ? `${(maxOutlier / 10000000).toFixed(1)}Cr`
+              : maxOutlier >= 100000
+                ? `${(maxOutlier / 100000).toFixed(1)}L`
+                : maxOutlier.toLocaleString('en-IN');
+            config.title += ` (excl. ${outlierNames}: ₹${formatted})`;
+          }
+        }
+      }
+    }
   }
 
   // Limit to MAX_ITEMS
