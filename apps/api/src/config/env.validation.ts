@@ -41,7 +41,7 @@ export class EnvironmentVariables {
 
   @IsString()
   @IsOptional()
-  @IsIn(['openai', 'azure'])
+  @IsIn(['openai', 'azure', 'anthropic'])
   AI_PROVIDER?: string = 'openai';
 
   @IsString()
@@ -51,6 +51,14 @@ export class EnvironmentVariables {
   @IsString()
   @IsOptional()
   AZURE_OPENAI_API_KEY?: string;
+
+  @IsString()
+  @IsOptional()
+  ANTHROPIC_API_KEY?: string;
+
+  @IsString()
+  @IsOptional()
+  ANTHROPIC_MODEL?: string;
 
   @IsString()
   @IsOptional()
@@ -154,7 +162,10 @@ export function validate(config: Record<string, unknown>): EnvironmentVariables 
   // service is instantiated.
   if (validatedConfig.NODE_ENV === 'production') {
     const missing: string[] = [];
-    if (!validatedConfig.BENEFITS_ENCRYPTION_KEY || validatedConfig.BENEFITS_ENCRYPTION_KEY.length < 32) {
+    if (
+      !validatedConfig.BENEFITS_ENCRYPTION_KEY ||
+      validatedConfig.BENEFITS_ENCRYPTION_KEY.length < 32
+    ) {
       missing.push('BENEFITS_ENCRYPTION_KEY (must be >=32 chars)');
     }
     const platformKey =
