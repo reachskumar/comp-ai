@@ -120,8 +120,8 @@ jobs:
           API_IMAGE="${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/api:${{ steps.tag.outputs.TAG }}"
           kubectl set image deployment/api api="$API_IMAGE" -n ${{ env.K8S_NAMESPACE }}
           kubectl set image deployment/sync-worker sync-worker="$API_IMAGE" -n ${{ env.K8S_NAMESPACE }}
-          kubectl rollout status deployment/api -n ${{ env.K8S_NAMESPACE }} --timeout=120s
-          kubectl rollout status deployment/sync-worker -n ${{ env.K8S_NAMESPACE }} --timeout=120s
+          kubectl rollout status deployment/api -n ${{ env.K8S_NAMESPACE }} --timeout=300s
+          kubectl rollout status deployment/sync-worker -n ${{ env.K8S_NAMESPACE }} --timeout=300s
           echo "✅ API + Sync Workers deployed"
 
       - name: Deploy Web
