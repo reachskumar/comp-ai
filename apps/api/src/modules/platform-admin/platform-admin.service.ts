@@ -402,16 +402,39 @@ export class PlatformAdminService {
    * Primary: DB_HOST / DB_USER / DB_PWD (production Cloud Run)
    * Fallback: COMPPORT_CLOUDSQL_HOST / USER / PASSWORD (legacy)
    */
-  /** Create a COMPPORT_CLOUDSQL connector for a tenant if one doesn't exist. Uses forTenant to satisfy RLS. */
+  /** Create a COMPPORT_CLOUDSQL connector for a tenant if one doesn't exist.
+   *  Also encrypts and stores MySQL credentials so the bridge query endpoints
+   *  can connect to Compport MySQL on behalf of this tenant. */
   private async ensureConnectorExists(tenantId: string, tenantName: string, schema: string) {
     try {
-      const exists = await this.db.forTenant(tenantId, (tx) =>
+      const existing = await this.db.forTenant(tenantId, (tx) =>
         tx.integrationConnector.findFirst({
           where: { tenantId, connectorType: 'COMPPORT_CLOUDSQL' },
-          select: { id: true },
+          select: { id: true, encryptedCredentials: true },
         }),
       );
-      if (!exists) {
+
+      // Build encrypted credentials from env vars
+      const mysqlConfig = this.getMySqlConfig();
+      let encryptedCredentials: string | undefined;
+      let credentialIv: string | undefined;
+      let credentialTag: string | undefined;
+
+      if (mysqlConfig.host && mysqlConfig.user && mysqlConfig.password) {
+        const creds = {
+          host: mysqlConfig.host,
+          port: mysqlConfig.port ?? 3306,
+          user: mysqlConfig.user,
+          password: mysqlConfig.password,
+          database: schema,
+        };
+        const encrypted = this.credentialVault.encrypt(tenantId, creds);
+        encryptedCredentials = encrypted.encrypted;
+        credentialIv = encrypted.iv;
+        credentialTag = encrypted.tag;
+      }
+
+      if (!existing) {
         await this.db.forTenant(tenantId, (tx) =>
           tx.integrationConnector.create({
             data: {
@@ -423,13 +446,23 @@ export class PlatformAdminService {
               syncSchedule: 'DAILY',
               conflictStrategy: 'SOURCE_PRIORITY',
               config: { cloudSqlSchema: schema, schemaName: schema },
+              ...(encryptedCredentials && { encryptedCredentials, credentialIv, credentialTag }),
             },
           }),
         );
-        this.logger.log(`Connector created for ${tenantName} (schema: ${schema})`);
+        this.logger.log(`Connector created for ${tenantName} (schema: ${schema}, creds: ${!!encryptedCredentials})`);
+      } else if (!existing.encryptedCredentials && encryptedCredentials) {
+        // Connector exists but has no credentials — update it
+        await this.db.forTenant(tenantId, (tx) =>
+          tx.integrationConnector.update({
+            where: { id: existing.id },
+            data: { encryptedCredentials, credentialIv, credentialTag },
+          }),
+        );
+        this.logger.log(`Connector credentials updated for ${tenantName}`);
       }
     } catch (err) {
-      this.logger.warn(`Failed to create connector for ${tenantName}: ${err}`);
+      this.logger.warn(`Failed to create/update connector for ${tenantName}: ${err}`);
     }
   }
 
