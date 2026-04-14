@@ -14,6 +14,7 @@ import { Prisma } from '@compensation/database';
 import { DataScopeService, type DataScope } from '../../common';
 import { CompportQueryCacheService } from '../compport-bridge/services/compport-query-cache.service';
 import { CompportCloudSqlService } from '../compport-bridge/services/compport-cloudsql.service';
+import { CompportDataService } from '../compport-bridge/services/compport-data.service';
 
 @Injectable()
 export class CopilotService implements CopilotDbAdapter {
@@ -24,6 +25,7 @@ export class CopilotService implements CopilotDbAdapter {
     private readonly dataScopeService: DataScopeService,
     private readonly queryCache: CompportQueryCacheService,
     private readonly cloudSql: CompportCloudSqlService,
+    private readonly compportData: CompportDataService,
   ) {}
 
   // ─── Mirror Adapter (universal Compport data access) ────────
@@ -465,25 +467,18 @@ export class CopilotService implements CopilotDbAdapter {
       limit?: number;
     },
   ): Promise<unknown[]> {
-    const where: Prisma.CompRecommendationWhereInput = {
-      cycle: { tenantId },
-    };
-    if (filters.employeeId) where.employeeId = filters.employeeId;
-    if (filters.department) {
-      where.employee = { department: filters.department };
-    }
+    // Read directly from Compport MySQL — salary + bonus details
+    const limit = filters.limit ?? 50;
+    const component = filters.component?.toLowerCase();
 
-    return this.db.forTenant(tenantId, (tx) =>
-      tx.compRecommendation.findMany({
-        where,
-        take: filters.limit ?? 50,
-        include: {
-          employee: { select: { firstName: true, lastName: true, department: true } },
-          cycle: { select: { name: true, status: true } },
-        },
-        orderBy: { createdAt: 'desc' },
-      }),
-    );
+    if (component === 'bonus') {
+      return this.compportData.getEmployeeBonusDetails(tenantId, undefined, limit);
+    }
+    if (component === 'lti') {
+      return this.compportData.getEmployeeLtiDetails(tenantId, undefined, limit);
+    }
+    // Default: salary details
+    return this.compportData.getEmployeeSalaryDetails(tenantId, undefined, limit);
   }
 
   async queryRules(
@@ -495,18 +490,18 @@ export class CopilotService implements CopilotDbAdapter {
       limit?: number;
     },
   ): Promise<unknown[]> {
-    const where: Prisma.RuleSetWhereInput = { tenantId };
-    if (filters.status) where.status = filters.status as Prisma.EnumRuleSetStatusFilter;
-    if (filters.search) where.name = { contains: filters.search, mode: 'insensitive' };
+    // Read directly from Compport MySQL — hr_parameter + hr_parameter_bonus
+    const limit = filters.limit ?? 50;
+    const ruleType = filters.ruleType?.toLowerCase();
 
-    return this.db.forTenant(tenantId, (tx) =>
-      tx.ruleSet.findMany({
-        where,
-        take: filters.limit ?? 20,
-        include: { rules: { take: 10 } },
-        orderBy: { updatedAt: 'desc' },
-      }),
-    );
+    if (ruleType === 'bonus') {
+      return this.compportData.getBonusRules(tenantId, limit);
+    }
+    if (ruleType === 'lti') {
+      return this.compportData.getLtiRules(tenantId, limit);
+    }
+    // Default: salary rules (hr_parameter)
+    return this.compportData.getSalaryRules(tenantId, limit);
   }
 
   async queryCycles(
@@ -517,18 +512,8 @@ export class CopilotService implements CopilotDbAdapter {
       limit?: number;
     },
   ): Promise<unknown[]> {
-    const where: Prisma.CompCycleWhereInput = { tenantId };
-    if (filters.status) where.status = filters.status as Prisma.EnumCycleStatusFilter;
-    if (filters.cycleType) where.cycleType = filters.cycleType as Prisma.EnumCycleTypeFilter;
-
-    return this.db.forTenant(tenantId, (tx) =>
-      tx.compCycle.findMany({
-        where,
-        take: filters.limit ?? 10,
-        include: { budgets: true },
-        orderBy: { createdAt: 'desc' },
-      }),
-    );
+    // Read directly from Compport MySQL — performance_cycle table
+    return this.compportData.getCompCycles(tenantId, filters.limit ?? 20);
   }
 
   async queryPayroll(
@@ -539,18 +524,8 @@ export class CopilotService implements CopilotDbAdapter {
       limit?: number;
     },
   ): Promise<unknown[]> {
-    const where: Prisma.PayrollRunWhereInput = { tenantId };
-    if (filters.status) where.status = filters.status as Prisma.EnumPayrollStatusFilter;
-    if (filters.period) where.period = filters.period;
-
-    return this.db.forTenant(tenantId, (tx) =>
-      tx.payrollRun.findMany({
-        where,
-        take: filters.limit ?? 10,
-        include: { _count: { select: { lineItems: true, anomalies: true } } },
-        orderBy: { createdAt: 'desc' },
-      }),
-    );
+    // Read directly from Compport MySQL — employee_salary_details
+    return this.compportData.getEmployeeSalaryDetails(tenantId, undefined, filters.limit ?? 50);
   }
 
   async queryAnalytics(
@@ -767,22 +742,8 @@ export class CopilotService implements CopilotDbAdapter {
       limit?: number;
     },
   ): Promise<unknown[]> {
-    const where: Prisma.EquityGrantWhereInput = { tenantId };
-    if (filters.employeeId) where.employeeId = filters.employeeId;
-    if (filters.status) where.status = filters.status as Prisma.EnumEquityGrantStatusFilter;
-    if (filters.grantType) where.grantType = filters.grantType as Prisma.EnumEquityGrantTypeFilter;
-
-    return this.db.forTenant(tenantId, (tx) =>
-      tx.equityGrant.findMany({
-        where,
-        take: filters.limit ?? 20,
-        include: {
-          plan: { select: { name: true, planType: true, sharePrice: true, currency: true } },
-          employee: { select: { firstName: true, lastName: true, department: true } },
-        },
-        orderBy: { grantDate: 'desc' },
-      }),
-    );
+    // Read directly from Compport MySQL — employee_lti_details
+    return this.compportData.getEmployeeLtiDetails(tenantId, undefined, filters.limit ?? 50);
   }
 
   async querySalaryBands(
@@ -794,32 +755,8 @@ export class CopilotService implements CopilotDbAdapter {
       limit?: number;
     },
   ): Promise<unknown[]> {
-    const where: Prisma.SalaryBandWhereInput = { tenantId };
-    if (filters.jobFamily) where.jobFamily = { contains: filters.jobFamily, mode: 'insensitive' };
-    if (filters.level) where.level = filters.level;
-    if (filters.location) where.location = { contains: filters.location, mode: 'insensitive' };
-
-    return this.db.forTenant(tenantId, (tx) =>
-      tx.salaryBand.findMany({
-        where,
-        take: filters.limit ?? 20,
-        select: {
-          id: true,
-          jobFamily: true,
-          level: true,
-          location: true,
-          currency: true,
-          p10: true,
-          p25: true,
-          p50: true,
-          p75: true,
-          p90: true,
-          source: true,
-          effectiveDate: true,
-        },
-        orderBy: [{ jobFamily: 'asc' }, { level: 'asc' }],
-      }),
-    );
+    // Read directly from Compport MySQL — payrange_market_data
+    return this.compportData.getPayRanges(tenantId, filters.limit ?? 100);
   }
 
   async queryNotifications(
@@ -1254,7 +1191,8 @@ export class CopilotService implements CopilotDbAdapter {
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const self = this;
     return {
-      // Delegate all non-employee methods to `this`
+      // Delegate all methods to `this` — Compport MySQL reads are
+      // already handled in the adapter methods themselves
       queryCompensation: self.queryCompensation.bind(self),
       queryRules: self.queryRules.bind(self),
       queryCycles: self.queryCycles.bind(self),

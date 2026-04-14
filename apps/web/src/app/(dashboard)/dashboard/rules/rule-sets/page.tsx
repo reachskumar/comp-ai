@@ -44,6 +44,8 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { AiRuleWizard } from '@/components/ai-rule-wizard';
+import { useCompportSalaryRules, useCompportBonusRules } from '@/hooks/use-compport-data';
+import { CompportDataTable } from '@/components/compport-data-table';
 
 interface RuleSetSummary {
   id: string;
@@ -201,6 +203,8 @@ export default function RuleSetsPage() {
   }, []);
 
   const ruleSets = data?.data ?? [];
+  const compportSalaryRules = useCompportSalaryRules(100);
+  const compportBonusRules = useCompportBonusRules(100);
 
   return (
     <div className="space-y-6">
@@ -452,6 +456,24 @@ export default function RuleSetsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Compport Source Data */}
+      <div className="space-y-4">
+        <CompportDataTable
+          title="Compport Salary Rules"
+          description="Live data from Compport MySQL — hr_parameter table"
+          data={compportSalaryRules.data?.data}
+          isLoading={compportSalaryRules.isLoading}
+          error={compportSalaryRules.error}
+        />
+        <CompportDataTable
+          title="Compport Bonus Rules"
+          description="Live data from Compport MySQL — hr_parameter_bonus table"
+          data={compportBonusRules.data?.data}
+          isLoading={compportBonusRules.isLoading}
+          error={compportBonusRules.error}
+        />
+      </div>
 
       {/* AI Rule Wizard */}
       <AiRuleWizard

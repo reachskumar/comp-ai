@@ -19,7 +19,9 @@ import { CompportBridgeController } from './compport-bridge.controller';
 import { WriteBackController } from './controllers/write-back.controller';
 import { InboundSyncController } from './controllers/inbound-sync.controller';
 import { IntegrationDashboardController } from './controllers/integration-dashboard.controller';
+import { CompportDataController } from './controllers/compport-data.controller';
 import { IntegrationDashboardService } from './services/integration-dashboard.service';
+import { CompportDataService } from './services/compport-data.service';
 import { BridgeRateLimitGuard } from './guards/bridge-rate-limit.guard';
 import { WriteBackProcessor, WRITE_BACK_QUEUE } from './processors/write-back.processor';
 import { InboundSyncProcessor, INBOUND_SYNC_QUEUE } from './processors/inbound-sync.processor';
@@ -65,7 +67,7 @@ export class CompportBridgeModule {
           }),
         }),
       ],
-      controllers: [CompportBridgeController, WriteBackController, InboundSyncController, IntegrationDashboardController],
+      controllers: [CompportBridgeController, WriteBackController, InboundSyncController, IntegrationDashboardController, CompportDataController],
       providers: [
         CompportBridgeConfig,
         CompportDbService,
@@ -86,6 +88,7 @@ export class CompportBridgeModule {
         CompportQueryCacheService,
         TenantRegistryService,
         IntegrationDashboardService,
+        CompportDataService,
         BridgeRateLimitGuard,
       ],
       exports: [
@@ -105,6 +108,7 @@ export class CompportBridgeModule {
         CompportQueryCacheService,
         TenantRegistryService,
         IntegrationDashboardService,
+        CompportDataService,
       ],
     };
   }

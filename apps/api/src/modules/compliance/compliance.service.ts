@@ -9,12 +9,16 @@ import {
 } from '@compensation/ai';
 import { HumanMessage } from '@langchain/core/messages';
 import { Prisma } from '@compensation/database';
+import { CompportDataService } from '../compport-bridge/services/compport-data.service';
 
 @Injectable()
 export class ComplianceService implements ComplianceDbAdapter {
   private readonly logger = new Logger(ComplianceService.name);
 
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly compportData: CompportDataService,
+  ) {}
 
   // ─── Scan Management ────────────────────────────────────
 
@@ -163,36 +167,17 @@ export class ComplianceService implements ComplianceDbAdapter {
   // ─── ComplianceDbAdapter Implementation ─────────────────
 
   async getAllRules(tenantId: string): Promise<unknown[]> {
-    return this.db.forTenant(tenantId, (tx) =>
-      tx.ruleSet.findMany({
-        where: { tenantId },
-        include: { rules: true },
-        orderBy: { updatedAt: 'desc' },
-      }),
-    );
+    // Read directly from Compport MySQL — hr_parameter (salary rules)
+    const [salaryRules, bonusRules] = await Promise.all([
+      this.compportData.getSalaryRules(tenantId, 100),
+      this.compportData.getBonusRules(tenantId, 100),
+    ]);
+    return [...salaryRules, ...bonusRules];
   }
 
   async getRecentDecisions(tenantId: string, limit?: number): Promise<unknown[]> {
-    return this.db.forTenant(tenantId, (tx) =>
-      tx.compRecommendation.findMany({
-        where: { cycle: { tenantId } },
-        take: limit ?? 100,
-        include: {
-          employee: {
-            select: {
-              firstName: true,
-              lastName: true,
-              department: true,
-              level: true,
-              baseSalary: true,
-              location: true,
-            },
-          },
-          cycle: { select: { name: true, status: true } },
-        },
-        orderBy: { createdAt: 'desc' },
-      }),
-    );
+    // Read directly from Compport MySQL — employee_salary_details
+    return this.compportData.getEmployeeSalaryDetails(tenantId, undefined, limit ?? 100);
   }
 
   async getCompDataStats(tenantId: string): Promise<unknown> {

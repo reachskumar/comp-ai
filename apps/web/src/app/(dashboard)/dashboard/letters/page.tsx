@@ -32,6 +32,8 @@ import {
   type CompensationLetter,
   type GenerateLetterInput,
 } from "@/hooks/use-letters";
+import { useCompportLetters } from "@/hooks/use-compport-data";
+import { CompportDataTable } from "@/components/compport-data-table";
 
 const LETTER_TYPES: { value: LetterType; label: string }[] = [
   { value: "offer", label: "Offer Letter" },
@@ -84,6 +86,7 @@ export default function LettersPage() {
 
   const [activeTab, setActiveTab] = useState("generate");
   const [previewLetter, setPreviewLetter] = useState<CompensationLetter | null>(null);
+  const compportLetters = useCompportLetters(50);
 
   // Form state
   const [form, setForm] = useState<GenerateLetterInput>({
@@ -151,6 +154,10 @@ export default function LettersPage() {
               <Clock className="mr-1 h-4 w-4" />
               History
             </TabsTrigger>
+            <TabsTrigger value="compport">
+              <FileText className="mr-1 h-4 w-4" />
+              Compport Data
+            </TabsTrigger>
             {previewLetter && (
               <TabsTrigger value="preview">
                 <Eye className="mr-1 h-4 w-4" />
@@ -178,6 +185,17 @@ export default function LettersPage() {
               pagination={pagination}
               onView={(letter) => { setPreviewLetter(letter); setActiveTab("preview"); }}
               onPageChange={(page) => void fetchLetters({ page })}
+            />
+          </TabsContent>
+
+          {/* Compport Data Tab */}
+          <TabsContent value="compport" className="flex-1 overflow-auto">
+            <CompportDataTable
+              title="Compport Letter Repository"
+              description="Live data from Compport MySQL — letter_repository table"
+              data={compportLetters.data?.data}
+              isLoading={compportLetters.isLoading}
+              error={compportLetters.error}
             />
           </TabsContent>
 

@@ -44,6 +44,8 @@ import {
   type PayrollRun,
   type PayrollStatus,
 } from "@/hooks/use-payroll";
+import { useCompportSalaryDetails } from "@/hooks/use-compport-data";
+import { CompportDataTable } from "@/components/compport-data-table";
 
 const STATUS_OPTIONS = [
   { value: "", label: "All Statuses" },
@@ -100,6 +102,7 @@ export default function PayrollRunsPage() {
   const listQuery = usePayrollRuns(page, limit, statusFilter || undefined);
   const createMutation = useCreatePayrollRun();
   const runCheckMutation = useRunCheck();
+  const compportSalary = useCompportSalaryDetails(50);
 
   const handleCreate = () => {
     if (!newPeriod.trim()) return;
@@ -250,6 +253,15 @@ export default function PayrollRunsPage() {
           </div>
         </div>
       )}
+
+      {/* Compport Source Data */}
+      <CompportDataTable
+        title="Compport Employee Salary Details"
+        description="Live data from Compport MySQL — employee_salary_details table"
+        data={compportSalary.data?.data}
+        isLoading={compportSalary.isLoading}
+        error={compportSalary.error}
+      />
 
       {/* Create Dialog */}
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>

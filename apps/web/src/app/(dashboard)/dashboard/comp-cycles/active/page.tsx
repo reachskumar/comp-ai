@@ -59,6 +59,8 @@ import {
   type CycleAlert,
   type DepartmentProgress,
 } from '@/hooks/use-cycles';
+import { useCompportCycles } from '@/hooks/use-compport-data';
+import { CompportDataTable } from '@/components/compport-data-table';
 
 // ─── Helpers ──────────────────────────────────────────────
 
@@ -171,6 +173,7 @@ function CycleListView({
   };
 
   const cycles = data?.data ?? [];
+  const compportCycles = useCompportCycles(50);
 
   return (
     <div className="space-y-6">
@@ -259,6 +262,15 @@ function CycleListView({
           )}
         </CardContent>
       </Card>
+
+      {/* Compport Source Data */}
+      <CompportDataTable
+        title="Compport Performance Cycles"
+        description="Live data from Compport MySQL — performance_cycle table"
+        data={compportCycles.data?.data}
+        isLoading={compportCycles.isLoading}
+        error={compportCycles.error}
+      />
 
       {/* Create Cycle Dialog */}
       <Dialog open={createOpen} onOpenChange={onCreateClose}>

@@ -12,6 +12,7 @@ import { HumanMessage } from '@langchain/core/messages';
 import { evaluateRules } from '@compensation/shared';
 import type { EmployeeData, RuleSet, Rule } from '@compensation/shared';
 import { DataScopeService, type DataScope } from '../../common';
+import { CompportDataService } from '../compport-bridge/services/compport-data.service';
 
 @Injectable()
 export class SimulationService implements SimulationDbAdapter {
@@ -21,6 +22,7 @@ export class SimulationService implements SimulationDbAdapter {
     private readonly db: DatabaseService,
     private readonly marketDataAgeing: MarketDataAgeingService,
     private readonly dataScopeService: DataScopeService,
+    private readonly compportData: CompportDataService,
   ) {}
 
   // ─── Graph Invocation ──────────────────────────────────────
@@ -401,7 +403,29 @@ export class SimulationService implements SimulationDbAdapter {
     const label =
       [params.department, params.level, params.location].filter(Boolean).join(' / ') || 'All Roles';
 
-    // Try to get real blended market data from salary bands
+    // Primary: read from Compport MySQL — payrange_market_data + tbl_market_data + grade_band
+    try {
+      const [payRanges, marketData, gradeBands] = await Promise.all([
+        this.compportData.getPayRanges(tenantId, 100),
+        this.compportData.getMarketData(tenantId, 100),
+        this.compportData.getGradeBands(tenantId, 100),
+      ]);
+      if (payRanges.length > 0 || marketData.length > 0) {
+        return {
+          label,
+          payRanges: payRanges.slice(0, 20),
+          marketData: marketData.slice(0, 20),
+          gradeBands: gradeBands.slice(0, 20),
+          source: 'Compport Market Data',
+          asOfDate: new Date().toISOString().split('T')[0],
+          note: `${payRanges.length} pay ranges, ${marketData.length} market data, ${gradeBands.length} grade bands from Compport`,
+        };
+      }
+    } catch (err) {
+      this.logger.warn(`Failed to get Compport market data: ${(err as Error).message}`);
+    }
+
+    // Fallback: try to get real blended market data from salary bands
     if (params.department && params.level) {
       try {
         const blended = await this.marketDataAgeing.getBlendedMarketData(
