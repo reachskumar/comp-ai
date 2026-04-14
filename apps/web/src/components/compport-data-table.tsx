@@ -88,6 +88,7 @@ export function CompportDataTable({
     return keys.slice(0, maxAutoColumns).map((key) => ({
       key,
       label: humanizeColumnName(key),
+      format: undefined as ((v: unknown) => string) | undefined,
     }));
   }, [columns, rows, maxAutoColumns]);
 
