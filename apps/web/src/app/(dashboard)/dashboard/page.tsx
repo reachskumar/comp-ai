@@ -245,27 +245,17 @@ export default function DashboardPage() {
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {modules.map((mod) => (
             <Link key={mod.title} href={mod.href}>
-              <Card className="transition-all duration-200 hover:shadow-lg hover:-translate-y-1 border-border/60 bg-card/80 backdrop-blur-sm cursor-pointer group h-full">
+              <Card className="card-hover cursor-pointer group h-full border-border/60">
                 <CardHeader className="pb-2">
                   <div className="flex items-center gap-3">
-                    <div
-                      className={`flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br ${mod.color} group-hover:scale-110 transition-transform duration-200`}
-                    >
-                      <mod.icon className={`h-5 w-5 ${mod.iconColor}`} aria-hidden="true" />
-                    </div>
-                    <div>
-                      <CardTitle className="text-base group-hover:text-primary transition-colors">
-                        {mod.title}
-                      </CardTitle>
-                    </div>
+                    <mod.icon className="h-5 w-5 text-muted-foreground group-hover:text-primary transition-colors" aria-hidden="true" />
+                    <CardTitle className="text-sm font-medium group-hover:text-primary transition-colors">
+                      {mod.title}
+                    </CardTitle>
                   </div>
                 </CardHeader>
                 <CardContent>
                   <p className="text-sm text-muted-foreground leading-relaxed">{mod.description}</p>
-                  <p className="mt-3 text-sm font-medium text-primary flex items-center gap-1 group-hover:gap-2 transition-all">
-                    {mod.cta}
-                    <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
-                  </p>
                 </CardContent>
               </Card>
             </Link>

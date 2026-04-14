@@ -1,0 +1,96 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "title": "API Request Rate (req/s)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"compportiq\", container=\"api\"}[5m])) by (pod)",
+          "legendFormat": "{{pod}}"
+        }
+      ]
+    },
+    {
+      "title": "API Memory Usage (MB)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(container_memory_working_set_bytes{namespace=\"compportiq\", container=\"api\"}) by (pod) / 1024 / 1024",
+          "legendFormat": "{{pod}}"
+        }
+      ]
+    },
+    {
+      "title": "Pod Status",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "count(kube_pod_status_ready{namespace=\"compportiq\", condition=\"true\"})",
+          "legendFormat": "Ready Pods"
+        }
+      ]
+    },
+    {
+      "title": "Pod Restarts (last 1h)",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum(increase(kube_pod_container_status_restarts_total{namespace=\"compportiq\"}[1h]))",
+          "legendFormat": "Restarts"
+        }
+      ]
+    },
+    {
+      "title": "Sync Worker CPU",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "targets": [
+        {
+          "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"compportiq\", container=\"sync-worker\"}[5m])) by (pod)",
+          "legendFormat": "{{pod}}"
+        }
+      ]
+    },
+    {
+      "title": "Network I/O (bytes/s)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "targets": [
+        {
+          "expr": "sum(rate(container_network_receive_bytes_total{namespace=\"compportiq\"}[5m])) by (pod)",
+          "legendFormat": "rx {{pod}}"
+        },
+        {
+          "expr": "sum(rate(container_network_transmit_bytes_total{namespace=\"compportiq\"}[5m])) by (pod)",
+          "legendFormat": "tx {{pod}}"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["compportiq"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "Asia/Kolkata",
+  "title": "CompportIQ Overview",
+  "uid": "compportiq-overview"
+}
