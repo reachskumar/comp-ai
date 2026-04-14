@@ -144,43 +144,28 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-8">
-      {/* Welcome hero */}
-      <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-indigo-500/10 via-violet-500/10 to-purple-500/5 dark:from-indigo-500/15 dark:via-violet-500/10 dark:to-purple-500/5 border border-primary/10 p-6 lg:p-8">
-        <div className="relative z-10">
-          <div className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary mb-3">
-            <Sparkles className="h-3 w-3" aria-hidden="true" />
-            AI-Powered Platform
-          </div>
-          <h1 className="text-2xl lg:text-3xl font-bold tracking-tight">
-            Welcome back, {firstName} 👋
-          </h1>
-          <p className="text-muted-foreground mt-1.5 max-w-lg text-base">
-            Your AI-powered compensation intelligence platform. Get started by importing data or
-            asking the AI Copilot a question.
-          </p>
-          <div className="mt-5 flex gap-3">
-            <Link href="/dashboard/ai-copilot">
-              <Button className="shadow-sm shadow-primary/20 hover:shadow-md hover:shadow-primary/30 transition-all">
-                <MessageSquareText className="mr-2 h-4 w-4" aria-hidden="true" />
-                Ask AI Copilot
-              </Button>
-            </Link>
-            <Link href="/dashboard/data-hygiene/import">
-              <Button variant="outline" className="bg-background/60 backdrop-blur-sm">
-                <Upload className="mr-2 h-4 w-4" aria-hidden="true" />
-                Import Data
-              </Button>
-            </Link>
-          </div>
+      {/* Welcome hero — clean, minimal */}
+      <div className="rounded-xl border border-border/60 bg-card p-6 lg:p-8">
+        <h1 className="text-2xl font-semibold tracking-tight">
+          Welcome back, {firstName}
+        </h1>
+        <p className="text-muted-foreground mt-1.5 max-w-lg">
+          Your compensation intelligence platform. Ask the AI Copilot a question or explore your data.
+        </p>
+        <div className="mt-5 flex gap-3">
+          <Link href="/dashboard/ai-copilot">
+            <Button size="sm">
+              <MessageSquareText className="mr-2 h-4 w-4" aria-hidden="true" />
+              Ask AI Copilot
+            </Button>
+          </Link>
+          <Link href="/dashboard/data-hygiene/import">
+            <Button variant="outline" size="sm">
+              <Upload className="mr-2 h-4 w-4" aria-hidden="true" />
+              Import Data
+            </Button>
+          </Link>
         </div>
-        <div
-          className="absolute right-0 top-0 h-full w-1/2 bg-gradient-to-l from-primary/5 to-transparent"
-          aria-hidden="true"
-        />
-        <div
-          className="absolute -right-8 -bottom-8 w-40 h-40 rounded-full bg-primary/5 blur-2xl"
-          aria-hidden="true"
-        />
       </div>
 
       {/* Summary stat cards */}
@@ -191,22 +176,18 @@ export default function DashboardPage() {
 
           return (
             <Link key={stat.key} href={stat.href}>
-              <Card className="transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 cursor-pointer group border-border/60 bg-card/80 backdrop-blur-sm">
+              <Card className="card-hover cursor-pointer border-border/60">
                 <CardContent className="p-4">
                   <div className="flex items-center justify-between">
                     <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
                       {stat.label}
                     </p>
-                    <div
-                      className={`flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br ${stat.bg} group-hover:scale-110 transition-transform duration-200`}
-                    >
-                      <stat.icon className={`h-4 w-4 ${stat.color}`} aria-hidden="true" />
-                    </div>
+                    <stat.icon className="h-4 w-4 text-muted-foreground/60" aria-hidden="true" />
                   </div>
                   {isLoading ? (
                     <Skeleton className="mt-2 h-8 w-16" />
                   ) : (
-                    <p className="mt-2 text-2xl font-bold tracking-tight">{display}</p>
+                    <p className="mt-2 text-2xl font-semibold tracking-tight">{display}</p>
                   )}
                   {stat.subtitle && (
                     <p className="mt-1 text-xs text-muted-foreground">{stat.subtitle}</p>
@@ -221,7 +202,7 @@ export default function DashboardPage() {
       {/* Recent Activity */}
       <div>
         <h2 className="text-lg font-semibold mb-4 tracking-tight">Recent Activity</h2>
-        <Card className="border-border/60 bg-card/80 backdrop-blur-sm">
+        <Card className="border-border/60">
           <CardContent className="p-0">
             {isLoading ? (
               <div className="divide-y">
