@@ -137,7 +137,7 @@ export function loadAIConfig(): AIConfig {
       );
     }
 
-    const model = process.env['ANTHROPIC_MODEL'] ?? 'claude-opus-4-20250514';
+    const model = process.env['ANTHROPIC_MODEL'] ?? 'claude-opus-4-6';
 
     return {
       provider: 'anthropic',
