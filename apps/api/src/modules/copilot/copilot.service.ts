@@ -617,7 +617,7 @@ export class CopilotService implements CopilotDbAdapter {
           try {
             const compportBands = await this.compportData.getPayRanges(tenantId, 200);
             if (compportBands.length > 0) {
-              bands = compportBands.map((row: Record<string, unknown>) => ({
+              bands = (compportBands as Record<string, unknown>[]).map((row) => ({
                 jobFamily: (row['job_family'] ?? row['function'] ?? row['grade'] ?? null) as
                   | string
                   | null,
