@@ -120,7 +120,7 @@ export default function AdminCustomerDetailPage() {
         primaryColor: (tenant.primaryColor as string) || '',
       });
     }
-  }, [tenant?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tenant?.id]); // eslint-disable-line
 
   if (isLoading)
     return (
