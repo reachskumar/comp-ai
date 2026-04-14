@@ -257,9 +257,11 @@ export async function createChatModel(
       model: modelConfig.model,
       temperature: modelConfig.temperature,
       maxTokens: modelConfig.maxTokens,
-      timeout,
       maxRetries,
       callbacks,
+      clientOptions: {
+        timeout: timeout,
+      },
     });
   }
 
