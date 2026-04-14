@@ -81,19 +81,15 @@ export class CopilotService implements CopilotDbAdapter {
               });
             }
           } catch (err) {
-            return [{
-              error: `Cannot connect to Compport Cloud SQL: ${(err as Error).message?.substring(0, 150)}`,
-            }];
+            return [
+              {
+                error: `Cannot connect to Compport Cloud SQL: ${(err as Error).message?.substring(0, 150)}`,
+              },
+            ];
           }
         }
 
-        return cache.queryTable(
-          tenantId,
-          tenant.compportSchema,
-          tableName,
-          cloudSql,
-          filters,
-        );
+        return cache.queryTable(tenantId, tenant.compportSchema, tableName, cloudSql, filters);
       },
     };
   }
@@ -610,32 +606,53 @@ export class CopilotService implements CopilotDbAdapter {
             return { avgCompaRatio: null, count: 0, byGroup: [] };
           }
 
-          // Fetch all relevant salary bands
-          const bands = await tx.salaryBand.findMany({
-            where: { tenantId },
-            select: {
-              jobFamily: true,
-              level: true,
-              location: true,
-              currency: true,
-              p50: true,
-            },
-          });
+          // Fetch pay ranges from Compport MySQL first, fall back to PG salary bands
+          let bands: Array<{
+            jobFamily: string | null;
+            level: string | null;
+            location: string | null;
+            currency: string;
+            p50: unknown;
+          }> = [];
+          try {
+            const compportBands = await this.compportData.getPayRanges(tenantId, 200);
+            if (compportBands.length > 0) {
+              bands = compportBands.map((row: Record<string, unknown>) => ({
+                jobFamily: (row['job_family'] ?? row['function'] ?? row['grade'] ?? null) as
+                  | string
+                  | null,
+                level: (row['level'] ?? row['band'] ?? row['grade_level'] ?? null) as string | null,
+                location: (row['location'] ?? row['city'] ?? null) as string | null,
+                currency: (row['currency'] ?? 'INR') as string,
+                p50: row['p50'] ?? row['median'] ?? row['midpoint'] ?? row['mid'] ?? 0,
+              }));
+            }
+          } catch {
+            // Compport unavailable — fall back to PG
+          }
+
+          if (bands.length === 0) {
+            bands = await tx.salaryBand.findMany({
+              where: { tenantId },
+              select: { jobFamily: true, level: true, location: true, currency: true, p50: true },
+            });
+          }
 
           // Calculate compa-ratio for each employee
           const employeesWithCompaRatio = employees
             .map((emp) => {
-              // Find matching salary band
+              // Find matching salary band — flexible matching
               const band = bands.find(
                 (b) =>
-                  (b.jobFamily === emp.jobFamily || !b.jobFamily) &&
+                  (b.jobFamily === emp.jobFamily ||
+                    b.jobFamily === emp.department ||
+                    !b.jobFamily) &&
                   (b.level === emp.level || !b.level) &&
-                  (b.location === emp.location || !b.location) &&
-                  b.currency === emp.currency,
+                  (b.location === emp.location || !b.location),
               );
 
               if (!band || !band.p50 || Number(band.p50) === 0) {
-                return null; // Skip employees without matching bands
+                return null;
               }
 
               const compaRatio = Number(emp.baseSalary) / Number(band.p50);
@@ -651,7 +668,8 @@ export class CopilotService implements CopilotDbAdapter {
             return {
               avgCompaRatio: null,
               count: 0,
-              message: 'No employees matched to salary bands',
+              message:
+                'No employees matched to salary bands. Pay range data may need different job family/level mapping.',
             };
           }
 
