@@ -606,61 +606,53 @@ export class CopilotService implements CopilotDbAdapter {
             return { avgCompaRatio: null, count: 0, byGroup: [] };
           }
 
-          // Fetch pay ranges from Compport MySQL first, fall back to PG salary bands
-          let bands: Array<{
-            jobFamily: string | null;
-            level: string | null;
-            location: string | null;
-            currency: string;
-            p50: unknown;
-          }> = [];
-          try {
-            const compportBands = await this.compportData.getPayRanges(tenantId, 200);
-            if (compportBands.length > 0) {
-              bands = (compportBands as Record<string, unknown>[]).map((row) => ({
-                jobFamily: (row['job_family'] ?? row['function'] ?? row['grade'] ?? null) as
-                  | string
-                  | null,
-                level: (row['level'] ?? row['band'] ?? row['grade_level'] ?? null) as string | null,
-                location: (row['location'] ?? row['city'] ?? null) as string | null,
-                currency: (row['currency'] ?? 'INR') as string,
-                p50: row['p50'] ?? row['median'] ?? row['midpoint'] ?? row['mid'] ?? 0,
-              }));
-            }
-          } catch {
-            // Compport unavailable — fall back to PG
+          // Compute P50 (median) from actual employee data per department+level.
+          // This is an internal benchmark — no external market data dependency.
+          const groupKey = (dept: string, level: string) => `${dept}||${level}`;
+          const groupSalaries = new Map<string, number[]>();
+          for (const emp of employees) {
+            const key = groupKey(emp.department, emp.level ?? 'ALL');
+            const arr = groupSalaries.get(key) ?? [];
+            arr.push(Number(emp.baseSalary));
+            groupSalaries.set(key, arr);
+          }
+          // Also compute department-level median as fallback
+          const deptSalaries = new Map<string, number[]>();
+          for (const emp of employees) {
+            const arr = deptSalaries.get(emp.department) ?? [];
+            arr.push(Number(emp.baseSalary));
+            deptSalaries.set(emp.department, arr);
           }
 
-          if (bands.length === 0) {
-            bands = await tx.salaryBand.findMany({
-              where: { tenantId },
-              select: { jobFamily: true, level: true, location: true, currency: true, p50: true },
-            });
+          const median = (arr: number[]) => {
+            const sorted = [...arr].sort((a, b) => a - b);
+            const mid = Math.floor(sorted.length / 2);
+            return sorted.length % 2 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+          };
+
+          const groupMedians = new Map<string, number>();
+          for (const [key, salaries] of groupSalaries) {
+            groupMedians.set(key, median(salaries));
+          }
+          const deptMedians = new Map<string, number>();
+          for (const [dept, salaries] of deptSalaries) {
+            deptMedians.set(dept, median(salaries));
           }
 
           // Calculate compa-ratio for each employee
           const employeesWithCompaRatio = employees
             .map((emp) => {
-              // Find matching salary band — flexible matching
-              const band = bands.find(
-                (b) =>
-                  (b.jobFamily === emp.jobFamily ||
-                    b.jobFamily === emp.department ||
-                    !b.jobFamily) &&
-                  (b.level === emp.level || !b.level) &&
-                  (b.location === emp.location || !b.location),
-              );
+              const salary = Number(emp.baseSalary);
+              if (!salary || salary === 0) return null;
 
-              if (!band || !band.p50 || Number(band.p50) === 0) {
-                return null;
-              }
+              // Try dept+level median first, then dept median
+              const key = groupKey(emp.department, emp.level ?? 'ALL');
+              const p50 = groupMedians.get(key) ?? deptMedians.get(emp.department);
 
-              const compaRatio = Number(emp.baseSalary) / Number(band.p50);
-              return {
-                ...emp,
-                compaRatio,
-                bandP50: Number(band.p50),
-              };
+              if (!p50 || p50 === 0) return null;
+
+              const compaRatio = salary / p50;
+              return { ...emp, compaRatio, benchmarkP50: p50 };
             })
             .filter((e) => e !== null);
 
@@ -668,8 +660,7 @@ export class CopilotService implements CopilotDbAdapter {
             return {
               avgCompaRatio: null,
               count: 0,
-              message:
-                'No employees matched to salary bands. Pay range data may need different job family/level mapping.',
+              message: 'Could not compute compa-ratio — no salary data found.',
             };
           }
 
