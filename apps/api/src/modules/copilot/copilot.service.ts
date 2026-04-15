@@ -532,28 +532,25 @@ export class CopilotService implements CopilotDbAdapter {
       department?: string;
     },
   ): Promise<unknown> {
+    // ALL salary-dependent metrics read from Compport MySQL directly.
+    // PG Employee has no salary data — it only has name/dept/level from login_user.
+    // Salary lives in employee_salary_details in Compport MySQL.
+    const salaryMetrics = ['avg_salary', 'total_comp', 'salary_range', 'comp_ratio'];
+    if (salaryMetrics.includes(filters.metric)) {
+      return this.compportData.getSalaryAnalytics(
+        tenantId,
+        filters.metric as 'avg_salary' | 'total_comp' | 'salary_range' | 'comp_ratio',
+        filters.groupBy,
+        filters.department,
+      );
+    }
+
+    // Headcount can still come from PG (123K employees synced)
     const baseWhere: Prisma.EmployeeWhereInput = { tenantId };
     if (filters.department) baseWhere.department = filters.department;
 
     return this.db.forTenant(tenantId, async (tx) => {
       switch (filters.metric) {
-        case 'avg_salary': {
-          const result = await tx.employee.aggregate({
-            where: baseWhere,
-            _avg: { baseSalary: true, totalComp: true },
-            _count: true,
-          });
-          if (filters.groupBy === 'department') {
-            const grouped = await tx.employee.groupBy({
-              by: ['department'],
-              where: { tenantId },
-              _avg: { baseSalary: true, totalComp: true },
-              _count: true,
-            });
-            return { overall: result, byGroup: grouped };
-          }
-          return result;
-        }
         case 'headcount': {
           if (filters.groupBy === 'department') {
             return tx.employee.groupBy({
@@ -570,141 +567,6 @@ export class CopilotService implements CopilotDbAdapter {
             });
           }
           return tx.employee.count({ where: baseWhere });
-        }
-        case 'total_comp': {
-          return tx.employee.aggregate({
-            where: baseWhere,
-            _sum: { baseSalary: true, totalComp: true },
-            _count: true,
-          });
-        }
-        case 'salary_range': {
-          return tx.employee.aggregate({
-            where: baseWhere,
-            _min: { baseSalary: true },
-            _max: { baseSalary: true },
-            _avg: { baseSalary: true },
-            _count: true,
-          });
-        }
-        case 'comp_ratio': {
-          // Fetch employees with salary data
-          const employees = await tx.employee.findMany({
-            where: baseWhere,
-            select: {
-              id: true,
-              baseSalary: true,
-              department: true,
-              level: true,
-              location: true,
-              jobFamily: true,
-              currency: true,
-            },
-          });
-
-          if (employees.length === 0) {
-            return { avgCompaRatio: null, count: 0, byGroup: [] };
-          }
-
-          // Compute P50 (median) from actual employee data per department+level.
-          // This is an internal benchmark — no external market data dependency.
-          const groupKey = (dept: string, level: string) => `${dept}||${level}`;
-          const groupSalaries = new Map<string, number[]>();
-          for (const emp of employees) {
-            const key = groupKey(emp.department, emp.level ?? 'ALL');
-            const arr = groupSalaries.get(key) ?? [];
-            arr.push(Number(emp.baseSalary));
-            groupSalaries.set(key, arr);
-          }
-          // Also compute department-level median as fallback
-          const deptSalaries = new Map<string, number[]>();
-          for (const emp of employees) {
-            const arr = deptSalaries.get(emp.department) ?? [];
-            arr.push(Number(emp.baseSalary));
-            deptSalaries.set(emp.department, arr);
-          }
-
-          const median = (arr: number[]) => {
-            const sorted = [...arr].sort((a, b) => a - b);
-            const mid = Math.floor(sorted.length / 2);
-            return sorted.length % 2 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
-          };
-
-          const groupMedians = new Map<string, number>();
-          for (const [key, salaries] of groupSalaries) {
-            groupMedians.set(key, median(salaries));
-          }
-          const deptMedians = new Map<string, number>();
-          for (const [dept, salaries] of deptSalaries) {
-            deptMedians.set(dept, median(salaries));
-          }
-
-          // Calculate compa-ratio for each employee
-          const employeesWithCompaRatio = employees
-            .map((emp) => {
-              const salary = Number(emp.baseSalary);
-              if (!salary || salary === 0) return null;
-
-              // Try dept+level median first, then dept median
-              const key = groupKey(emp.department, emp.level ?? 'ALL');
-              const p50 = groupMedians.get(key) ?? deptMedians.get(emp.department);
-
-              if (!p50 || p50 === 0) return null;
-
-              const compaRatio = salary / p50;
-              return { ...emp, compaRatio, benchmarkP50: p50 };
-            })
-            .filter((e) => e !== null);
-
-          if (employeesWithCompaRatio.length === 0) {
-            return {
-              avgCompaRatio: null,
-              count: 0,
-              message: 'Could not compute compa-ratio — no salary data found.',
-            };
-          }
-
-          // Calculate overall average
-          const totalCompaRatio = employeesWithCompaRatio.reduce((sum, e) => sum + e.compaRatio, 0);
-          const avgCompaRatio = totalCompaRatio / employeesWithCompaRatio.length;
-
-          // Group by if requested
-          if (filters.groupBy) {
-            const groupField = filters.groupBy as 'department' | 'level' | 'location';
-            if (['department', 'level', 'location'].includes(groupField)) {
-              const grouped = new Map<string, { sum: number; count: number }>();
-
-              for (const emp of employeesWithCompaRatio) {
-                const key = emp[groupField] || 'Unknown';
-                const existing = grouped.get(key) || { sum: 0, count: 0 };
-                grouped.set(key, {
-                  sum: existing.sum + emp.compaRatio,
-                  count: existing.count + 1,
-                });
-              }
-
-              const byGroup = Array.from(grouped.entries()).map(([key, value]) => ({
-                [groupField]: key,
-                avgCompaRatio: Math.round((value.sum / value.count) * 10000) / 10000,
-                count: value.count,
-              }));
-
-              return {
-                overall: {
-                  avgCompaRatio: Math.round(avgCompaRatio * 10000) / 10000,
-                  count: employeesWithCompaRatio.length,
-                },
-                byGroup,
-              };
-            }
-          }
-
-          return {
-            avgCompaRatio: Math.round(avgCompaRatio * 10000) / 10000,
-            count: employeesWithCompaRatio.length,
-            totalEmployees: employees.length,
-            matchedToBands: employeesWithCompaRatio.length,
-          };
         }
         default:
           return { error: `Unknown metric: ${filters.metric}` };

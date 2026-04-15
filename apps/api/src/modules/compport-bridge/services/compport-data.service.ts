@@ -294,4 +294,215 @@ export class CompportDataService {
     if (!/^[a-zA-Z0-9_]+$/.test(tableName)) return 0;
     return this.directCount(tenantId, tableName);
   }
+
+  // ─── Raw SQL query (for analytics aggregations) ───────────
+
+  async rawQuery(
+    tenantId: string,
+    sql: string,
+    params?: unknown[],
+  ): Promise<Record<string, unknown>[]> {
+    const schema = await this.getSchema(tenantId);
+    if (!schema) return [];
+    await this.ensureConnected(tenantId);
+    try {
+      return await this.cloudSql.executeQuery<Record<string, unknown>>(schema, sql, params);
+    } catch (err) {
+      this.logger.error(`rawQuery failed: ${(err as Error).message?.substring(0, 200)}`);
+      return [];
+    }
+  }
+
+  // ─── Discover columns of a table ──────────────────────────
+
+  async discoverColumns(tenantId: string, tableName: string): Promise<string[]> {
+    const schema = await this.getSchema(tenantId);
+    if (!schema) return [];
+    await this.ensureConnected(tenantId);
+    try {
+      const rows = await this.cloudSql.executeQuery<{ COLUMN_NAME: string }>(
+        'INFORMATION_SCHEMA',
+        `SELECT COLUMN_NAME FROM COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION`,
+        [schema, tableName],
+      );
+      return rows.map((r) => r.COLUMN_NAME);
+    } catch {
+      return [];
+    }
+  }
+
+  // ─── Salary Analytics (direct MySQL aggregation) ──────────
+
+  /**
+   * Salary analytics computed directly in MySQL from employee_salary_details.
+   * Auto-discovers the salary column name on first call.
+   */
+  async getSalaryAnalytics(
+    tenantId: string,
+    metric: 'avg_salary' | 'salary_range' | 'total_comp' | 'comp_ratio' | 'headcount',
+    groupBy?: string,
+    department?: string,
+  ): Promise<unknown> {
+    const schema = await this.getSchema(tenantId);
+    if (!schema) return { error: 'No schema configured' };
+    await this.ensureConnected(tenantId);
+
+    // Discover actual column names in employee_salary_details
+    const columns = await this.discoverColumns(tenantId, 'employee_salary_details');
+    if (columns.length === 0) {
+      return { error: 'employee_salary_details table not found' };
+    }
+
+    // Find salary column — try common names
+    const salaryCol =
+      columns.find((c) =>
+        [
+          'current_ctc',
+          'ctc',
+          'annual_ctc',
+          'base_salary',
+          'salary',
+          'gross_salary',
+          'annual_salary',
+          'total_ctc',
+          'fixed_pay',
+          'basic_salary',
+        ].includes(c.toLowerCase()),
+      ) ??
+      columns.find((c) => c.toLowerCase().includes('ctc') || c.toLowerCase().includes('salary'));
+
+    // Find department column
+    const deptCol =
+      columns.find((c) =>
+        ['department', 'dept', 'department_name', 'dept_name'].includes(c.toLowerCase()),
+      ) ??
+      columns.find(
+        (c) => c.toLowerCase().includes('department') || c.toLowerCase().includes('dept'),
+      );
+
+    // Find level/grade column
+    const levelCol =
+      columns.find((c) =>
+        ['level', 'grade', 'band', 'designation', 'job_level', 'grade_name'].includes(
+          c.toLowerCase(),
+        ),
+      ) ??
+      columns.find((c) => c.toLowerCase().includes('level') || c.toLowerCase().includes('grade'));
+
+    if (!salaryCol) {
+      return { error: 'No salary column found', availableColumns: columns };
+    }
+
+    const groupCol = groupBy === 'level' ? levelCol : deptCol;
+    let whereClause = `WHERE \`${salaryCol}\` > 0`;
+    const params: unknown[] = [];
+    if (department && deptCol) {
+      whereClause += ` AND \`${deptCol}\` = ?`;
+      params.push(department);
+    }
+
+    try {
+      switch (metric) {
+        case 'avg_salary': {
+          if (groupCol) {
+            const rows = await this.cloudSql.executeQuery(
+              schema,
+              `SELECT \`${groupCol}\` AS groupName, AVG(\`${salaryCol}\`) AS avgSalary, COUNT(*) AS count FROM employee_salary_details ${whereClause} GROUP BY \`${groupCol}\` ORDER BY avgSalary DESC`,
+              params,
+            );
+            return { metric, salaryColumn: salaryCol, groupBy: groupCol, data: rows };
+          }
+          const rows = await this.cloudSql.executeQuery(
+            schema,
+            `SELECT AVG(\`${salaryCol}\`) AS avgSalary, COUNT(*) AS count FROM employee_salary_details ${whereClause}`,
+            params,
+          );
+          return { metric, salaryColumn: salaryCol, ...rows[0] };
+        }
+
+        case 'salary_range': {
+          const rows = await this.cloudSql.executeQuery(
+            schema,
+            `SELECT MIN(\`${salaryCol}\`) AS minSalary, MAX(\`${salaryCol}\`) AS maxSalary, AVG(\`${salaryCol}\`) AS avgSalary, COUNT(*) AS count FROM employee_salary_details ${whereClause}`,
+            params,
+          );
+          return { metric, salaryColumn: salaryCol, ...rows[0] };
+        }
+
+        case 'total_comp': {
+          const rows = await this.cloudSql.executeQuery(
+            schema,
+            `SELECT SUM(\`${salaryCol}\`) AS totalComp, COUNT(*) AS count FROM employee_salary_details ${whereClause}`,
+            params,
+          );
+          return { metric, salaryColumn: salaryCol, ...rows[0] };
+        }
+
+        case 'headcount': {
+          if (groupCol) {
+            const rows = await this.cloudSql.executeQuery(
+              schema,
+              `SELECT \`${groupCol}\` AS groupName, COUNT(*) AS count FROM employee_salary_details ${whereClause} GROUP BY \`${groupCol}\` ORDER BY count DESC`,
+              params,
+            );
+            return { metric, groupBy: groupCol, data: rows };
+          }
+          const rows = await this.cloudSql.executeQuery(
+            schema,
+            `SELECT COUNT(*) AS count FROM employee_salary_details ${whereClause}`,
+            params,
+          );
+          return { metric, ...rows[0] };
+        }
+
+        case 'comp_ratio': {
+          // Compute median per group, then compa-ratio per employee
+          const gCol = groupCol ?? deptCol;
+          if (!gCol) {
+            return { error: 'No department/level column found for grouping' };
+          }
+          // Get group medians using percentile approximation
+          const groupData = await this.cloudSql.executeQuery<Record<string, unknown>>(
+            schema,
+            `SELECT \`${gCol}\` AS groupName, AVG(\`${salaryCol}\`) AS avgSalary, COUNT(*) AS count FROM employee_salary_details ${whereClause} GROUP BY \`${gCol}\` HAVING count > 0 ORDER BY avgSalary DESC`,
+            params,
+          );
+
+          // Overall stats
+          const overall = await this.cloudSql.executeQuery(
+            schema,
+            `SELECT AVG(\`${salaryCol}\`) AS overallAvg, COUNT(*) AS totalCount FROM employee_salary_details ${whereClause}`,
+            params,
+          );
+
+          const overallAvg = Number((overall[0] as Record<string, unknown>)?.['overallAvg'] ?? 0);
+
+          // Compute compa-ratio per group: group avg / overall avg
+          const withCompaRatio = groupData.map((row) => ({
+            group: row['groupName'],
+            avgSalary: Number(row['avgSalary']),
+            count: Number(row['count']),
+            compaRatio:
+              overallAvg > 0
+                ? Math.round((Number(row['avgSalary']) / overallAvg) * 100) / 100
+                : null,
+          }));
+
+          return {
+            metric: 'comp_ratio',
+            salaryColumn: salaryCol,
+            groupBy: gCol,
+            overallAvgSalary: overallAvg,
+            totalEmployees: Number((overall[0] as Record<string, unknown>)?.['totalCount'] ?? 0),
+            data: withCompaRatio,
+          };
+        }
+
+        default:
+          return { error: `Unknown metric: ${metric}` };
+      }
+    } catch (err) {
+      return { error: `Query failed: ${(err as Error).message?.substring(0, 200)}` };
+    }
+  }
 }
