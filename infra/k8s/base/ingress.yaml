@@ -6,7 +6,9 @@ metadata:
   annotations:
     kubernetes.io/ingress.class: "gce"
     kubernetes.io/ingress.global-static-ip-name: "compportiq-gke-ip"
-    networking.gke.io/managed-certificates: "compportiq-cert"
+    # Wildcard SSL is handled by Certificate Manager cert map
+    # attached to the HTTPS proxy (compportiq-prod-cert-map).
+    # No ManagedCertificate needed — any *.compportiq.ai works automatically.
 spec:
   defaultBackend:
     service:
@@ -38,13 +40,27 @@ spec:
                 name: web
                 port:
                   number: 80
----
-apiVersion: networking.gke.io/v1
-kind: ManagedCertificate
-metadata:
-  name: compportiq-cert
-  namespace: compportiq
-spec:
-  domains:
-    - "compportiq.ai"
-    - "bfl.compportiq.ai"
+    - host: "*.compportiq.ai"
+      http:
+        paths:
+          - path: /api/*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: api
+                port:
+                  number: 80
+          - path: /health
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: api
+                port:
+                  number: 80
+          - path: /*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: web
+                port:
+                  number: 80
