@@ -21,7 +21,38 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { useCopilot, type ChatMessage, type ToolCallInfo } from '@/hooks/use-copilot';
-import { CopilotChart, parseChartBlock, extractText } from '@/components/copilot-chart';
+import {
+  CopilotChart,
+  parseChartBlock,
+  extractText,
+  type ChartConfig,
+} from '@/components/copilot-chart';
+
+/**
+ * Detect raw chart JSON in message content and wrap in ```chart fences.
+ * Handles cases where the LLM outputs chart JSON without proper fencing.
+ */
+function ensureChartFences(content: string): string {
+  // Already has ```chart fences — leave it alone
+  if (content.includes('```chart')) return content;
+
+  // Look for JSON objects that look like chart configs: {"type":"bar",...,"data":[...]}
+  return content.replace(
+    /(\{["\s]*"type"\s*:\s*"(?:bar|line|pie|scatter|area|radar)"[^{}]*"data"\s*:\s*\[[\s\S]*?\]\s*\})/g,
+    (match) => {
+      // Verify it's valid chart JSON
+      try {
+        const parsed = JSON.parse(match);
+        if (parsed.type && parsed.data && Array.isArray(parsed.data)) {
+          return '\n```chart\n' + JSON.stringify(parsed) + '\n```\n';
+        }
+      } catch {
+        // Not valid JSON — leave as-is
+      }
+      return match;
+    },
+  );
+}
 
 const STORAGE_KEY_PANEL_WIDTH = 'copilot:panelWidth';
 
@@ -346,7 +377,7 @@ function PanelMessage({ message }: { message: ChatMessage }) {
                     },
                   }}
                 >
-                  {message.content}
+                  {ensureChartFences(message.content)}
                 </ReactMarkdown>
               </div>
             )
