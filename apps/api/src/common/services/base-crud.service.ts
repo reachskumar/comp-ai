@@ -38,15 +38,19 @@ export abstract class BaseCrudService<T = unknown> {
     const limit = pagination.limit ?? 20;
     const skip = (page - 1) * limit;
 
-    const [data, total] = await Promise.all([
-      this.model.findMany({
-        where: { ...where, tenantId },
-        skip,
-        take: limit,
-        orderBy: { createdAt: 'desc' },
-      }),
-      this.model.count({ where: { ...where, tenantId } }),
-    ]);
+    const [data, total] = await this.db.forTenant(tenantId, (tx) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const model = (tx as any)[this.modelName];
+      return Promise.all([
+        model.findMany({
+          where: { ...where, tenantId },
+          skip,
+          take: limit,
+          orderBy: { createdAt: 'desc' },
+        }),
+        model.count({ where: { ...where, tenantId } }),
+      ]);
+    });
 
     return {
       data,
@@ -92,4 +96,3 @@ export abstract class BaseCrudService<T = unknown> {
     });
   }
 }
-
