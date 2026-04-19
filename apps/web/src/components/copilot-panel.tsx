@@ -76,7 +76,10 @@ function ensureChartFences(content: string): string {
       try {
         const fixed = candidate
           .replace(/"type(bar|line|pie|scatter|area|radar)"/g, '"type":"$1"')
+          .replace(/"(bar|line|pie|scatter|area|radar)title"/g, '"type":"$1","title"')
           .replace(/"(avgCompa)"/g, '"avgCompaRatio"')
+          .replace(/"Salary"/g, '"avgSalary"')
+          .replace(/\{"":"([^"]+)"/g, '{"level":"$1"')
           .replace(/,\s*}/g, '}')
           .replace(/,\s*]/g, ']');
         parsed = JSON.parse(fixed);
@@ -86,11 +89,20 @@ function ensureChartFences(content: string): string {
     }
 
     if (parsed && parsed['data'] && Array.isArray(parsed['data'])) {
-      // Ensure type field exists
-      if (!parsed['type']) {
-        const typeMatch = candidate.match(/type['":\s]*(bar|line|pie|scatter|area|radar)/i);
-        if (typeMatch) parsed['type'] = typeMatch[1];
-        else parsed['type'] = 'bar';
+      // Fix type field — handle "bartitle", "typebar", missing, etc.
+      const validTypes = ['bar', 'line', 'pie', 'scatter', 'area', 'radar'];
+      const rawType = String(parsed['type'] ?? '');
+      if (!validTypes.includes(rawType)) {
+        // Extract valid type from malformed value like "bartitle" or "linechart"
+        const found = validTypes.find((t) => rawType.toLowerCase().includes(t));
+        if (found) {
+          // If type was "bartitle:Average Salary", extract the title too
+          const titlePart = rawType.replace(new RegExp(found, 'i'), '').replace(/^[^a-zA-Z]*/, '');
+          parsed['type'] = found;
+          if (titlePart && !parsed['title']) parsed['title'] = titlePart;
+        } else {
+          parsed['type'] = 'bar';
+        }
       }
       parts.push('\n```chart\n' + JSON.stringify(parsed) + '\n```\n');
     } else {
