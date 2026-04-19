@@ -252,18 +252,30 @@ export async function createChatModel(
 
   if (aiConfig.provider === 'anthropic') {
     const { ChatAnthropic } = await import('@langchain/anthropic');
-    return new ChatAnthropic({
+    const { ChatAnthropic: CA } = await import('@langchain/anthropic');
+    const client = new CA({
       anthropicApiKey: aiConfig.apiKey,
       model: modelConfig.model,
       temperature: modelConfig.temperature,
       maxTokens: modelConfig.maxTokens,
-      topP: 1,
       maxRetries,
       callbacks,
       clientOptions: {
         timeout: timeout,
       },
     });
+    // LangChain defaults topP to -1 which Anthropic rejects.
+    // And if topP is set alongside temperature, Anthropic also rejects.
+    // Force topP to -1 (LangChain's "unset" sentinel) and patch invocationParams
+    // to strip it before sending.
+    (client as unknown as Record<string, unknown>)['topP'] = -1;
+    const origParams = client.invocationParams.bind(client);
+    client.invocationParams = function (options?: Record<string, unknown>) {
+      const params = origParams(options);
+      delete (params as Record<string, unknown>)['top_p'];
+      return params;
+    };
+    return client;
   }
 
   if (aiConfig.provider === 'azure' && aiConfig.azure) {
