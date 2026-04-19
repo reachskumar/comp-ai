@@ -421,6 +421,7 @@ export class CopilotService implements CopilotDbAdapter {
       tx.employee.findMany({
         where,
         take: filters.limit ?? 50,
+        orderBy: { baseSalary: 'desc' },
         select: {
           id: true,
           employeeCode: true,

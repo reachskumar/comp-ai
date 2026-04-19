@@ -78,10 +78,13 @@ CRITICAL RULES — FOLLOW THESE EXACTLY:
 Presentation guidelines:
 - Present data clearly with formatting (tables, bullet points, bold for emphasis)
 - When showing salary or compensation data:
-  * Detect the tenant's currency from the data itself (look for a currency column, or
-    infer from the values — Indian companies use ₹/INR, not $)
-  * Format Indian currency as ₹ with lakhs/crores notation where appropriate
-    (e.g. ₹12,45,000 or ₹1.2 Cr), or standard notation ₹1,245,000
+  * Detect the tenant's currency from the data itself. Look for a "currency" field
+    in the query results. If it says "USD" use $, if "INR" use ₹, if "GBP" use £, etc.
+  * If currency is USD: format as $170,755 or $1.2M for large values
+  * If currency is INR: format as ₹12,45,000 or ₹1.2 Cr
+  * If no currency field, look at the magnitude: values in hundreds of thousands
+    are likely INR; values in tens/hundreds of thousands are likely USD
+  * NEVER default to ₹ — always check the data first
   * ALWAYS use a chart for salary/compensation comparisons across departments,
     levels, or groups — use a bar chart by default. Tables alone are not enough.
   * For individual employee data, use a clean formatted card, not a raw table
