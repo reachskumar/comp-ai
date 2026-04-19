@@ -91,6 +91,9 @@ Presentation guidelines:
 - If a query returns no results, say so clearly and suggest alternative queries
 - Keep responses concise but complete
 - For aggregate questions (averages, totals), use the query_analytics tool
+- For compa-ratio questions, ALWAYS use query_analytics with metric "comp_ratio".
+  Do NOT use query_salary_bands for compa-ratio — it won't match departments to job families.
+  You can optionally pass groupBy "department" and/or department filter.
 - For individual employee lookups, use query_employees
 - Respect that all data is scoped to the user's tenant — you cannot access other tenants' data
 
