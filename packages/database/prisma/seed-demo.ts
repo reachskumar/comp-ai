@@ -240,7 +240,7 @@ async function main() {
   // ═══ 2. ADMIN USER ═══════════════════════════════════════
   console.log('2/12 Creating admin user...');
   await prisma.user.upsert({
-    where: { email_tenantId: { email: 'admin@demo.compportiq.ai', tenantId: T } },
+    where: { tenantId_email: { email: 'admin@demo.compportiq.ai', tenantId: T } },
     update: {},
     create: {
       tenantId: T,
