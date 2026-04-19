@@ -30,28 +30,77 @@ import {
 
 /**
  * Detect raw chart JSON in message content and wrap in ```chart fences.
- * Handles cases where the LLM outputs chart JSON without proper fencing.
+ * Handles any case where the LLM outputs chart JSON without proper fencing,
+ * including malformed keys like "typebar" instead of "type":"bar".
  */
 function ensureChartFences(content: string): string {
-  // Already has ```chart fences — leave it alone
   if (content.includes('```chart')) return content;
 
-  // Look for JSON objects that look like chart configs: {"type":"bar",...,"data":[...]}
-  return content.replace(
-    /(\{["\s]*"type"\s*:\s*"(?:bar|line|pie|scatter|area|radar)"[^{}]*"data"\s*:\s*\[[\s\S]*?\]\s*\})/g,
-    (match) => {
-      // Verify it's valid chart JSON
-      try {
-        const parsed = JSON.parse(match);
-        if (parsed.type && parsed.data && Array.isArray(parsed.data)) {
-          return '\n```chart\n' + JSON.stringify(parsed) + '\n```\n';
+  // Find anything that looks like a JSON object with chart-like data
+  const parts: string[] = [];
+  let remaining = content;
+
+  while (remaining.length > 0) {
+    // Find the start of a potential JSON object containing chart data
+    const jsonStart = remaining.search(/\{"[^"]*type[^"]*".*?"data"\s*:/);
+    if (jsonStart === -1) {
+      parts.push(remaining);
+      break;
+    }
+
+    // Add text before the JSON
+    if (jsonStart > 0) parts.push(remaining.slice(0, jsonStart));
+
+    // Extract the JSON by finding matching braces
+    let depth = 0;
+    let jsonEnd = jsonStart;
+    for (let i = jsonStart; i < remaining.length; i++) {
+      if (remaining[i] === '{') depth++;
+      else if (remaining[i] === '}') {
+        depth--;
+        if (depth === 0) {
+          jsonEnd = i + 1;
+          break;
         }
-      } catch {
-        // Not valid JSON — leave as-is
       }
-      return match;
-    },
-  );
+    }
+
+    const candidate = remaining.slice(jsonStart, jsonEnd);
+
+    // Try to parse — fix common LLM JSON issues first
+    let parsed: Record<string, unknown> | null = null;
+    try {
+      parsed = JSON.parse(candidate);
+    } catch {
+      // Try fixing common issues: "typebar" -> "type":"bar", missing colons
+      try {
+        const fixed = candidate
+          .replace(/"type(bar|line|pie|scatter|area|radar)"/g, '"type":"$1"')
+          .replace(/"(avgCompa)"/g, '"avgCompaRatio"')
+          .replace(/,\s*}/g, '}')
+          .replace(/,\s*]/g, ']');
+        parsed = JSON.parse(fixed);
+      } catch {
+        /* give up */
+      }
+    }
+
+    if (parsed && parsed['data'] && Array.isArray(parsed['data'])) {
+      // Ensure type field exists
+      if (!parsed['type']) {
+        const typeMatch = candidate.match(/type['":\s]*(bar|line|pie|scatter|area|radar)/i);
+        if (typeMatch) parsed['type'] = typeMatch[1];
+        else parsed['type'] = 'bar';
+      }
+      parts.push('\n```chart\n' + JSON.stringify(parsed) + '\n```\n');
+    } else {
+      parts.push(candidate);
+    }
+
+    remaining = remaining.slice(jsonEnd);
+  }
+
+  return parts.join('');
 }
 
 const STORAGE_KEY_PANEL_WIDTH = 'copilot:panelWidth';
