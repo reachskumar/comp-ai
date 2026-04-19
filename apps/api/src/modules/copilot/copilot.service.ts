@@ -532,11 +532,20 @@ export class CopilotService implements CopilotDbAdapter {
       department?: string;
     },
   ): Promise<unknown> {
-    // ALL salary-dependent metrics read from Compport MySQL directly.
-    // PG Employee has no salary data — it only has name/dept/level from login_user.
-    // Salary lives in employee_salary_details in Compport MySQL.
+    const baseWhere: Prisma.EmployeeWhereInput = { tenantId };
+    if (filters.department) baseWhere.department = filters.department;
+
+    // Check if PG has salary data. If yes, use PG. If not, try Compport MySQL.
     const salaryMetrics = ['avg_salary', 'total_comp', 'salary_range', 'comp_ratio'];
     if (salaryMetrics.includes(filters.metric)) {
+      const pgCheck = await this.db.forTenant(tenantId, (tx) =>
+        tx.employee.aggregate({ where: { tenantId, baseSalary: { gt: 0 } }, _count: true }),
+      );
+      if (pgCheck._count > 0) {
+        // PG has salary data — use it (Demo Corp, seeded tenants)
+        return this.pgSalaryAnalytics(tenantId, filters, baseWhere);
+      }
+      // No PG salary data — try Compport MySQL (BFL, Compport-linked tenants)
       return this.compportData.getSalaryAnalytics(
         tenantId,
         filters.metric as 'avg_salary' | 'total_comp' | 'salary_range' | 'comp_ratio',
@@ -544,10 +553,6 @@ export class CopilotService implements CopilotDbAdapter {
         filters.department,
       );
     }
-
-    // Headcount can still come from PG (123K employees synced)
-    const baseWhere: Prisma.EmployeeWhereInput = { tenantId };
-    if (filters.department) baseWhere.department = filters.department;
 
     return this.db.forTenant(tenantId, async (tx) => {
       switch (filters.metric) {
@@ -1052,6 +1057,112 @@ export class CopilotService implements CopilotDbAdapter {
   }
 
   // ─── Data Scope Adapter ─────────────────────────────────
+
+  /** PG-based salary analytics — used when Employee.baseSalary is populated */
+  private async pgSalaryAnalytics(
+    tenantId: string,
+    filters: { metric: string; groupBy?: string; department?: string },
+    baseWhere: Prisma.EmployeeWhereInput,
+  ): Promise<unknown> {
+    return this.db.forTenant(tenantId, async (tx) => {
+      switch (filters.metric) {
+        case 'avg_salary': {
+          const result = await tx.employee.aggregate({
+            where: baseWhere,
+            _avg: { baseSalary: true, totalComp: true },
+            _count: true,
+          });
+          if (filters.groupBy === 'department') {
+            const grouped = await tx.employee.groupBy({
+              by: ['department'],
+              where: { tenantId },
+              _avg: { baseSalary: true, totalComp: true },
+              _count: true,
+            });
+            return { overall: result, byGroup: grouped };
+          }
+          if (filters.groupBy === 'level') {
+            const grouped = await tx.employee.groupBy({
+              by: ['level'],
+              where: { tenantId },
+              _avg: { baseSalary: true, totalComp: true },
+              _count: true,
+            });
+            return { overall: result, byGroup: grouped };
+          }
+          return result;
+        }
+        case 'total_comp': {
+          return tx.employee.aggregate({
+            where: baseWhere,
+            _sum: { baseSalary: true, totalComp: true },
+            _count: true,
+          });
+        }
+        case 'salary_range': {
+          return tx.employee.aggregate({
+            where: baseWhere,
+            _min: { baseSalary: true },
+            _max: { baseSalary: true },
+            _avg: { baseSalary: true },
+            _count: true,
+          });
+        }
+        case 'comp_ratio': {
+          const employees = await tx.employee.findMany({
+            where: baseWhere,
+            select: { baseSalary: true, department: true, level: true },
+          });
+          if (employees.length === 0) return { avgCompaRatio: null, count: 0 };
+          // Compute median per department
+          const deptSalaries = new Map<string, number[]>();
+          for (const e of employees) {
+            const arr = deptSalaries.get(e.department) ?? [];
+            arr.push(Number(e.baseSalary));
+            deptSalaries.set(e.department, arr);
+          }
+          const median = (arr: number[]) => {
+            const s = [...arr].sort((a, b) => a - b);
+            const m = Math.floor(s.length / 2);
+            return s.length % 2 ? s[m]! : (s[m - 1]! + s[m]!) / 2;
+          };
+          const deptMedians = new Map<string, number>();
+          for (const [d, s] of deptSalaries) deptMedians.set(d, median(s));
+
+          const withCR = employees
+            .filter((e) => Number(e.baseSalary) > 0)
+            .map((e) => {
+              const p50 = deptMedians.get(e.department) ?? 0;
+              return {
+                department: e.department,
+                compaRatio: p50 > 0 ? Number(e.baseSalary) / p50 : null,
+              };
+            })
+            .filter((e) => e.compaRatio !== null);
+
+          const avg = withCR.reduce((s, e) => s + e.compaRatio!, 0) / withCR.length;
+          if (filters.groupBy === 'department') {
+            const grouped = new Map<string, { sum: number; count: number }>();
+            for (const e of withCR) {
+              const g = grouped.get(e.department) ?? { sum: 0, count: 0 };
+              grouped.set(e.department, { sum: g.sum + e.compaRatio!, count: g.count + 1 });
+            }
+            return {
+              overall: { avgCompaRatio: Math.round(avg * 10000) / 10000, count: withCR.length },
+              byGroup: Array.from(grouped.entries()).map(([d, v]) => ({
+                department: d,
+                avgCompaRatio: Math.round((v.sum / v.count) * 10000) / 10000,
+                count: v.count,
+              })),
+            };
+          }
+          return { avgCompaRatio: Math.round(avg * 10000) / 10000, count: withCR.length };
+        }
+        default:
+          return { error: `Unknown metric: ${filters.metric}` };
+      }
+    });
+  }
 
   /**
    * Build a scoped CopilotDbAdapter that wraps `this` but applies
