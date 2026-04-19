@@ -247,7 +247,13 @@ export class CopilotService implements CopilotDbAdapter {
 
     // ── Step 3: Resolve data scope & build graph with scoped adapter ──
     const scope = await this.dataScopeService.resolveScope(tenantId, userId, role);
-    const scopedDb = this.buildScopedAdapter(scope);
+    // Only include mirror tools if tenant has a Compport schema
+    const tenant = await this.db.client.tenant.findUnique({
+      where: { id: tenantId },
+      select: { compportSchema: true },
+    });
+    const hasCompport = !!tenant?.compportSchema;
+    const scopedDb = this.buildScopedAdapter(scope, hasCompport);
     const { graph } = await buildCopilotGraph(scopedDb, tenantId, userContext, { userId });
 
     const threadId = dbConvId; // Use DB conversation ID as LangGraph thread_id
@@ -464,17 +470,26 @@ export class CopilotService implements CopilotDbAdapter {
       limit?: number;
     },
   ): Promise<unknown[]> {
-    // Read directly from Compport MySQL — salary + bonus details
+    // PG first — CompRecommendation
+    const pgRecs = await this.db.forTenant(tenantId, (tx) =>
+      tx.compRecommendation.findMany({
+        where: { cycle: { tenantId } },
+        take: filters.limit ?? 50,
+        include: {
+          employee: { select: { firstName: true, lastName: true, department: true } },
+          cycle: { select: { name: true, status: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+    );
+    if (pgRecs.length > 0) return pgRecs;
+    // Compport MySQL fallback
     const limit = filters.limit ?? 50;
     const component = filters.component?.toLowerCase();
-
-    if (component === 'bonus') {
+    if (component === 'bonus')
       return this.compportData.getEmployeeBonusDetails(tenantId, undefined, limit);
-    }
-    if (component === 'lti') {
+    if (component === 'lti')
       return this.compportData.getEmployeeLtiDetails(tenantId, undefined, limit);
-    }
-    // Default: salary details
     return this.compportData.getEmployeeSalaryDetails(tenantId, undefined, limit);
   }
 
@@ -487,18 +502,21 @@ export class CopilotService implements CopilotDbAdapter {
       limit?: number;
     },
   ): Promise<unknown[]> {
-    // Read directly from Compport MySQL — hr_parameter + hr_parameter_bonus
-    const limit = filters.limit ?? 50;
+    // PG first
+    const pgRules = await this.db.forTenant(tenantId, (tx) =>
+      tx.ruleSet.findMany({
+        where: { tenantId },
+        take: filters.limit ?? 20,
+        include: { rules: { take: 10 } },
+        orderBy: { updatedAt: 'desc' },
+      }),
+    );
+    if (pgRules.length > 0) return pgRules;
+    // Compport MySQL fallback
     const ruleType = filters.ruleType?.toLowerCase();
-
-    if (ruleType === 'bonus') {
-      return this.compportData.getBonusRules(tenantId, limit);
-    }
-    if (ruleType === 'lti') {
-      return this.compportData.getLtiRules(tenantId, limit);
-    }
-    // Default: salary rules (hr_parameter)
-    return this.compportData.getSalaryRules(tenantId, limit);
+    if (ruleType === 'bonus') return this.compportData.getBonusRules(tenantId, filters.limit ?? 50);
+    if (ruleType === 'lti') return this.compportData.getLtiRules(tenantId, filters.limit ?? 50);
+    return this.compportData.getSalaryRules(tenantId, filters.limit ?? 50);
   }
 
   async queryCycles(
@@ -509,7 +527,16 @@ export class CopilotService implements CopilotDbAdapter {
       limit?: number;
     },
   ): Promise<unknown[]> {
-    // Read directly from Compport MySQL — performance_cycle table
+    // PG first
+    const pgCycles = await this.db.forTenant(tenantId, (tx) =>
+      tx.compCycle.findMany({
+        where: { tenantId },
+        take: filters.limit ?? 10,
+        include: { budgets: true },
+        orderBy: { createdAt: 'desc' },
+      }),
+    );
+    if (pgCycles.length > 0) return pgCycles;
     return this.compportData.getCompCycles(tenantId, filters.limit ?? 20);
   }
 
@@ -521,7 +548,19 @@ export class CopilotService implements CopilotDbAdapter {
       limit?: number;
     },
   ): Promise<unknown[]> {
-    // Read directly from Compport MySQL — employee_salary_details
+    // PG first
+    const where: Prisma.PayrollRunWhereInput = { tenantId };
+    if (filters.status) where.status = filters.status as Prisma.EnumPayrollStatusFilter;
+    if (filters.period) where.period = filters.period;
+    const pgRuns = await this.db.forTenant(tenantId, (tx) =>
+      tx.payrollRun.findMany({
+        where,
+        take: filters.limit ?? 10,
+        include: { _count: { select: { lineItems: true, anomalies: true } } },
+        orderBy: { createdAt: 'desc' },
+      }),
+    );
+    if (pgRuns.length > 0) return pgRuns;
     return this.compportData.getEmployeeSalaryDetails(tenantId, undefined, filters.limit ?? 50);
   }
 
@@ -619,7 +658,19 @@ export class CopilotService implements CopilotDbAdapter {
       limit?: number;
     },
   ): Promise<unknown[]> {
-    // Read directly from Compport MySQL — employee_lti_details
+    // PG first
+    const pgGrants = await this.db.forTenant(tenantId, (tx) =>
+      tx.equityGrant.findMany({
+        where: { tenantId },
+        take: filters.limit ?? 20,
+        include: {
+          plan: { select: { name: true, planType: true, sharePrice: true, currency: true } },
+          employee: { select: { firstName: true, lastName: true, department: true } },
+        },
+        orderBy: { grantDate: 'desc' },
+      }),
+    );
+    if (pgGrants.length > 0) return pgGrants;
     return this.compportData.getEmployeeLtiDetails(tenantId, undefined, filters.limit ?? 50);
   }
 
@@ -632,7 +683,16 @@ export class CopilotService implements CopilotDbAdapter {
       limit?: number;
     },
   ): Promise<unknown[]> {
-    // Read directly from Compport MySQL — payrange_market_data
+    // Try PG first (Demo Corp has seeded salary bands)
+    const pgBands = await this.db.forTenant(tenantId, (tx) =>
+      tx.salaryBand.findMany({
+        where: { tenantId },
+        take: filters.limit ?? 100,
+        orderBy: [{ jobFamily: 'asc' }, { level: 'asc' }],
+      }),
+    );
+    if (pgBands.length > 0) return pgBands;
+    // Fall back to Compport MySQL
     return this.compportData.getPayRanges(tenantId, filters.limit ?? 100);
   }
 
@@ -1170,12 +1230,10 @@ export class CopilotService implements CopilotDbAdapter {
    * data-scope filtering to employee queries. This is request-safe
    * because each streamChat invocation gets its own closure.
    */
-  private buildScopedAdapter(scope: DataScope): CopilotDbAdapter {
+  private buildScopedAdapter(scope: DataScope, hasCompport = true): CopilotDbAdapter {
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const self = this;
     return {
-      // Delegate all methods to `this` — Compport MySQL reads are
-      // already handled in the adapter methods themselves
       queryCompensation: self.queryCompensation.bind(self),
       queryRules: self.queryRules.bind(self),
       queryCycles: self.queryCycles.bind(self),
@@ -1193,8 +1251,9 @@ export class CopilotService implements CopilotDbAdapter {
       get ruleManagement() {
         return self.ruleManagement;
       },
+      // Only expose mirror tools for tenants with a Compport schema
       get mirrorAdapter() {
-        return self.mirrorAdapter;
+        return hasCompport ? self.mirrorAdapter : undefined;
       },
 
       // Override queryEmployees with scope filter
