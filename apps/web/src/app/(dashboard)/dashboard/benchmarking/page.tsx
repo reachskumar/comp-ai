@@ -38,14 +38,6 @@ import {
   useCreateMarketDataSourceMutation,
   type EmployeeAnalysis,
 } from '@/hooks/use-benchmarking';
-import {
-  useCompportMarketData,
-  useCompportPayRanges,
-  useCompportGradeBands,
-  useCompportSalaryBands,
-  useCompportMinimumWage,
-} from '@/hooks/use-compport-data';
-import { CompportDataTable } from '@/components/compport-data-table';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyRC = React.ComponentType<any>;
@@ -127,11 +119,6 @@ export default function BenchmarkingPage() {
   const sourcesQuery = useMarketDataSources();
   const deleteBand = useDeleteSalaryBandMutation();
   const createBand = useCreateSalaryBandMutation();
-  const compportMarketData = useCompportMarketData(200);
-  const compportPayRanges = useCompportPayRanges(200);
-  const compportGradeBands = useCompportGradeBands(200);
-  const compportSalaryBands = useCompportSalaryBands(200);
-  const compportMinimumWage = useCompportMinimumWage(200);
   const bulkImport = useBulkImportBandsMutation();
   const createSource = useCreateMarketDataSourceMutation();
 
@@ -229,7 +216,6 @@ export default function BenchmarkingPage() {
           <TabsTrigger value="bands">Salary Bands</TabsTrigger>
           <TabsTrigger value="analysis">Compa-Ratio Analysis</TabsTrigger>
           <TabsTrigger value="sources">Data Sources</TabsTrigger>
-          <TabsTrigger value="compport">Compport Data</TabsTrigger>
         </TabsList>
 
         {/* ─── Salary Bands Tab ─── */}
@@ -396,45 +382,6 @@ export default function BenchmarkingPage() {
               )}
             </CardContent>
           </Card>
-        </TabsContent>
-
-        {/* Compport Data Tab */}
-        <TabsContent value="compport" className="space-y-4">
-          <CompportDataTable
-            title="Compport Market Data"
-            description="Live data from Compport MySQL — tbl_market_data table"
-            data={compportMarketData.data?.data}
-            isLoading={compportMarketData.isLoading}
-            error={compportMarketData.error}
-          />
-          <CompportDataTable
-            title="Compport Pay Ranges"
-            description="Live data from Compport MySQL — payrange_market_data table"
-            data={compportPayRanges.data?.data}
-            isLoading={compportPayRanges.isLoading}
-            error={compportPayRanges.error}
-          />
-          <CompportDataTable
-            title="Compport Grade Bands"
-            description="Live data from Compport MySQL — grade_band table"
-            data={compportGradeBands.data?.data}
-            isLoading={compportGradeBands.isLoading}
-            error={compportGradeBands.error}
-          />
-          <CompportDataTable
-            title="Compport Salary Bands"
-            description="Live data from Compport MySQL — salary_bands table"
-            data={compportSalaryBands.data?.data}
-            isLoading={compportSalaryBands.isLoading}
-            error={compportSalaryBands.error}
-          />
-          <CompportDataTable
-            title="Compport Minimum Wage"
-            description="Live data from Compport MySQL — minimum_wage table"
-            data={compportMinimumWage.data?.data}
-            isLoading={compportMinimumWage.isLoading}
-            error={compportMinimumWage.error}
-          />
         </TabsContent>
       </Tabs>
     </div>

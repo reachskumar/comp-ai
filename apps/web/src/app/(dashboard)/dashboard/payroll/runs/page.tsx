@@ -1,6 +1,6 @@
-"use client";
+'use client';
 
-import * as React from "react";
+import * as React from 'react';
 import {
   Play,
   Plus,
@@ -12,13 +12,13 @@ import {
   ChevronLeft,
   ChevronRight,
   Shield,
-} from "lucide-react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
+} from 'lucide-react';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Select } from '@/components/ui/select';
 import {
   Table,
   TableHeader,
@@ -26,7 +26,7 @@ import {
   TableRow,
   TableHead,
   TableCell,
-} from "@/components/ui/table";
+} from '@/components/ui/table';
 import {
   Dialog,
   DialogContent,
@@ -34,39 +34,40 @@ import {
   DialogTitle,
   DialogDescription,
   DialogFooter,
-} from "@/components/ui/dialog";
-import { Skeleton } from "@/components/ui/skeleton";
-import { useToast } from "@/components/ui/toast";
+} from '@/components/ui/dialog';
+import { Skeleton } from '@/components/ui/skeleton';
+import { useToast } from '@/components/ui/toast';
 import {
   usePayrollRuns,
   useCreatePayrollRun,
   useRunCheck,
   type PayrollRun,
   type PayrollStatus,
-} from "@/hooks/use-payroll";
-import { useCompportSalaryDetails } from "@/hooks/use-compport-data";
-import { CompportDataTable } from "@/components/compport-data-table";
+} from '@/hooks/use-payroll';
 
 const STATUS_OPTIONS = [
-  { value: "", label: "All Statuses" },
-  { value: "DRAFT", label: "Draft" },
-  { value: "PROCESSING", label: "Processing" },
-  { value: "REVIEW", label: "Review" },
-  { value: "APPROVED", label: "Approved" },
-  { value: "FINALIZED", label: "Finalized" },
-  { value: "ERROR", label: "Error" },
+  { value: '', label: 'All Statuses' },
+  { value: 'DRAFT', label: 'Draft' },
+  { value: 'PROCESSING', label: 'Processing' },
+  { value: 'REVIEW', label: 'Review' },
+  { value: 'APPROVED', label: 'Approved' },
+  { value: 'FINALIZED', label: 'Finalized' },
+  { value: 'ERROR', label: 'Error' },
 ];
 
 function statusBadge(status: PayrollStatus) {
-  const map: Record<PayrollStatus, { variant: "default" | "secondary" | "destructive" | "outline"; icon: React.ReactNode }> = {
-    DRAFT: { variant: "outline", icon: <Clock className="mr-1 h-3 w-3" /> },
-    PROCESSING: { variant: "secondary", icon: <Loader2 className="mr-1 h-3 w-3 animate-spin" /> },
-    REVIEW: { variant: "default", icon: <AlertTriangle className="mr-1 h-3 w-3" /> },
-    APPROVED: { variant: "secondary", icon: <CheckCircle2 className="mr-1 h-3 w-3" /> },
-    FINALIZED: { variant: "secondary", icon: <CheckCircle2 className="mr-1 h-3 w-3" /> },
-    ERROR: { variant: "destructive", icon: <XCircle className="mr-1 h-3 w-3" /> },
+  const map: Record<
+    PayrollStatus,
+    { variant: 'default' | 'secondary' | 'destructive' | 'outline'; icon: React.ReactNode }
+  > = {
+    DRAFT: { variant: 'outline', icon: <Clock className="mr-1 h-3 w-3" /> },
+    PROCESSING: { variant: 'secondary', icon: <Loader2 className="mr-1 h-3 w-3 animate-spin" /> },
+    REVIEW: { variant: 'default', icon: <AlertTriangle className="mr-1 h-3 w-3" /> },
+    APPROVED: { variant: 'secondary', icon: <CheckCircle2 className="mr-1 h-3 w-3" /> },
+    FINALIZED: { variant: 'secondary', icon: <CheckCircle2 className="mr-1 h-3 w-3" /> },
+    ERROR: { variant: 'destructive', icon: <XCircle className="mr-1 h-3 w-3" /> },
   };
-  const cfg = map[status] ?? { variant: "outline" as const, icon: null };
+  const cfg = map[status] ?? { variant: 'outline' as const, icon: null };
   return (
     <Badge variant={cfg.variant} className="flex w-fit items-center">
       {cfg.icon}
@@ -82,27 +83,26 @@ function severityIndicator(count: number) {
 }
 
 function formatDate(dateStr: string) {
-  return new Date(dateStr).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
+  return new Date(dateStr).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
   });
 }
 
 export default function PayrollRunsPage() {
   const { toast } = useToast();
   const [page, setPage] = React.useState(1);
-  const [statusFilter, setStatusFilter] = React.useState("");
+  const [statusFilter, setStatusFilter] = React.useState('');
   const [createOpen, setCreateOpen] = React.useState(false);
-  const [newPeriod, setNewPeriod] = React.useState("");
+  const [newPeriod, setNewPeriod] = React.useState('');
   const limit = 20;
 
   const listQuery = usePayrollRuns(page, limit, statusFilter || undefined);
   const createMutation = useCreatePayrollRun();
   const runCheckMutation = useRunCheck();
-  const compportSalary = useCompportSalaryDetails(50);
 
   const handleCreate = () => {
     if (!newPeriod.trim()) return;
@@ -110,12 +110,12 @@ export default function PayrollRunsPage() {
       { period: newPeriod, lineItems: [] },
       {
         onSuccess: () => {
-          toast({ title: "Payroll run created", description: `Period: ${newPeriod}` });
+          toast({ title: 'Payroll run created', description: `Period: ${newPeriod}` });
           setCreateOpen(false);
-          setNewPeriod("");
+          setNewPeriod('');
         },
         onError: (err) => {
-          toast({ title: "Error", description: err.message, variant: "destructive" });
+          toast({ title: 'Error', description: err.message, variant: 'destructive' });
         },
       },
     );
@@ -124,10 +124,10 @@ export default function PayrollRunsPage() {
   const handleRunCheck = (runId: string) => {
     runCheckMutation.mutate(runId, {
       onSuccess: (data) => {
-        toast({ title: "Reconciliation check complete", description: `Status: ${data.status}` });
+        toast({ title: 'Reconciliation check complete', description: `Status: ${data.status}` });
       },
       onError: (err) => {
-        toast({ title: "Check failed", description: err.message, variant: "destructive" });
+        toast({ title: 'Check failed', description: err.message, variant: 'destructive' });
       },
     });
   };
@@ -151,7 +151,10 @@ export default function PayrollRunsPage() {
           <Select
             options={STATUS_OPTIONS}
             value={statusFilter}
-            onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
+            onChange={(e) => {
+              setStatusFilter(e.target.value);
+              setPage(1);
+            }}
           />
         </div>
       </div>
@@ -183,7 +186,9 @@ export default function PayrollRunsPage() {
               <Play className="h-8 w-8 text-muted-foreground" />
               <p className="mt-2 text-sm font-medium">No payroll runs found</p>
               <p className="text-xs text-muted-foreground">
-                {statusFilter ? "Try changing the filter." : "Create a new payroll run to get started."}
+                {statusFilter
+                  ? 'Try changing the filter.'
+                  : 'Create a new payroll run to get started.'}
               </p>
             </div>
           ) : (
@@ -205,7 +210,7 @@ export default function PayrollRunsPage() {
                     <TableCell className="font-medium">{run.period}</TableCell>
                     <TableCell>{statusBadge(run.status)}</TableCell>
                     <TableCell className="text-right">{run.employeeCount}</TableCell>
-                    <TableCell className="text-right">{run._count?.lineItems ?? "—"}</TableCell>
+                    <TableCell className="text-right">{run._count?.lineItems ?? '—'}</TableCell>
                     <TableCell className="text-right">
                       {severityIndicator(run._count?.anomalies ?? 0)}
                     </TableCell>
@@ -213,7 +218,7 @@ export default function PayrollRunsPage() {
                       {formatDate(run.createdAt)}
                     </TableCell>
                     <TableCell>
-                      {run.status === "DRAFT" && (
+                      {run.status === 'DRAFT' && (
                         <Button
                           size="sm"
                           variant="outline"
@@ -241,36 +246,36 @@ export default function PayrollRunsPage() {
       {listQuery.data && listQuery.data.pagination.totalPages > 1 && (
         <div className="flex items-center justify-between">
           <p className="text-sm text-muted-foreground">
-            Page {listQuery.data.pagination.page} of {listQuery.data.pagination.totalPages} ({listQuery.data.pagination.total} total)
+            Page {listQuery.data.pagination.page} of {listQuery.data.pagination.totalPages} (
+            {listQuery.data.pagination.total} total)
           </p>
           <div className="flex gap-2">
-            <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={page <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+            >
               <ChevronLeft className="mr-1 h-4 w-4" /> Previous
             </Button>
-            <Button variant="outline" size="sm" disabled={page >= (listQuery.data?.pagination.totalPages ?? 1)} onClick={() => setPage((p) => p + 1)}>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={page >= (listQuery.data?.pagination.totalPages ?? 1)}
+              onClick={() => setPage((p) => p + 1)}
+            >
               Next <ChevronRight className="ml-1 h-4 w-4" />
             </Button>
           </div>
         </div>
       )}
 
-      {/* Compport Source Data */}
-      <CompportDataTable
-        title="Compport Employee Salary Details"
-        description="Live data from Compport MySQL — employee_salary_details table"
-        data={compportSalary.data?.data}
-        isLoading={compportSalary.isLoading}
-        error={compportSalary.error}
-      />
-
       {/* Create Dialog */}
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Create Payroll Run</DialogTitle>
-            <DialogDescription>
-              Create a new payroll run for a specific period.
-            </DialogDescription>
+            <DialogDescription>Create a new payroll run for a specific period.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
@@ -284,7 +289,9 @@ export default function PayrollRunsPage() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>
+            <Button variant="outline" onClick={() => setCreateOpen(false)}>
+              Cancel
+            </Button>
             <Button onClick={handleCreate} disabled={createMutation.isPending || !newPeriod.trim()}>
               {createMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Create
@@ -295,4 +302,3 @@ export default function PayrollRunsPage() {
     </div>
   );
 }
-

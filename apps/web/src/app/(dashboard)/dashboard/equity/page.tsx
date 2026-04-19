@@ -49,8 +49,6 @@ import {
   type EquityGrant,
 } from '@/hooks/use-equity';
 import Link from 'next/link';
-import { useCompportLtiDetails, useCompportLtiRules } from '@/hooks/use-compport-data';
-import { CompportDataTable } from '@/components/compport-data-table';
 
 /* ─── Helpers ───────────────────────────────────────── */
 
@@ -117,8 +115,6 @@ export default function EquityPage() {
   const plansQuery = useEquityPlans();
   const grantsQuery = useEquityGrants();
   const createPlan = useCreateEquityPlanMutation();
-  const compportLtiDetails = useCompportLtiDetails(50);
-  const compportLtiRules = useCompportLtiRules(50);
   const deletePlan = useDeleteEquityPlanMutation();
   const createGrant = useCreateEquityGrantMutation();
   const cancelGrant = useCancelEquityGrantMutation();
@@ -222,7 +218,6 @@ export default function EquityPage() {
           <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
           <TabsTrigger value="plans">Plans</TabsTrigger>
           <TabsTrigger value="grants">Grants</TabsTrigger>
-          <TabsTrigger value="compport">Compport Data</TabsTrigger>
         </TabsList>
 
         {/* Dashboard Tab — Upcoming Vests */}
@@ -407,24 +402,6 @@ export default function EquityPage() {
               )}
             </CardContent>
           </Card>
-        </TabsContent>
-
-        {/* Compport Data Tab */}
-        <TabsContent value="compport" className="space-y-4">
-          <CompportDataTable
-            title="Compport LTI Details"
-            description="Live data from Compport MySQL — employee_lti_details table"
-            data={compportLtiDetails.data?.data}
-            isLoading={compportLtiDetails.isLoading}
-            error={compportLtiDetails.error}
-          />
-          <CompportDataTable
-            title="Compport LTI Rules"
-            description="Live data from Compport MySQL — lti_rules table"
-            data={compportLtiRules.data?.data}
-            isLoading={compportLtiRules.isLoading}
-            error={compportLtiRules.error}
-          />
         </TabsContent>
       </Tabs>
 

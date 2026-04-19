@@ -1,6 +1,6 @@
-"use client";
+'use client';
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback } from 'react';
 import {
   FileText,
   Send,
@@ -14,59 +14,70 @@ import {
   Download,
   Edit,
   Users,
-} from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import { Select } from "@/components/ui/select";
-import { Badge } from "@/components/ui/badge";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Separator } from "@/components/ui/separator";
+} from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { Select } from '@/components/ui/select';
+import { Badge } from '@/components/ui/badge';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Separator } from '@/components/ui/separator';
 import {
   useLetters,
   type LetterType,
   type CompensationLetter,
   type GenerateLetterInput,
-} from "@/hooks/use-letters";
-import { useCompportLetters } from "@/hooks/use-compport-data";
-import { CompportDataTable } from "@/components/compport-data-table";
+} from '@/hooks/use-letters';
 
 const LETTER_TYPES: { value: LetterType; label: string }[] = [
-  { value: "offer", label: "Offer Letter" },
-  { value: "raise", label: "Salary Raise" },
-  { value: "promotion", label: "Promotion" },
-  { value: "bonus", label: "Bonus Notification" },
-  { value: "total_comp_summary", label: "Total Comp Summary" },
+  { value: 'offer', label: 'Offer Letter' },
+  { value: 'raise', label: 'Salary Raise' },
+  { value: 'promotion', label: 'Promotion' },
+  { value: 'bonus', label: 'Bonus Notification' },
+  { value: 'total_comp_summary', label: 'Total Comp Summary' },
 ];
 
 const TONE_OPTIONS = [
-  { value: "professional", label: "Professional" },
-  { value: "warm", label: "Warm & Friendly" },
-  { value: "formal", label: "Formal" },
-  { value: "celebratory", label: "Celebratory" },
+  { value: 'professional', label: 'Professional' },
+  { value: 'warm', label: 'Warm & Friendly' },
+  { value: 'formal', label: 'Formal' },
+  { value: 'celebratory', label: 'Celebratory' },
 ];
 
 const STATUS_COLORS: Record<string, string> = {
-  DRAFT: "secondary",
-  GENERATING: "outline",
-  REVIEW: "default",
-  APPROVED: "default",
-  SENT: "default",
-  FAILED: "destructive",
+  DRAFT: 'secondary',
+  GENERATING: 'outline',
+  REVIEW: 'default',
+  APPROVED: 'default',
+  SENT: 'default',
+  FAILED: 'destructive',
 };
 
 function getStatusIcon(status: string) {
   switch (status) {
-    case "GENERATING": return <Loader2 className="h-3 w-3 animate-spin" />;
-    case "REVIEW": return <Eye className="h-3 w-3" />;
-    case "APPROVED": return <CheckCircle2 className="h-3 w-3" />;
-    case "SENT": return <Send className="h-3 w-3" />;
-    case "FAILED": return <AlertCircle className="h-3 w-3" />;
-    default: return <Clock className="h-3 w-3" />;
+    case 'GENERATING':
+      return <Loader2 className="h-3 w-3 animate-spin" />;
+    case 'REVIEW':
+      return <Eye className="h-3 w-3" />;
+    case 'APPROVED':
+      return <CheckCircle2 className="h-3 w-3" />;
+    case 'SENT':
+      return <Send className="h-3 w-3" />;
+    case 'FAILED':
+      return <AlertCircle className="h-3 w-3" />;
+    default:
+      return <Clock className="h-3 w-3" />;
   }
 }
 
@@ -84,21 +95,19 @@ export default function LettersPage() {
     clearCurrentLetter,
   } = useLetters();
 
-  const [activeTab, setActiveTab] = useState("generate");
+  const [activeTab, setActiveTab] = useState('generate');
   const [previewLetter, setPreviewLetter] = useState<CompensationLetter | null>(null);
-  const compportLetters = useCompportLetters(50);
-
   // Form state
   const [form, setForm] = useState<GenerateLetterInput>({
-    employeeId: "",
-    letterType: "raise",
-    tone: "professional",
-    language: "en",
+    employeeId: '',
+    letterType: 'raise',
+    tone: 'professional',
+    language: 'en',
   });
 
   // Load history when switching to history tab
   useEffect(() => {
-    if (activeTab === "history") {
+    if (activeTab === 'history') {
       void fetchLetters();
     }
   }, [activeTab, fetchLetters]);
@@ -107,7 +116,7 @@ export default function LettersPage() {
   useEffect(() => {
     if (currentLetter && !isGenerating) {
       setPreviewLetter(currentLetter);
-      setActiveTab("preview");
+      setActiveTab('preview');
     }
   }, [currentLetter, isGenerating]);
 
@@ -118,7 +127,7 @@ export default function LettersPage() {
 
   const handleApprove = useCallback(async () => {
     if (!previewLetter) return;
-    await updateLetter(previewLetter.id, { status: "APPROVED" });
+    await updateLetter(previewLetter.id, { status: 'APPROVED' });
   }, [previewLetter, updateLetter]);
 
   const handleFormChange = useCallback((field: string, value: string | number | undefined) => {
@@ -136,7 +145,9 @@ export default function LettersPage() {
           <div>
             <h1 className="text-lg font-semibold">Compensation Letters</h1>
             <p className="text-xs text-muted-foreground">
-              {isGenerating ? "Generating letter…" : "Generate, review, and send AI-powered compensation letters"}
+              {isGenerating
+                ? 'Generating letter…'
+                : 'Generate, review, and send AI-powered compensation letters'}
             </p>
           </div>
         </div>
@@ -153,10 +164,6 @@ export default function LettersPage() {
             <TabsTrigger value="history">
               <Clock className="mr-1 h-4 w-4" />
               History
-            </TabsTrigger>
-            <TabsTrigger value="compport">
-              <FileText className="mr-1 h-4 w-4" />
-              Compport Data
             </TabsTrigger>
             {previewLetter && (
               <TabsTrigger value="preview">
@@ -183,19 +190,11 @@ export default function LettersPage() {
               letters={letters}
               isLoading={isLoading}
               pagination={pagination}
-              onView={(letter) => { setPreviewLetter(letter); setActiveTab("preview"); }}
+              onView={(letter) => {
+                setPreviewLetter(letter);
+                setActiveTab('preview');
+              }}
               onPageChange={(page) => void fetchLetters({ page })}
-            />
-          </TabsContent>
-
-          {/* Compport Data Tab */}
-          <TabsContent value="compport" className="flex-1 overflow-auto">
-            <CompportDataTable
-              title="Compport Letter Repository"
-              description="Live data from Compport MySQL — letter_repository table"
-              data={compportLetters.data?.data}
-              isLoading={compportLetters.isLoading}
-              error={compportLetters.error}
             />
           </TabsContent>
 
@@ -204,7 +203,11 @@ export default function LettersPage() {
             {previewLetter && (
               <LetterPreview
                 letter={previewLetter}
-                onBack={() => { setPreviewLetter(null); clearCurrentLetter(); setActiveTab("generate"); }}
+                onBack={() => {
+                  setPreviewLetter(null);
+                  clearCurrentLetter();
+                  setActiveTab('generate');
+                }}
                 onApprove={handleApprove}
               />
             )}
@@ -240,7 +243,7 @@ function GenerateForm({ form, onChange, onGenerate, isGenerating, error }: Gener
               id="employeeId"
               placeholder="Enter employee ID"
               value={form.employeeId}
-              onChange={(e) => onChange("employeeId", e.target.value)}
+              onChange={(e) => onChange('employeeId', e.target.value)}
             />
           </div>
 
@@ -251,7 +254,7 @@ function GenerateForm({ form, onChange, onGenerate, isGenerating, error }: Gener
                 id="letterType"
                 options={LETTER_TYPES}
                 value={form.letterType}
-                onChange={(e) => onChange("letterType", e.target.value)}
+                onChange={(e) => onChange('letterType', e.target.value)}
               />
             </div>
             <div className="space-y-2">
@@ -259,8 +262,8 @@ function GenerateForm({ form, onChange, onGenerate, isGenerating, error }: Gener
               <Select
                 id="tone"
                 options={TONE_OPTIONS}
-                value={form.tone ?? "professional"}
-                onChange={(e) => onChange("tone", e.target.value)}
+                value={form.tone ?? 'professional'}
+                onChange={(e) => onChange('tone', e.target.value)}
               />
             </div>
           </div>
@@ -274,8 +277,10 @@ function GenerateForm({ form, onChange, onGenerate, isGenerating, error }: Gener
                 id="newSalary"
                 type="number"
                 placeholder="e.g., 120000"
-                value={form.newSalary ?? ""}
-                onChange={(e) => onChange("newSalary", e.target.value ? Number(e.target.value) : undefined)}
+                value={form.newSalary ?? ''}
+                onChange={(e) =>
+                  onChange('newSalary', e.target.value ? Number(e.target.value) : undefined)
+                }
               />
             </div>
             <div className="space-y-2">
@@ -284,8 +289,13 @@ function GenerateForm({ form, onChange, onGenerate, isGenerating, error }: Gener
                 id="salaryIncreasePercent"
                 type="number"
                 placeholder="e.g., 10"
-                value={form.salaryIncreasePercent ?? ""}
-                onChange={(e) => onChange("salaryIncreasePercent", e.target.value ? Number(e.target.value) : undefined)}
+                value={form.salaryIncreasePercent ?? ''}
+                onChange={(e) =>
+                  onChange(
+                    'salaryIncreasePercent',
+                    e.target.value ? Number(e.target.value) : undefined,
+                  )
+                }
               />
             </div>
           </div>
@@ -297,8 +307,10 @@ function GenerateForm({ form, onChange, onGenerate, isGenerating, error }: Gener
                 id="bonusAmount"
                 type="number"
                 placeholder="e.g., 5000"
-                value={form.bonusAmount ?? ""}
-                onChange={(e) => onChange("bonusAmount", e.target.value ? Number(e.target.value) : undefined)}
+                value={form.bonusAmount ?? ''}
+                onChange={(e) =>
+                  onChange('bonusAmount', e.target.value ? Number(e.target.value) : undefined)
+                }
               />
             </div>
             <div className="space-y-2">
@@ -306,8 +318,8 @@ function GenerateForm({ form, onChange, onGenerate, isGenerating, error }: Gener
               <Input
                 id="effectiveDate"
                 type="date"
-                value={form.effectiveDate ?? ""}
-                onChange={(e) => onChange("effectiveDate", e.target.value)}
+                value={form.effectiveDate ?? ''}
+                onChange={(e) => onChange('effectiveDate', e.target.value)}
               />
             </div>
           </div>
@@ -318,8 +330,8 @@ function GenerateForm({ form, onChange, onGenerate, isGenerating, error }: Gener
               <Input
                 id="newTitle"
                 placeholder="e.g., Senior Engineer"
-                value={form.newTitle ?? ""}
-                onChange={(e) => onChange("newTitle", e.target.value || undefined)}
+                value={form.newTitle ?? ''}
+                onChange={(e) => onChange('newTitle', e.target.value || undefined)}
               />
             </div>
             <div className="space-y-2">
@@ -327,8 +339,8 @@ function GenerateForm({ form, onChange, onGenerate, isGenerating, error }: Gener
               <Input
                 id="newLevel"
                 placeholder="e.g., L5"
-                value={form.newLevel ?? ""}
-                onChange={(e) => onChange("newLevel", e.target.value || undefined)}
+                value={form.newLevel ?? ''}
+                onChange={(e) => onChange('newLevel', e.target.value || undefined)}
               />
             </div>
           </div>
@@ -339,8 +351,8 @@ function GenerateForm({ form, onChange, onGenerate, isGenerating, error }: Gener
               id="additionalNotes"
               placeholder="Any special notes for the AI to consider..."
               rows={3}
-              value={form.additionalNotes ?? ""}
-              onChange={(e) => onChange("additionalNotes", e.target.value || undefined)}
+              value={form.additionalNotes ?? ''}
+              onChange={(e) => onChange('additionalNotes', e.target.value || undefined)}
             />
           </div>
         </CardContent>
@@ -352,7 +364,11 @@ function GenerateForm({ form, onChange, onGenerate, isGenerating, error }: Gener
         </div>
       )}
 
-      <Button onClick={() => void onGenerate()} disabled={isGenerating || !form.employeeId.trim()} className="w-full">
+      <Button
+        onClick={() => void onGenerate()}
+        disabled={isGenerating || !form.employeeId.trim()}
+        className="w-full"
+      >
         {isGenerating ? (
           <>
             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -379,7 +395,13 @@ interface LetterHistoryProps {
   onPageChange: (page: number) => void;
 }
 
-function LetterHistory({ letters, isLoading, pagination, onView, onPageChange }: LetterHistoryProps) {
+function LetterHistory({
+  letters,
+  isLoading,
+  pagination,
+  onView,
+  onPageChange,
+}: LetterHistoryProps) {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-16">
@@ -393,7 +415,9 @@ function LetterHistory({ letters, isLoading, pagination, onView, onPageChange }:
       <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
         <FileText className="h-10 w-10 text-muted-foreground/50" />
         <p className="text-sm text-muted-foreground">No letters generated yet</p>
-        <p className="text-xs text-muted-foreground">Generate your first compensation letter to get started</p>
+        <p className="text-xs text-muted-foreground">
+          Generate your first compensation letter to get started
+        </p>
       </div>
     );
   }
@@ -416,16 +440,26 @@ function LetterHistory({ letters, isLoading, pagination, onView, onPageChange }:
             <TableRow key={letter.id}>
               <TableCell className="font-medium">
                 {letter.employee.firstName} {letter.employee.lastName}
-                <span className="block text-xs text-muted-foreground">{letter.employee.department}</span>
+                <span className="block text-xs text-muted-foreground">
+                  {letter.employee.department}
+                </span>
               </TableCell>
               <TableCell>
                 <Badge variant="outline" className="capitalize">
-                  {letter.letterType.toLowerCase().replace(/_/g, " ")}
+                  {letter.letterType.toLowerCase().replace(/_/g, ' ')}
                 </Badge>
               </TableCell>
               <TableCell className="max-w-[200px] truncate">{letter.subject}</TableCell>
               <TableCell>
-                <Badge variant={STATUS_COLORS[letter.status] as "default" | "secondary" | "destructive" | "outline"}>
+                <Badge
+                  variant={
+                    STATUS_COLORS[letter.status] as
+                      | 'default'
+                      | 'secondary'
+                      | 'destructive'
+                      | 'outline'
+                  }
+                >
                   <span className="mr-1">{getStatusIcon(letter.status)}</span>
                   {letter.status}
                 </Badge>
@@ -490,7 +524,7 @@ function LetterPreview({ letter, onBack, onApprove }: LetterPreviewProps) {
           Back
         </Button>
         <div className="flex gap-2">
-          {letter.status === "REVIEW" && (
+          {letter.status === 'REVIEW' && (
             <Button size="sm" onClick={() => void onApprove()}>
               <CheckCircle2 className="mr-1 h-4 w-4" />
               Approve
@@ -506,10 +540,15 @@ function LetterPreview({ letter, onBack, onApprove }: LetterPreviewProps) {
             <div>
               <CardTitle>{letter.subject}</CardTitle>
               <CardDescription>
-                To: {letter.employee.firstName} {letter.employee.lastName} ({letter.employee.department})
+                To: {letter.employee.firstName} {letter.employee.lastName} (
+                {letter.employee.department})
               </CardDescription>
             </div>
-            <Badge variant={STATUS_COLORS[letter.status] as "default" | "secondary" | "destructive" | "outline"}>
+            <Badge
+              variant={
+                STATUS_COLORS[letter.status] as 'default' | 'secondary' | 'destructive' | 'outline'
+              }
+            >
               <span className="mr-1">{getStatusIcon(letter.status)}</span>
               {letter.status}
             </Badge>
@@ -517,9 +556,7 @@ function LetterPreview({ letter, onBack, onApprove }: LetterPreviewProps) {
         </CardHeader>
         <CardContent>
           <ScrollArea className="h-[400px]">
-            <div className="prose prose-sm max-w-none whitespace-pre-wrap">
-              {letter.content}
-            </div>
+            <div className="prose prose-sm max-w-none whitespace-pre-wrap">{letter.content}</div>
           </ScrollArea>
         </CardContent>
       </Card>
@@ -529,15 +566,18 @@ function LetterPreview({ letter, onBack, onApprove }: LetterPreviewProps) {
         <CardContent className="pt-4">
           <div className="grid gap-4 text-sm sm:grid-cols-3">
             <div>
-              <span className="text-muted-foreground">Type:</span>{" "}
-              <span className="capitalize">{letter.letterType.toLowerCase().replace(/_/g, " ")}</span>
+              <span className="text-muted-foreground">Type:</span>{' '}
+              <span className="capitalize">
+                {letter.letterType.toLowerCase().replace(/_/g, ' ')}
+              </span>
             </div>
             <div>
-              <span className="text-muted-foreground">Tone:</span> <span className="capitalize">{letter.tone}</span>
+              <span className="text-muted-foreground">Tone:</span>{' '}
+              <span className="capitalize">{letter.tone}</span>
             </div>
             <div>
-              <span className="text-muted-foreground">Generated:</span>{" "}
-              {letter.generatedAt ? new Date(letter.generatedAt).toLocaleString() : "N/A"}
+              <span className="text-muted-foreground">Generated:</span>{' '}
+              {letter.generatedAt ? new Date(letter.generatedAt).toLocaleString() : 'N/A'}
             </div>
           </div>
         </CardContent>
@@ -545,4 +585,3 @@ function LetterPreview({ letter, onBack, onApprove }: LetterPreviewProps) {
     </div>
   );
 }
-
