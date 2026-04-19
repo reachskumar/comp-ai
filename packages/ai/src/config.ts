@@ -257,6 +257,8 @@ export async function createChatModel(
       model: modelConfig.model,
       temperature: modelConfig.temperature,
       maxTokens: modelConfig.maxTokens,
+      topP: undefined,
+      topK: undefined,
       maxRetries,
       callbacks,
       clientOptions: {
