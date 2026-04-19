@@ -110,7 +110,15 @@ export async function* streamGraphToSSE(
         };
       } else if (eventType === 'on_chat_model_stream' || eventType === 'on_llm_stream') {
         const chunk = event.data?.chunk;
-        const content = typeof chunk === 'string' ? chunk : (chunk?.content ?? chunk?.text ?? '');
+        let content = typeof chunk === 'string' ? chunk : (chunk?.content ?? chunk?.text ?? '');
+        // Claude returns content as array of blocks: [{type:"text", text:"..."}]
+        if (Array.isArray(content)) {
+          content = content
+            .filter((b: Record<string, unknown>) => b.type === 'text' || typeof b === 'string')
+            .map((b: Record<string, unknown>) => (typeof b === 'string' ? b : (b.text ?? '')))
+            .join('');
+        }
+        if (typeof content !== 'string') content = '';
         if (content) {
           yield {
             event: 'message:chunk',
@@ -162,7 +170,11 @@ export async function* streamGraphToSSE(
     const rawMsg = error instanceof Error ? error.message : 'Unknown error';
     // Detect Azure OpenAI / OpenAI rate limit errors and return a
     // human-readable message instead of a raw stack trace URL.
-    const is429 = rawMsg.includes('429') || rawMsg.includes('Rate limit') || rawMsg.includes('Too Many Requests') || rawMsg.includes('MODEL_RATE_LIMIT');
+    const is429 =
+      rawMsg.includes('429') ||
+      rawMsg.includes('Rate limit') ||
+      rawMsg.includes('Too Many Requests') ||
+      rawMsg.includes('MODEL_RATE_LIMIT');
     const userMessage = is429
       ? 'The AI service is temporarily busy. Please wait a moment and try again.'
       : rawMsg;
