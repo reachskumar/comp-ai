@@ -1,26 +1,50 @@
-"use client";
+'use client';
 
-import * as React from "react";
-import { useParams, useRouter } from "next/navigation";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiClient } from "@/lib/api-client";
-import { useToast } from "@/components/ui/toast";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Select } from "@/components/ui/select";
-import { Progress } from "@/components/ui/progress";
-import { Skeleton } from "@/components/ui/skeleton";
+import * as React from 'react';
+import { useParams, useRouter } from 'next/navigation';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { apiClient } from '@/lib/api-client';
+import { useToast } from '@/components/ui/toast';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import {
-  ArrowLeft, Plus, Trash2, Pencil, Play, Wand2, Upload,
-  CheckCircle2, XCircle, Code, Eye, ChevronUp, ChevronDown,
-} from "lucide-react";
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from '@/components/ui/dialog';
+import { Select } from '@/components/ui/select';
+import { Progress } from '@/components/ui/progress';
+import { Skeleton } from '@/components/ui/skeleton';
+import {
+  ArrowLeft,
+  Plus,
+  Trash2,
+  Pencil,
+  Play,
+  Wand2,
+  Upload,
+  CheckCircle2,
+  XCircle,
+  Code,
+  Eye,
+  ChevronUp,
+  ChevronDown,
+} from 'lucide-react';
 
 // ── Types ──────────────────────────────────────────────────────
 interface RuleCondition {
@@ -69,19 +93,22 @@ interface ExtractedRule {
   sourceText?: string;
 }
 
-type ConfidenceLevel = "high" | "medium" | "low";
+type ConfidenceLevel = 'high' | 'medium' | 'low';
 
 function getConfidenceLevel(score: number): ConfidenceLevel {
-  if (score >= 0.7) return "high";
-  if (score >= 0.4) return "medium";
-  return "low";
+  if (score >= 0.7) return 'high';
+  if (score >= 0.4) return 'medium';
+  return 'low';
 }
 
 function getConfidenceBadgeVariant(level: ConfidenceLevel) {
   switch (level) {
-    case "high": return "default" as const;
-    case "medium": return "secondary" as const;
-    case "low": return "destructive" as const;
+    case 'high':
+      return 'default' as const;
+    case 'medium':
+      return 'secondary' as const;
+    case 'low':
+      return 'destructive' as const;
   }
 }
 
@@ -135,45 +162,51 @@ interface TestRunResult {
 
 // ── Constants ──────────────────────────────────────────────────
 const OPERATORS = [
-  { value: "eq", label: "equals" },
-  { value: "neq", label: "not equals" },
-  { value: "gt", label: "greater than" },
-  { value: "gte", label: "greater or equal" },
-  { value: "lt", label: "less than" },
-  { value: "lte", label: "less or equal" },
-  { value: "in", label: "in" },
-  { value: "notIn", label: "not in" },
-  { value: "between", label: "between" },
-  { value: "contains", label: "contains" },
-  { value: "startsWith", label: "starts with" },
-  { value: "matches", label: "matches (regex)" },
+  { value: 'eq', label: 'equals' },
+  { value: 'neq', label: 'not equals' },
+  { value: 'gt', label: 'greater than' },
+  { value: 'gte', label: 'greater or equal' },
+  { value: 'lt', label: 'less than' },
+  { value: 'lte', label: 'less or equal' },
+  { value: 'in', label: 'in' },
+  { value: 'notIn', label: 'not in' },
+  { value: 'between', label: 'between' },
+  { value: 'contains', label: 'contains' },
+  { value: 'startsWith', label: 'starts with' },
+  { value: 'matches', label: 'matches (regex)' },
 ];
 
 const ACTION_TYPES = [
-  { value: "setMerit", label: "Set Merit" },
-  { value: "setBonus", label: "Set Bonus" },
-  { value: "setLTI", label: "Set LTI" },
-  { value: "applyMultiplier", label: "Apply Multiplier" },
-  { value: "applyFloor", label: "Apply Floor" },
-  { value: "applyCap", label: "Apply Cap" },
-  { value: "flag", label: "Flag" },
-  { value: "block", label: "Block" },
+  { value: 'setMerit', label: 'Set Merit' },
+  { value: 'setBonus', label: 'Set Bonus' },
+  { value: 'setLTI', label: 'Set LTI' },
+  { value: 'applyMultiplier', label: 'Apply Multiplier' },
+  { value: 'applyFloor', label: 'Apply Floor' },
+  { value: 'applyCap', label: 'Apply Cap' },
+  { value: 'flag', label: 'Flag' },
+  { value: 'block', label: 'Block' },
 ];
 
 const RULE_TYPES = [
-  { value: "MERIT", label: "Merit" },
-  { value: "BONUS", label: "Bonus" },
-  { value: "LTI", label: "LTI" },
-  { value: "PRORATION", label: "Proration" },
-  { value: "CAP", label: "Cap" },
-  { value: "FLOOR", label: "Floor" },
-  { value: "ELIGIBILITY", label: "Eligibility" },
-  { value: "CUSTOM", label: "Custom" },
+  { value: 'MERIT', label: 'Merit' },
+  { value: 'BONUS', label: 'Bonus' },
+  { value: 'LTI', label: 'LTI' },
+  { value: 'PRORATION', label: 'Proration' },
+  { value: 'CAP', label: 'Cap' },
+  { value: 'FLOOR', label: 'Floor' },
+  { value: 'ELIGIBILITY', label: 'Eligibility' },
+  { value: 'CUSTOM', label: 'Custom' },
 ];
 
 const FIELDS = [
-  "department", "level", "title", "location", "baseSalary",
-  "performanceRating", "hireDate", "employeeCode",
+  'department',
+  'level',
+  'title',
+  'location',
+  'baseSalary',
+  'performanceRating',
+  'hireDate',
+  'employeeCode',
 ];
 
 export default function RuleSetDetailPage() {
@@ -182,27 +215,27 @@ export default function RuleSetDetailPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const { toast } = useToast();
-  const [activeTab, setActiveTab] = React.useState("rules");
+  const [activeTab, setActiveTab] = React.useState('rules');
   const [ruleDialogOpen, setRuleDialogOpen] = React.useState(false);
   const [editingRule, setEditingRule] = React.useState<Rule | null>(null);
   const [jsonView, setJsonView] = React.useState(false);
 
   // Rule form state
-  const [ruleName, setRuleName] = React.useState("");
-  const [ruleDescription, setRuleDescription] = React.useState("");
-  const [ruleType, setRuleType] = React.useState("MERIT");
+  const [ruleName, setRuleName] = React.useState('');
+  const [ruleDescription, setRuleDescription] = React.useState('');
+  const [ruleType, setRuleType] = React.useState('MERIT');
   const [conditions, setConditions] = React.useState<RuleCondition[]>([
-    { field: "department", operator: "eq", value: "" },
+    { field: 'department', operator: 'eq', value: '' },
   ]);
   const [actions, setActions] = React.useState<RuleAction[]>([
-    { type: "setMerit", params: { percentage: 0 } },
+    { type: 'setMerit', params: { percentage: 0 } },
   ]);
   const [rulePriority, setRulePriority] = React.useState(10);
 
   // Policy converter state
-  const [policyText, setPolicyText] = React.useState("");
+  const [policyText, setPolicyText] = React.useState('');
   const [extractedRules, setExtractedRules] = React.useState<ExtractedRule[]>([]);
-  const [convertSummary, setConvertSummary] = React.useState("");
+  const [convertSummary, setConvertSummary] = React.useState('');
 
   // Simulation state
   const [simResult, setSimResult] = React.useState<SimulationResult | null>(null);
@@ -215,71 +248,106 @@ export default function RuleSetDetailPage() {
 
   // ── Queries ──
   const { data: ruleSet, isLoading } = useQuery<RuleSetDetail>({
-    queryKey: ["rule-set", id],
-    queryFn: () => apiClient.fetch<RuleSetDetail>(`/api/v1/rules/rule-sets/${id}`),
+    queryKey: ['rule-set', id],
+    queryFn: async () => {
+      const raw = await apiClient.fetch<RuleSetDetail>(`/api/v1/rules/rule-sets/${id}`);
+      // Normalize rules — seed data stores conditions/actions as objects, UI expects arrays
+      if (raw.rules) {
+        raw.rules = raw.rules.map((r) => ({
+          ...r,
+          type: r.type || ((r as Record<string, unknown>)['ruleType'] as string) || 'CUSTOM',
+          conditions: Array.isArray(r.conditions)
+            ? r.conditions
+            : Object.entries(r.conditions || {}).map(([field, val]) => {
+                if (typeof val === 'object' && val !== null) {
+                  const [op, v] = Object.entries(val as Record<string, unknown>)[0] ?? ['eq', val];
+                  return { field, operator: op, value: v };
+                }
+                return { field, operator: 'eq', value: val };
+              }),
+          actions: Array.isArray(r.actions)
+            ? r.actions
+            : Object.entries(r.actions || {}).map(([key, val]) => ({
+                type: key,
+                params:
+                  typeof val === 'object' && val !== null
+                    ? (val as Record<string, unknown>)
+                    : { value: val },
+              })),
+        }));
+      }
+      return raw;
+    },
   });
 
   // ── Mutations ──
   const createRuleMutation = useMutation({
-    mutationFn: (body: Omit<Rule, "id">) =>
+    mutationFn: (body: Omit<Rule, 'id'>) =>
       apiClient.fetch(`/api/v1/rules/rule-sets/${id}/rules`, {
-        method: "POST",
+        method: 'POST',
         body: JSON.stringify(body),
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["rule-set", id] });
-      toast({ title: "Rule created" });
+      queryClient.invalidateQueries({ queryKey: ['rule-set', id] });
+      toast({ title: 'Rule created' });
       closeRuleDialog();
     },
-    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+    onError: (err: Error) =>
+      toast({ title: 'Error', description: err.message, variant: 'destructive' }),
   });
 
   const updateRuleMutation = useMutation({
     mutationFn: ({ ruleId, body }: { ruleId: string; body: Partial<Rule> }) =>
       apiClient.fetch(`/api/v1/rules/rule-sets/${id}/rules/${ruleId}`, {
-        method: "PATCH",
+        method: 'PATCH',
         body: JSON.stringify(body),
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["rule-set", id] });
-      toast({ title: "Rule updated" });
+      queryClient.invalidateQueries({ queryKey: ['rule-set', id] });
+      toast({ title: 'Rule updated' });
       closeRuleDialog();
     },
-    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+    onError: (err: Error) =>
+      toast({ title: 'Error', description: err.message, variant: 'destructive' }),
   });
 
   const deleteRuleMutation = useMutation({
     mutationFn: (ruleId: string) =>
-      apiClient.fetch(`/api/v1/rules/rule-sets/${id}/rules/${ruleId}`, { method: "DELETE" }),
+      apiClient.fetch(`/api/v1/rules/rule-sets/${id}/rules/${ruleId}`, { method: 'DELETE' }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["rule-set", id] });
-      toast({ title: "Rule deleted" });
+      queryClient.invalidateQueries({ queryKey: ['rule-set', id] });
+      toast({ title: 'Rule deleted' });
     },
-    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+    onError: (err: Error) =>
+      toast({ title: 'Error', description: err.message, variant: 'destructive' }),
   });
 
   const convertMutation = useMutation({
     mutationFn: (body: { text: string }) =>
-      apiClient.fetch<ConvertResponse>("/api/v1/rules/convert-policy", {
-        method: "POST",
+      apiClient.fetch<ConvertResponse>('/api/v1/rules/convert-policy', {
+        method: 'POST',
         body: JSON.stringify(body),
       }),
     onSuccess: (data) => {
       setExtractedRules(data.rules);
       setConvertSummary(data.summary);
-      toast({ title: "Policy converted", description: `${data.rules.length} rules extracted. ${data.needsReviewCount} need review.` });
+      toast({
+        title: 'Policy converted',
+        description: `${data.rules.length} rules extracted. ${data.needsReviewCount} need review.`,
+      });
     },
-    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+    onError: (err: Error) =>
+      toast({ title: 'Error', description: err.message, variant: 'destructive' }),
   });
 
   // ── Helpers ──
   function openCreateRule() {
     setEditingRule(null);
-    setRuleName("");
-    setRuleDescription("");
-    setRuleType("MERIT");
-    setConditions([{ field: "department", operator: "eq", value: "" }]);
-    setActions([{ type: "setMerit", params: { percentage: 0 } }]);
+    setRuleName('');
+    setRuleDescription('');
+    setRuleType('MERIT');
+    setConditions([{ field: 'department', operator: 'eq', value: '' }]);
+    setActions([{ type: 'setMerit', params: { percentage: 0 } }]);
     setRulePriority(10);
     setRuleDialogOpen(true);
   }
@@ -287,10 +355,16 @@ export default function RuleSetDetailPage() {
   function openEditRule(rule: Rule) {
     setEditingRule(rule);
     setRuleName(rule.name);
-    setRuleDescription(rule.description || "");
+    setRuleDescription(rule.description || '');
     setRuleType(rule.type);
-    setConditions(rule.conditions.length > 0 ? rule.conditions : [{ field: "department", operator: "eq", value: "" }]);
-    setActions(rule.actions.length > 0 ? rule.actions : [{ type: "setMerit", params: { percentage: 0 } }]);
+    setConditions(
+      rule.conditions.length > 0
+        ? rule.conditions
+        : [{ field: 'department', operator: 'eq', value: '' }],
+    );
+    setActions(
+      rule.actions.length > 0 ? rule.actions : [{ type: 'setMerit', params: { percentage: 0 } }],
+    );
     setRulePriority(rule.priority);
     setRuleDialogOpen(true);
   }
@@ -313,12 +387,12 @@ export default function RuleSetDetailPage() {
     if (editingRule) {
       updateRuleMutation.mutate({ ruleId: editingRule.id, body });
     } else {
-      createRuleMutation.mutate(body as Omit<Rule, "id">);
+      createRuleMutation.mutate(body as Omit<Rule, 'id'>);
     }
   }
 
   function addCondition() {
-    setConditions([...conditions, { field: "department", operator: "eq", value: "" }]);
+    setConditions([...conditions, { field: 'department', operator: 'eq', value: '' }]);
   }
 
   function removeCondition(idx: number) {
@@ -330,7 +404,7 @@ export default function RuleSetDetailPage() {
   }
 
   function addAction() {
-    setActions([...actions, { type: "setMerit", params: { percentage: 0 } }]);
+    setActions([...actions, { type: 'setMerit', params: { percentage: 0 } }]);
   }
 
   function removeAction(idx: number) {
@@ -346,12 +420,12 @@ export default function RuleSetDetailPage() {
     try {
       const result = await apiClient.fetch<SimulationResult>(
         `/api/v1/rules/rule-sets/${id}/simulate`,
-        { method: "POST", body: JSON.stringify({}) }
+        { method: 'POST', body: JSON.stringify({}) },
       );
       setSimResult(result);
-      toast({ title: "Simulation complete" });
+      toast({ title: 'Simulation complete' });
     } catch (err) {
-      toast({ title: "Error", description: (err as Error).message, variant: "destructive" });
+      toast({ title: 'Error', description: (err as Error).message, variant: 'destructive' });
     } finally {
       setSimRunning(false);
     }
@@ -362,12 +436,12 @@ export default function RuleSetDetailPage() {
     try {
       const result = await apiClient.fetch<TestRunResult>(
         `/api/v1/rules/rule-sets/${id}/generate-tests`,
-        { method: "POST" }
+        { method: 'POST' },
       );
       setTestResult(result);
-      toast({ title: "Tests generated", description: `${result.total} test cases created.` });
+      toast({ title: 'Tests generated', description: `${result.total} test cases created.` });
     } catch (err) {
-      toast({ title: "Error", description: (err as Error).message, variant: "destructive" });
+      toast({ title: 'Error', description: (err as Error).message, variant: 'destructive' });
     } finally {
       setTestsRunning(false);
     }
@@ -378,12 +452,12 @@ export default function RuleSetDetailPage() {
     try {
       const result = await apiClient.fetch<TestRunResult>(
         `/api/v1/rules/rule-sets/${id}/test-cases/run`,
-        { method: "POST" }
+        { method: 'POST' },
       );
       setTestResult(result);
-      toast({ title: "Tests complete", description: `${result.passed}/${result.total} passed.` });
+      toast({ title: 'Tests complete', description: `${result.passed}/${result.total} passed.` });
     } catch (err) {
-      toast({ title: "Error", description: (err as Error).message, variant: "destructive" });
+      toast({ title: 'Error', description: (err as Error).message, variant: 'destructive' });
     } finally {
       setTestsRunning(false);
     }
@@ -392,7 +466,7 @@ export default function RuleSetDetailPage() {
   async function acceptExtractedRule(rule: ExtractedRule) {
     try {
       await apiClient.fetch(`/api/v1/rules/rule-sets/${id}/rules`, {
-        method: "POST",
+        method: 'POST',
         body: JSON.stringify({
           name: rule.name,
           description: rule.description,
@@ -403,11 +477,11 @@ export default function RuleSetDetailPage() {
           enabled: true,
         }),
       });
-      queryClient.invalidateQueries({ queryKey: ["rule-set", id] });
+      queryClient.invalidateQueries({ queryKey: ['rule-set', id] });
       setExtractedRules(extractedRules.filter((r) => r !== rule));
-      toast({ title: "Rule accepted and added" });
+      toast({ title: 'Rule accepted and added' });
     } catch (err) {
-      toast({ title: "Error", description: (err as Error).message, variant: "destructive" });
+      toast({ title: 'Error', description: (err as Error).message, variant: 'destructive' });
     }
   }
 
@@ -424,7 +498,7 @@ export default function RuleSetDetailPage() {
     return (
       <div className="space-y-6">
         <p className="text-muted-foreground">Rule set not found.</p>
-        <Button variant="outline" onClick={() => router.push("/dashboard/rules/rule-sets")}>
+        <Button variant="outline" onClick={() => router.push('/dashboard/rules/rule-sets')}>
           <ArrowLeft className="mr-2 h-4 w-4" /> Back to Rule Sets
         </Button>
       </div>
@@ -437,7 +511,11 @@ export default function RuleSetDetailPage() {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center gap-4">
-        <Button variant="ghost" size="icon" onClick={() => router.push("/dashboard/rules/rule-sets")}>
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => router.push('/dashboard/rules/rule-sets')}
+        >
           <ArrowLeft className="h-4 w-4" />
         </Button>
         <div className="flex-1">
@@ -489,11 +567,7 @@ export default function RuleSetDetailPage() {
 
         {/* ── Simulator Tab ── */}
         <TabsContent value="simulator">
-          <SimulatorTab
-            simResult={simResult}
-            simRunning={simRunning}
-            onRun={runSimulation}
-          />
+          <SimulatorTab simResult={simResult} simRunning={simRunning} onRun={runSimulation} />
         </TabsContent>
 
         {/* ── Test Cases Tab ── */}
@@ -513,13 +587,17 @@ export default function RuleSetDetailPage() {
       <Dialog open={ruleDialogOpen} onOpenChange={setRuleDialogOpen}>
         <DialogContent onClose={closeRuleDialog} className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{editingRule ? "Edit Rule" : "Add Rule"}</DialogTitle>
+            <DialogTitle>{editingRule ? 'Edit Rule' : 'Add Rule'}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>Name</Label>
-                <Input value={ruleName} onChange={(e) => setRuleName(e.target.value)} placeholder="Rule name" />
+                <Input
+                  value={ruleName}
+                  onChange={(e) => setRuleName(e.target.value)}
+                  placeholder="Rule name"
+                />
               </div>
               <div className="space-y-2">
                 <Label>Type</Label>
@@ -532,11 +610,19 @@ export default function RuleSetDetailPage() {
             </div>
             <div className="space-y-2">
               <Label>Description</Label>
-              <Input value={ruleDescription} onChange={(e) => setRuleDescription(e.target.value)} placeholder="Optional description" />
+              <Input
+                value={ruleDescription}
+                onChange={(e) => setRuleDescription(e.target.value)}
+                placeholder="Optional description"
+              />
             </div>
             <div className="space-y-2">
               <Label>Priority (lower = higher priority)</Label>
-              <Input type="number" value={rulePriority} onChange={(e) => setRulePriority(Number(e.target.value))} />
+              <Input
+                type="number"
+                value={rulePriority}
+                onChange={(e) => setRulePriority(Number(e.target.value))}
+              />
             </div>
 
             {/* Conditions */}
@@ -562,7 +648,7 @@ export default function RuleSetDetailPage() {
                     className="w-36"
                   />
                   <Input
-                    value={String(cond.value ?? "")}
+                    value={String(cond.value ?? '')}
                     onChange={(e) => updateCondition(idx, { value: e.target.value })}
                     placeholder="Value"
                     className="flex-1"
@@ -597,7 +683,9 @@ export default function RuleSetDetailPage() {
                     onChange={(e) => {
                       try {
                         updateAction(idx, { params: JSON.parse(e.target.value) });
-                      } catch { /* ignore parse errors while typing */ }
+                      } catch {
+                        /* ignore parse errors while typing */
+                      }
                     }}
                     placeholder='{"percentage": 5}'
                     className="flex-1"
@@ -612,9 +700,11 @@ export default function RuleSetDetailPage() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={closeRuleDialog}>Cancel</Button>
+            <Button variant="outline" onClick={closeRuleDialog}>
+              Cancel
+            </Button>
             <Button onClick={handleSaveRule} disabled={!ruleName.trim()}>
-              {editingRule ? "Update" : "Create"} Rule
+              {editingRule ? 'Update' : 'Create'} Rule
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -647,7 +737,7 @@ function RulesTab({
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={() => setJsonView(!jsonView)}>
               {jsonView ? <Eye className="mr-1 h-4 w-4" /> : <Code className="mr-1 h-4 w-4" />}
-              {jsonView ? "Visual" : "JSON"}
+              {jsonView ? 'Visual' : 'JSON'}
             </Button>
             <Button size="sm" onClick={onAdd}>
               <Plus className="mr-1 h-4 w-4" /> Add Rule
@@ -682,16 +772,20 @@ function RulesTab({
                 <TableRow key={rule.id}>
                   <TableCell className="font-mono text-center">{rule.priority}</TableCell>
                   <TableCell className="font-medium">{rule.name}</TableCell>
-                  <TableCell><Badge variant="outline">{rule.type}</Badge></TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {rule.conditions.map((c) => `${c.field} ${c.operator} ${JSON.stringify(c.value)}`).join(", ")}
+                  <TableCell>
+                    <Badge variant="outline">{rule.type}</Badge>
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
-                    {rule.actions.map((a) => `${a.type}(${JSON.stringify(a.params)})`).join(", ")}
+                    {rule.conditions
+                      .map((c) => `${c.field} ${c.operator} ${JSON.stringify(c.value)}`)
+                      .join(', ')}
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {rule.actions.map((a) => `${a.type}(${JSON.stringify(a.params)})`).join(', ')}
                   </TableCell>
                   <TableCell>
-                    <Badge variant={rule.enabled ? "default" : "secondary"}>
-                      {rule.enabled ? "Enabled" : "Disabled"}
+                    <Badge variant={rule.enabled ? 'default' : 'secondary'}>
+                      {rule.enabled ? 'Enabled' : 'Disabled'}
                     </Badge>
                   </TableCell>
                   <TableCell>
@@ -713,7 +807,6 @@ function RulesTab({
     </Card>
   );
 }
-
 
 // ── Policy Converter Tab ──
 function PolicyConverterTab({
@@ -737,7 +830,9 @@ function PolicyConverterTab({
 }) {
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [editingIdx, setEditingIdx] = React.useState<number | null>(null);
-  const [editForm, setEditForm] = React.useState<{ name: string; description: string } | null>(null);
+  const [editForm, setEditForm] = React.useState<{ name: string; description: string } | null>(
+    null,
+  );
 
   function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -777,7 +872,7 @@ function PolicyConverterTab({
   return (
     <div className="space-y-4">
       {/* Side-by-side layout when results exist */}
-      <div className={hasResults ? "grid grid-cols-1 lg:grid-cols-2 gap-4" : ""}>
+      <div className={hasResults ? 'grid grid-cols-1 lg:grid-cols-2 gap-4' : ''}>
         {/* Left: Policy Input */}
         <Card>
           <CardHeader>
@@ -796,7 +891,7 @@ function PolicyConverterTab({
             <div className="flex items-center gap-2">
               <Button onClick={onConvert} disabled={!policyText.trim() || isConverting}>
                 <Wand2 className="mr-2 h-4 w-4" />
-                {isConverting ? "Converting..." : "Convert to Rules"}
+                {isConverting ? 'Converting...' : 'Convert to Rules'}
               </Button>
               <Button variant="outline" onClick={() => fileInputRef.current?.click()}>
                 <Upload className="mr-2 h-4 w-4" />
@@ -846,17 +941,21 @@ function PolicyConverterTab({
                       <div
                         key={idx}
                         className={`border rounded-lg p-4 space-y-2 ${
-                          level === "low" ? "border-destructive/30 bg-destructive/5" :
-                          level === "medium" ? "border-yellow-500/30 bg-yellow-50/50 dark:bg-yellow-900/10" :
-                          "border-green-500/30 bg-green-50/50 dark:bg-green-900/10"
+                          level === 'low'
+                            ? 'border-destructive/30 bg-destructive/5'
+                            : level === 'medium'
+                              ? 'border-yellow-500/30 bg-yellow-50/50 dark:bg-yellow-900/10'
+                              : 'border-green-500/30 bg-green-50/50 dark:bg-green-900/10'
                         }`}
                       >
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2 flex-wrap">
                             {isEditing ? (
                               <Input
-                                value={editForm?.name ?? ""}
-                                onChange={(e) => setEditForm({ ...editForm!, name: e.target.value })}
+                                value={editForm?.name ?? ''}
+                                onChange={(e) =>
+                                  setEditForm({ ...editForm!, name: e.target.value })
+                                }
                                 className="h-7 text-sm font-medium w-48"
                               />
                             ) : (
@@ -866,15 +965,17 @@ function PolicyConverterTab({
                               {level} ({Math.round(rule.confidence * 100)}%)
                             </Badge>
                             <Badge variant="outline">{rule.ruleType || rule.type}</Badge>
-                            {rule.needsReview && (
-                              <Badge variant="secondary">Needs Review</Badge>
-                            )}
+                            {rule.needsReview && <Badge variant="secondary">Needs Review</Badge>}
                           </div>
                           <div className="flex items-center gap-1">
                             {isEditing ? (
                               <>
-                                <Button size="sm" variant="outline" onClick={cancelEdit}>Cancel</Button>
-                                <Button size="sm" onClick={saveEdit}>Save</Button>
+                                <Button size="sm" variant="outline" onClick={cancelEdit}>
+                                  Cancel
+                                </Button>
+                                <Button size="sm" onClick={saveEdit}>
+                                  Save
+                                </Button>
                               </>
                             ) : (
                               <>
@@ -887,7 +988,9 @@ function PolicyConverterTab({
                                 <Button
                                   size="sm"
                                   variant="outline"
-                                  onClick={() => setExtractedRules(extractedRules.filter((_, i) => i !== idx))}
+                                  onClick={() =>
+                                    setExtractedRules(extractedRules.filter((_, i) => i !== idx))
+                                  }
                                 >
                                   <XCircle className="mr-1 h-4 w-4" /> Reject
                                 </Button>
@@ -898,8 +1001,10 @@ function PolicyConverterTab({
 
                         {isEditing ? (
                           <Textarea
-                            value={editForm?.description ?? ""}
-                            onChange={(e) => setEditForm({ ...editForm!, description: e.target.value })}
+                            value={editForm?.description ?? ''}
+                            onChange={(e) =>
+                              setEditForm({ ...editForm!, description: e.target.value })
+                            }
                             rows={2}
                             className="text-sm"
                           />
@@ -908,16 +1013,20 @@ function PolicyConverterTab({
                         )}
 
                         <div className="text-xs text-muted-foreground">
-                          <span className="font-medium">Conditions:</span>{" "}
+                          <span className="font-medium">Conditions:</span>{' '}
                           {rule.conditions.length > 0
-                            ? rule.conditions.map((c) => `${c.field} ${c.operator} ${JSON.stringify(c.value)}`).join("; ")
-                            : "None"}
+                            ? rule.conditions
+                                .map((c) => `${c.field} ${c.operator} ${JSON.stringify(c.value)}`)
+                                .join('; ')
+                            : 'None'}
                         </div>
                         <div className="text-xs text-muted-foreground">
-                          <span className="font-medium">Actions:</span>{" "}
+                          <span className="font-medium">Actions:</span>{' '}
                           {rule.actions.length > 0
-                            ? rule.actions.map((a) => `${a.type}(${JSON.stringify(a.params)})`).join("; ")
-                            : "None"}
+                            ? rule.actions
+                                .map((a) => `${a.type}(${JSON.stringify(a.params)})`)
+                                .join('; ')
+                            : 'None'}
                         </div>
 
                         {rule.sourceText && (
@@ -965,7 +1074,7 @@ function SimulatorTab({
   } | null>(null);
 
   React.useEffect(() => {
-    import("recharts").then((mod) => {
+    import('recharts').then((mod) => {
       setRechartsComponents({
         BarChart: mod.BarChart as unknown as React.ComponentType<Record<string, unknown>>,
         Bar: mod.Bar as unknown as React.ComponentType<Record<string, unknown>>,
@@ -973,7 +1082,9 @@ function SimulatorTab({
         YAxis: mod.YAxis as unknown as React.ComponentType<Record<string, unknown>>,
         CartesianGrid: mod.CartesianGrid as unknown as React.ComponentType<Record<string, unknown>>,
         Tooltip: mod.Tooltip as unknown as React.ComponentType<Record<string, unknown>>,
-        ResponsiveContainer: mod.ResponsiveContainer as unknown as React.ComponentType<Record<string, unknown>>,
+        ResponsiveContainer: mod.ResponsiveContainer as unknown as React.ComponentType<
+          Record<string, unknown>
+        >,
       });
     });
   }, []);
@@ -985,11 +1096,13 @@ function SimulatorTab({
           <div className="flex items-center justify-between">
             <div>
               <CardTitle>Run Simulation</CardTitle>
-              <CardDescription>Simulate the impact of this rule set on your employee population.</CardDescription>
+              <CardDescription>
+                Simulate the impact of this rule set on your employee population.
+              </CardDescription>
             </div>
             <Button onClick={onRun} disabled={simRunning}>
               <Play className="mr-2 h-4 w-4" />
-              {simRunning ? "Running..." : "Run Simulation"}
+              {simRunning ? 'Running...' : 'Run Simulation'}
             </Button>
           </div>
         </CardHeader>
@@ -1007,7 +1120,9 @@ function SimulatorTab({
             </Card>
             <Card>
               <CardContent className="pt-6">
-                <div className="text-2xl font-bold">{simResult.summary.averageChange.toFixed(1)}%</div>
+                <div className="text-2xl font-bold">
+                  {simResult.summary.averageChange.toFixed(1)}%
+                </div>
                 <p className="text-xs text-muted-foreground">Average Change</p>
               </CardContent>
             </Card>
@@ -1033,14 +1148,18 @@ function SimulatorTab({
                   <CardTitle className="text-base">Impact by Department</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <div style={{ width: "100%", height: 300 }}>
+                  <div style={{ width: '100%', height: 300 }}>
                     <RechartsComponents.ResponsiveContainer width="100%" height="100%">
                       <RechartsComponents.BarChart data={simResult.departmentBreakdown}>
                         <RechartsComponents.CartesianGrid strokeDasharray="3 3" />
                         <RechartsComponents.XAxis dataKey="department" />
                         <RechartsComponents.YAxis />
                         <RechartsComponents.Tooltip />
-                        <RechartsComponents.Bar dataKey="avgChange" fill="hsl(var(--primary))" name="Avg Change %" />
+                        <RechartsComponents.Bar
+                          dataKey="avgChange"
+                          fill="hsl(var(--primary))"
+                          name="Avg Change %"
+                        />
                       </RechartsComponents.BarChart>
                     </RechartsComponents.ResponsiveContainer>
                   </div>
@@ -1051,14 +1170,18 @@ function SimulatorTab({
                   <CardTitle className="text-base">Change Distribution</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <div style={{ width: "100%", height: 300 }}>
+                  <div style={{ width: '100%', height: 300 }}>
                     <RechartsComponents.ResponsiveContainer width="100%" height="100%">
                       <RechartsComponents.BarChart data={simResult.distribution}>
                         <RechartsComponents.CartesianGrid strokeDasharray="3 3" />
                         <RechartsComponents.XAxis dataKey="range" />
                         <RechartsComponents.YAxis />
                         <RechartsComponents.Tooltip />
-                        <RechartsComponents.Bar dataKey="count" fill="hsl(var(--secondary))" name="Employees" />
+                        <RechartsComponents.Bar
+                          dataKey="count"
+                          fill="hsl(var(--secondary))"
+                          name="Employees"
+                        />
                       </RechartsComponents.BarChart>
                     </RechartsComponents.ResponsiveContainer>
                   </div>
@@ -1093,8 +1216,9 @@ function SimulatorTab({
                       <TableCell className="text-right">${d.after.toLocaleString()}</TableCell>
                       <TableCell className="text-right">${d.change.toLocaleString()}</TableCell>
                       <TableCell className="text-right">
-                        <span className={d.changePercent >= 0 ? "text-green-600" : "text-red-600"}>
-                          {d.changePercent >= 0 ? "+" : ""}{d.changePercent.toFixed(1)}%
+                        <span className={d.changePercent >= 0 ? 'text-green-600' : 'text-red-600'}>
+                          {d.changePercent >= 0 ? '+' : ''}
+                          {d.changePercent.toFixed(1)}%
                         </span>
                       </TableCell>
                     </TableRow>
@@ -1132,7 +1256,9 @@ function TestCasesTab({
           <div className="flex items-center justify-between">
             <div>
               <CardTitle>Test Cases</CardTitle>
-              <CardDescription>Auto-generate test cases from rules or run existing tests.</CardDescription>
+              <CardDescription>
+                Auto-generate test cases from rules or run existing tests.
+              </CardDescription>
             </div>
             <div className="flex items-center gap-2">
               <Button variant="outline" onClick={onGenerate} disabled={testsRunning}>
@@ -1141,7 +1267,7 @@ function TestCasesTab({
               </Button>
               <Button onClick={onRunAll} disabled={testsRunning || !testResult}>
                 <Play className="mr-2 h-4 w-4" />
-                {testsRunning ? "Running..." : "Run All"}
+                {testsRunning ? 'Running...' : 'Run All'}
               </Button>
             </div>
           </div>
@@ -1216,22 +1342,38 @@ function TestCasesTab({
                           </pre>
                         </div>
                         <div>
-                          <p className="text-xs font-medium text-muted-foreground">Expected Output</p>
+                          <p className="text-xs font-medium text-muted-foreground">
+                            Expected Output
+                          </p>
                           <pre className="text-xs bg-background p-2 rounded mt-1 overflow-auto">
                             {JSON.stringify(tc.expectedOutput, null, 2)}
                           </pre>
                         </div>
                         {tc.actualOutput && (
                           <div>
-                            <p className="text-xs font-medium text-muted-foreground">Actual Output</p>
+                            <p className="text-xs font-medium text-muted-foreground">
+                              Actual Output
+                            </p>
                             <pre className="text-xs bg-background p-2 rounded mt-1 overflow-auto">
                               {JSON.stringify(tc.actualOutput, null, 2)}
                             </pre>
                           </div>
                         )}
                         <div>
-                          <Badge variant={tc.passed ? "default" : tc.passed === false ? "destructive" : "outline"}>
-                            {tc.passed === true ? "PASSED" : tc.passed === false ? "FAILED" : "NOT RUN"}
+                          <Badge
+                            variant={
+                              tc.passed
+                                ? 'default'
+                                : tc.passed === false
+                                  ? 'destructive'
+                                  : 'outline'
+                            }
+                          >
+                            {tc.passed === true
+                              ? 'PASSED'
+                              : tc.passed === false
+                                ? 'FAILED'
+                                : 'NOT RUN'}
                           </Badge>
                         </div>
                       </div>
