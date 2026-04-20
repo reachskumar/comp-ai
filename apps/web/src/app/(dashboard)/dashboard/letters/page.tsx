@@ -39,6 +39,8 @@ import {
   type CompensationLetter,
   type GenerateLetterInput,
 } from '@/hooks/use-letters';
+import { useQuery } from '@tanstack/react-query';
+import { apiClient } from '@/lib/api-client';
 
 const LETTER_TYPES: { value: LetterType; label: string }[] = [
   { value: 'offer', label: 'Offer Letter' },
@@ -229,6 +231,26 @@ interface GenerateFormProps {
 }
 
 function GenerateForm({ form, onChange, onGenerate, isGenerating, error }: GenerateFormProps) {
+  const [empSearch, setEmpSearch] = useState('');
+  const { data: empResults } = useQuery({
+    queryKey: ['employee-search', empSearch],
+    queryFn: () =>
+      apiClient.fetch<{
+        data: Array<{
+          id: string;
+          firstName: string;
+          lastName: string;
+          department: string;
+          level: string;
+          employeeCode: string;
+        }>;
+      }>(`/api/v1/settings/employees?search=${encodeURIComponent(empSearch)}&limit=10`),
+    enabled: empSearch.length >= 2,
+    staleTime: 10000,
+  });
+  const [selectedEmpName, setSelectedEmpName] = useState('');
+  const [showDropdown, setShowDropdown] = useState(false);
+
   return (
     <div className="mx-auto max-w-2xl space-y-6">
       <Card>
@@ -237,14 +259,48 @@ function GenerateForm({ form, onChange, onGenerate, isGenerating, error }: Gener
           <CardDescription>Configure the compensation letter parameters</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="employeeId">Employee ID</Label>
+          <div className="space-y-2 relative">
+            <Label htmlFor="employeeSearch">Employee</Label>
             <Input
-              id="employeeId"
-              placeholder="Enter employee ID"
-              value={form.employeeId}
-              onChange={(e) => onChange('employeeId', e.target.value)}
+              id="employeeSearch"
+              placeholder="Search by name, department, or employee code..."
+              value={selectedEmpName || empSearch}
+              onChange={(e) => {
+                setEmpSearch(e.target.value);
+                setSelectedEmpName('');
+                setShowDropdown(true);
+                if (!e.target.value) onChange('employeeId', '');
+              }}
+              onFocus={() => empSearch.length >= 2 && setShowDropdown(true)}
             />
+            {showDropdown && empResults?.data && empResults.data.length > 0 && (
+              <div className="absolute z-50 mt-1 w-full rounded-md border bg-popover shadow-lg max-h-48 overflow-y-auto">
+                {empResults.data.map((emp) => (
+                  <button
+                    key={emp.id}
+                    type="button"
+                    className="w-full px-3 py-2 text-left text-sm hover:bg-muted flex justify-between"
+                    onClick={() => {
+                      onChange('employeeId', emp.id);
+                      setSelectedEmpName(
+                        `${emp.firstName} ${emp.lastName} — ${emp.department} (${emp.level})`,
+                      );
+                      setShowDropdown(false);
+                    }}
+                  >
+                    <span className="font-medium">
+                      {emp.firstName} {emp.lastName}
+                    </span>
+                    <span className="text-muted-foreground text-xs">
+                      {emp.department} · {emp.level}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {form.employeeId && selectedEmpName && (
+              <p className="text-xs text-muted-foreground">Selected: {selectedEmpName}</p>
+            )}
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">

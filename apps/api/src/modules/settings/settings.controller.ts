@@ -29,6 +29,20 @@ export class SettingsController {
     return this.settingsService.listUsers(req.user.tenantId);
   }
 
+  @Get('employees')
+  @ApiOperation({ summary: 'Search employees by name, department, or code' })
+  async searchEmployees(
+    @Query('search') search: string,
+    @Query('limit') limitStr: string,
+    @Request() req: AuthRequest,
+  ) {
+    return this.settingsService.searchEmployees(
+      req.user.tenantId,
+      search,
+      parseInt(limitStr || '10', 10),
+    );
+  }
+
   @Get('audit-logs/summary')
   @ApiOperation({ summary: 'Get audit log summary stats (action counts + top users)' })
   async getAuditLogSummary(

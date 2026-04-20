@@ -51,6 +51,34 @@ export class SettingsService {
     return { data: users, total: users.length };
   }
 
+  async searchEmployees(tenantId: string, search?: string, limit = 10) {
+    const where: Record<string, unknown> = { tenantId };
+    if (search && search.length >= 2) {
+      where['OR'] = [
+        { firstName: { contains: search, mode: 'insensitive' } },
+        { lastName: { contains: search, mode: 'insensitive' } },
+        { employeeCode: { contains: search, mode: 'insensitive' } },
+        { department: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+    const data = await this.db.forTenant(tenantId, (tx) =>
+      tx.employee.findMany({
+        where: where as never,
+        take: Math.min(limit, 50),
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          department: true,
+          level: true,
+          employeeCode: true,
+        },
+        orderBy: { firstName: 'asc' },
+      }),
+    );
+    return { data };
+  }
+
   async listAuditLogs(tenantId: string, query: AuditLogQueryDto) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
