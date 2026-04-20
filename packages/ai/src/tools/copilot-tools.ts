@@ -194,6 +194,42 @@ const LETTER_ROLES = new Set(['PLATFORM_ADMIN', 'ADMIN', 'HR_MANAGER']);
  * @param userId - User ID for action tools (required for audit trail)
  * @param userRole - User's role for hard guardrails on action tools
  */
+
+/** Cap tool response size to avoid context overflow (128K GPT-4o limit) */
+const MAX_TOOL_RESPONSE_CHARS = 8000;
+function capResponse(data: unknown): unknown {
+  const json = JSON.stringify(data);
+  if (json.length <= MAX_TOOL_RESPONSE_CHARS) return data;
+  // If array, truncate rows
+  if (Array.isArray(data)) {
+    let truncated = data;
+    while (JSON.stringify(truncated).length > MAX_TOOL_RESPONSE_CHARS && truncated.length > 1) {
+      truncated = truncated.slice(0, Math.max(1, Math.floor(truncated.length * 0.7)));
+    }
+    return {
+      data: truncated,
+      truncated: true,
+      totalAvailable: data.length,
+      showing: truncated.length,
+    };
+  }
+  // If object with data array, truncate the array
+  if (
+    data &&
+    typeof data === 'object' &&
+    'data' in data &&
+    Array.isArray((data as Record<string, unknown>).data)
+  ) {
+    const obj = data as Record<string, unknown>;
+    let arr = obj.data as unknown[];
+    while (JSON.stringify(arr).length > MAX_TOOL_RESPONSE_CHARS - 200 && arr.length > 1) {
+      arr = arr.slice(0, Math.max(1, Math.floor(arr.length * 0.7)));
+    }
+    return { ...obj, data: arr, truncated: true, showing: arr.length };
+  }
+  return data;
+}
+
 export function createCopilotTools(
   tenantId: string,
   db: CopilotDbAdapter,
@@ -212,9 +248,12 @@ export function createCopilotTools(
       maxSalary: z.number().optional().describe('Maximum base salary'),
       search: z.string().optional().describe('Search by name or employee code'),
       managerId: z.string().optional().describe('Filter by manager ID to find direct reports'),
-      limit: z.number().optional().default(50).describe('Max results to return'),
+      limit: z.number().optional().default(20).describe('Max results to return (max 20)'),
     }),
-    func: async (input) => db.queryEmployees(tenantId, input),
+    func: async (input) =>
+      capResponse(
+        await db.queryEmployees(tenantId, { ...input, limit: Math.min(input.limit ?? 20, 20) }),
+      ),
   });
 
   const queryCompensation = createDomainTool({
@@ -225,9 +264,12 @@ export function createCopilotTools(
       employeeId: z.string().optional().describe('Specific employee ID'),
       department: z.string().optional().describe('Filter by department'),
       component: z.string().optional().describe('Filter by comp component (salary, bonus, lti)'),
-      limit: z.number().optional().default(50).describe('Max results to return'),
+      limit: z.number().optional().default(20).describe('Max results to return (max 20)'),
     }),
-    func: async (input) => db.queryCompensation(tenantId, input),
+    func: async (input) =>
+      capResponse(
+        await db.queryCompensation(tenantId, { ...input, limit: Math.min(input.limit ?? 20, 20) }),
+      ),
   });
 
   const queryRules = createDomainTool({
@@ -240,7 +282,7 @@ export function createCopilotTools(
       search: z.string().optional().describe('Search by rule set name'),
       limit: z.number().optional().default(20).describe('Max results to return'),
     }),
-    func: async (input) => db.queryRules(tenantId, input),
+    func: async (input) => capResponse(await db.queryRules(tenantId, input)),
   });
 
   const queryCycles = createDomainTool({
@@ -255,7 +297,7 @@ export function createCopilotTools(
       cycleType: z.string().optional().describe('Filter by type (MERIT, BONUS, LTI, COMBINED)'),
       limit: z.number().optional().default(10).describe('Max results to return'),
     }),
-    func: async (input) => db.queryCycles(tenantId, input),
+    func: async (input) => capResponse(await db.queryCycles(tenantId, input)),
   });
 
   const queryPayroll = createDomainTool({
@@ -270,7 +312,7 @@ export function createCopilotTools(
       period: z.string().optional().describe('Filter by payroll period (e.g. "2024-01")'),
       limit: z.number().optional().default(10).describe('Max results to return'),
     }),
-    func: async (input) => db.queryPayroll(tenantId, input),
+    func: async (input) => capResponse(await db.queryPayroll(tenantId, input)),
   });
 
   const queryAnalytics = createDomainTool({
@@ -289,7 +331,7 @@ export function createCopilotTools(
         .describe('Group results by: "department", "level", "location"'),
       department: z.string().optional().describe('Filter to a specific department'),
     }),
-    func: async (input) => db.queryAnalytics(tenantId, input),
+    func: async (input) => capResponse(await db.queryAnalytics(tenantId, input)),
   });
 
   const queryBenefits = createDomainTool({
@@ -308,7 +350,7 @@ export function createCopilotTools(
         .describe('Filter by enrollment status: ACTIVE, PENDING, TERMINATED, WAIVED'),
       limit: z.number().optional().default(20).describe('Max results to return'),
     }),
-    func: async (input) => db.queryBenefits(tenantId, input),
+    func: async (input) => capResponse(await db.queryBenefits(tenantId, input)),
   });
 
   const queryEquity = createDomainTool({
@@ -329,7 +371,7 @@ export function createCopilotTools(
         .describe('Filter by type: RSU, STOCK_OPTION, PERFORMANCE_SHARE, PHANTOM_STOCK, SAR'),
       limit: z.number().optional().default(20).describe('Max results to return'),
     }),
-    func: async (input) => db.queryEquity(tenantId, input),
+    func: async (input) => capResponse(await db.queryEquity(tenantId, input)),
   });
 
   const querySalaryBands = createDomainTool({
@@ -345,7 +387,7 @@ export function createCopilotTools(
       location: z.string().optional().describe('Filter by location'),
       limit: z.number().optional().default(20).describe('Max results to return'),
     }),
-    func: async (input) => db.querySalaryBands(tenantId, input),
+    func: async (input) => capResponse(await db.querySalaryBands(tenantId, input)),
   });
 
   const queryNotifications = createDomainTool({
@@ -361,7 +403,7 @@ export function createCopilotTools(
         .describe('Only return unread notifications'),
       limit: z.number().optional().default(10).describe('Max results to return'),
     }),
-    func: async (input) => db.queryNotifications(tenantId, input),
+    func: async (input) => capResponse(await db.queryNotifications(tenantId, input)),
   });
 
   const queryTeam = createDomainTool({
@@ -377,7 +419,7 @@ export function createCopilotTools(
         .describe('Include indirect reports (reports of reports)'),
       limit: z.number().optional().default(50).describe('Max results to return'),
     }),
-    func: async (input) => db.queryTeam(tenantId, input),
+    func: async (input) => capResponse(await db.queryTeam(tenantId, input)),
   });
 
   const queryPerformanceAnalytics = createDomainTool({
@@ -396,7 +438,7 @@ export function createCopilotTools(
         .optional()
         .describe('Additional grouping: "department", "level", "location"'),
     }),
-    func: async (input) => db.queryPerformanceAnalytics(tenantId, input),
+    func: async (input) => capResponse(await db.queryPerformanceAnalytics(tenantId, input)),
   });
 
   // ─── Action Tools (require userId) ────────────────────────
@@ -505,9 +547,7 @@ export function createCopilotTools(
 
 export interface MirrorDbAdapter {
   /** List all mirrored tables for this tenant with row counts and column metadata. */
-  listMirrorTables(
-    tenantId: string,
-  ): Promise<
+  listMirrorTables(tenantId: string): Promise<
     Array<{
       tableName: string;
       rowCount: number;
@@ -544,10 +584,7 @@ export interface MirrorDbAdapter {
   ): Promise<unknown[]>;
 }
 
-function createMirrorTools(
-  tenantId: string,
-  adapter: MirrorDbAdapter,
-): StructuredToolInterface[] {
+function createMirrorTools(tenantId: string, adapter: MirrorDbAdapter): StructuredToolInterface[] {
   const listTables = createDomainTool({
     name: 'list_compport_tables',
     description:
@@ -566,7 +603,11 @@ function createMirrorTools(
       'a sample row showing real values, primary key, and row count. ' +
       'Call list_compport_tables first to find the table name, then use this to understand its structure.',
     schema: z.object({
-      tableName: z.string().describe('The Compport table name (e.g. salary_details, performance_ratings, bonus_details)'),
+      tableName: z
+        .string()
+        .describe(
+          'The Compport table name (e.g. salary_details, performance_ratings, bonus_details)',
+        ),
     }),
     func: async (input) => adapter.describeMirrorTable(tenantId, input.tableName),
   });
@@ -585,21 +626,10 @@ function createMirrorTools(
         .record(z.string(), z.unknown())
         .optional()
         .describe('Filter conditions as { columnName: value } pairs. Exact match only.'),
-      columns: z
-        .array(z.string())
-        .optional()
-        .describe('Specific columns to return (default: all)'),
+      columns: z.array(z.string()).optional().describe('Specific columns to return (default: all)'),
       orderBy: z.string().optional().describe('Column to sort by'),
-      orderDir: z
-        .enum(['ASC', 'DESC'])
-        .optional()
-        .default('ASC')
-        .describe('Sort direction'),
-      limit: z
-        .number()
-        .optional()
-        .default(50)
-        .describe('Max rows to return (default 50, max 200)'),
+      orderDir: z.enum(['ASC', 'DESC']).optional().default('ASC').describe('Sort direction'),
+      limit: z.number().optional().default(50).describe('Max rows to return (default 50, max 200)'),
     }),
     func: async (input) =>
       adapter.queryMirrorTable(tenantId, input.tableName, {
