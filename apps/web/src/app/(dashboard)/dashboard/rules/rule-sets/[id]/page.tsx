@@ -255,7 +255,7 @@ export default function RuleSetDetailPage() {
       if (raw.rules) {
         raw.rules = raw.rules.map((r) => ({
           ...r,
-          type: r.type || ((r as Record<string, unknown>)['ruleType'] as string) || 'CUSTOM',
+          type: r.type || String((r as unknown as Record<string, unknown>)['ruleType'] ?? 'CUSTOM'),
           conditions: Array.isArray(r.conditions)
             ? r.conditions
             : Object.entries(r.conditions || {}).map(([field, val]) => {
