@@ -11,8 +11,7 @@ interface AuthRequest {
 
 @ApiTags('settings')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
-@RequirePermission('Settings', 'view')
+@UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('settings')
 export class SettingsController {
   constructor(private readonly settingsService: SettingsService) {}
