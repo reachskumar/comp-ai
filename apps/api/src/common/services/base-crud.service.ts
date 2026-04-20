@@ -16,12 +16,17 @@ export interface PaginatedResult<T> {
 
 /**
  * Abstract base CRUD service that auto-scopes all Prisma queries by tenantId.
- * Subclasses must provide the Prisma model name (delegate key).
+ * ALL methods use forTenant() to set RLS context before querying.
  */
 export abstract class BaseCrudService<T = unknown> {
   protected abstract readonly modelName: string;
 
   constructor(protected readonly db: DatabaseService) {}
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private getModel(tx: any): any {
+    return tx[this.modelName];
+  }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   protected get model(): any {
@@ -39,8 +44,7 @@ export abstract class BaseCrudService<T = unknown> {
     const skip = (page - 1) * limit;
 
     const [data, total] = await this.db.forTenant(tenantId, (tx) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const model = (tx as any)[this.modelName];
+      const model = this.getModel(tx);
       return Promise.all([
         model.findMany({
           where: { ...where, tenantId },
@@ -62,9 +66,9 @@ export abstract class BaseCrudService<T = unknown> {
   }
 
   async findOne(tenantId: string, id: string): Promise<T> {
-    const record = await this.model.findFirst({
-      where: { id, tenantId },
-    });
+    const record = await this.db.forTenant(tenantId, (tx) =>
+      this.getModel(tx).findFirst({ where: { id, tenantId } }),
+    );
 
     if (!record) {
       throw new NotFoundException(`${this.modelName} with id ${id} not found`);
@@ -74,25 +78,20 @@ export abstract class BaseCrudService<T = unknown> {
   }
 
   async create(tenantId: string, data: Record<string, unknown>): Promise<T> {
-    return this.model.create({
-      data: { ...data, tenantId },
-    });
+    return this.db.forTenant(tenantId, (tx) =>
+      this.getModel(tx).create({ data: { ...data, tenantId } }),
+    );
   }
 
   async update(tenantId: string, id: string, data: Record<string, unknown>): Promise<T> {
     await this.findOne(tenantId, id);
 
-    return this.model.update({
-      where: { id },
-      data,
-    });
+    return this.db.forTenant(tenantId, (tx) => this.getModel(tx).update({ where: { id }, data }));
   }
 
   async delete(tenantId: string, id: string): Promise<T> {
     await this.findOne(tenantId, id);
 
-    return this.model.delete({
-      where: { id },
-    });
+    return this.db.forTenant(tenantId, (tx) => this.getModel(tx).delete({ where: { id } }));
   }
 }

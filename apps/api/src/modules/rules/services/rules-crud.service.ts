@@ -33,10 +33,12 @@ export class RuleSetCrudService extends BaseCrudService {
    * Get a single rule set with its rules included.
    */
   async getRuleSet(tenantId: string, id: string) {
-    const ruleSet = await this.model.findFirst({
-      where: { id, tenantId },
-      include: { rules: { orderBy: { priority: 'asc' } } },
-    });
+    const ruleSet = await this.db.forTenant(tenantId, (tx) =>
+      tx.ruleSet.findFirst({
+        where: { id, tenantId },
+        include: { rules: { orderBy: { priority: 'asc' } } },
+      }),
+    );
 
     if (!ruleSet) {
       throw new NotFoundException(`RuleSet with id ${id} not found`);
@@ -187,4 +189,3 @@ export class RuleCrudService {
     });
   }
 }
-
