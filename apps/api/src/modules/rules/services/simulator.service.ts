@@ -238,136 +238,141 @@ export class SimulatorService {
     ruleSetId: string,
     params: SimulationParams,
   ): Promise<SimulationReport> {
-    return this.db.forTenant(tenantId, async (tx) => {
-      // 1. Verify RuleSet exists and belongs to tenant
-      const dbRuleSet = await tx.ruleSet.findFirst({
-        where: { id: ruleSetId, tenantId },
-        include: { rules: true },
-      });
-      if (!dbRuleSet) {
-        throw new NotFoundException(`RuleSet ${ruleSetId} not found`);
-      }
-
-      // 2. Create SimulationRun record
-      const simulationRun = await tx.simulationRun.create({
-        data: {
-          tenantId,
-          ruleSetId,
-          userId,
-          status: 'RUNNING',
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          parameters: params as any,
-        },
-      });
-
-      try {
-        // 3. Build the engine RuleSet
-        const ruleSet = buildRuleSet(dbRuleSet);
-
-        // 4. Load employees with optional filters
-        const employeeWhere: Record<string, unknown> = { tenantId };
-        if (params.departmentFilter?.length) {
-          employeeWhere['department'] = { in: params.departmentFilter };
-        }
-        if (params.levelFilter?.length) {
-          employeeWhere['level'] = { in: params.levelFilter };
-        }
-        if (params.locationFilter?.length) {
-          employeeWhere['location'] = { in: params.locationFilter };
-        }
-
-        const employees = await tx.employee.findMany({
-          where: employeeWhere,
-          take: params.maxEmployees ?? undefined,
+    // Simulation processes all employees — needs longer timeout than default 5s
+    return this.db.forTenant(
+      tenantId,
+      async (tx) => {
+        // 1. Verify RuleSet exists and belongs to tenant
+        const dbRuleSet = await tx.ruleSet.findFirst({
+          where: { id: ruleSetId, tenantId },
+          include: { rules: true },
         });
-
-        // 5. Evaluate each employee
-        const results: EmployeeSimResult[] = [];
-        for (const emp of employees) {
-          const empData = toEmployeeData(emp);
-          const evalResult = evaluateRules(empData, ruleSet);
-
-          const baseSalary = Number(emp.baseSalary);
-          const totalComp = Number(emp.totalComp);
-          const totalChange = evalResult.totalMerit + evalResult.totalBonus + evalResult.totalLTI;
-          const changePercent = baseSalary > 0 ? (totalChange / baseSalary) * 100 : 0;
-
-          const simResult: EmployeeSimResult = {
-            employeeId: emp.id,
-            employeeCode: emp.employeeCode,
-            name: `${emp.firstName} ${emp.lastName}`,
-            department: emp.department,
-            level: emp.level,
-            before: { baseSalary, totalComp },
-            after: {
-              merit: evalResult.totalMerit,
-              bonus: evalResult.totalBonus,
-              lti: evalResult.totalLTI,
-              newTotal: totalComp + totalChange,
-            },
-            changePercent: Math.round(changePercent * 100) / 100,
-            blocked: evalResult.blocked,
-            flags: evalResult.flags,
-          };
-
-          results.push(simResult);
-
-          // Store individual result
-          await tx.simulationResult.create({
-            data: {
-              simulationRunId: simulationRun.id,
-              employeeId: emp.id,
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              input: empData as any,
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              output: evalResult as any,
-              delta: {
-                merit: evalResult.totalMerit,
-                bonus: evalResult.totalBonus,
-                lti: evalResult.totalLTI,
-                changePercent: simResult.changePercent,
-                blocked: evalResult.blocked,
-              },
-            },
-          });
+        if (!dbRuleSet) {
+          throw new NotFoundException(`RuleSet ${ruleSetId} not found`);
         }
 
-        // 6. Build impact summary and detect outliers
-        const impactSummary = buildImpactSummary(results);
-        const outliers = detectOutliers(results);
-
-        // 7. Update SimulationRun as completed
-        await tx.simulationRun.update({
-          where: { id: simulationRun.id },
+        // 2. Create SimulationRun record
+        const simulationRun = await tx.simulationRun.create({
           data: {
-            status: 'COMPLETED',
+            tenantId,
+            ruleSetId,
+            userId,
+            status: 'RUNNING',
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            impactSummary: impactSummary as any,
-            completedAt: new Date(),
+            parameters: params as any,
           },
         });
 
-        this.logger.log(
-          `Simulation ${simulationRun.id} completed: ${results.length} employees processed`,
-        );
+        try {
+          // 3. Build the engine RuleSet
+          const ruleSet = buildRuleSet(dbRuleSet);
 
-        return {
-          simulationRunId: simulationRun.id,
-          ruleSetId,
-          totalEmployees: results.length,
-          results,
-          impactSummary,
-          outliers,
-        };
-      } catch (error) {
-        // Mark as failed
-        await tx.simulationRun.update({
-          where: { id: simulationRun.id },
-          data: { status: 'FAILED' },
-        });
-        throw error;
-      }
-    });
+          // 4. Load employees with optional filters
+          const employeeWhere: Record<string, unknown> = { tenantId };
+          if (params.departmentFilter?.length) {
+            employeeWhere['department'] = { in: params.departmentFilter };
+          }
+          if (params.levelFilter?.length) {
+            employeeWhere['level'] = { in: params.levelFilter };
+          }
+          if (params.locationFilter?.length) {
+            employeeWhere['location'] = { in: params.locationFilter };
+          }
+
+          const employees = await tx.employee.findMany({
+            where: employeeWhere,
+            take: params.maxEmployees ?? undefined,
+          });
+
+          // 5. Evaluate each employee
+          const results: EmployeeSimResult[] = [];
+          for (const emp of employees) {
+            const empData = toEmployeeData(emp);
+            const evalResult = evaluateRules(empData, ruleSet);
+
+            const baseSalary = Number(emp.baseSalary);
+            const totalComp = Number(emp.totalComp);
+            const totalChange = evalResult.totalMerit + evalResult.totalBonus + evalResult.totalLTI;
+            const changePercent = baseSalary > 0 ? (totalChange / baseSalary) * 100 : 0;
+
+            const simResult: EmployeeSimResult = {
+              employeeId: emp.id,
+              employeeCode: emp.employeeCode,
+              name: `${emp.firstName} ${emp.lastName}`,
+              department: emp.department,
+              level: emp.level,
+              before: { baseSalary, totalComp },
+              after: {
+                merit: evalResult.totalMerit,
+                bonus: evalResult.totalBonus,
+                lti: evalResult.totalLTI,
+                newTotal: totalComp + totalChange,
+              },
+              changePercent: Math.round(changePercent * 100) / 100,
+              blocked: evalResult.blocked,
+              flags: evalResult.flags,
+            };
+
+            results.push(simResult);
+
+            // Store individual result
+            await tx.simulationResult.create({
+              data: {
+                simulationRunId: simulationRun.id,
+                employeeId: emp.id,
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                input: empData as any,
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                output: evalResult as any,
+                delta: {
+                  merit: evalResult.totalMerit,
+                  bonus: evalResult.totalBonus,
+                  lti: evalResult.totalLTI,
+                  changePercent: simResult.changePercent,
+                  blocked: evalResult.blocked,
+                },
+              },
+            });
+          }
+
+          // 6. Build impact summary and detect outliers
+          const impactSummary = buildImpactSummary(results);
+          const outliers = detectOutliers(results);
+
+          // 7. Update SimulationRun as completed
+          await tx.simulationRun.update({
+            where: { id: simulationRun.id },
+            data: {
+              status: 'COMPLETED',
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              impactSummary: impactSummary as any,
+              completedAt: new Date(),
+            },
+          });
+
+          this.logger.log(
+            `Simulation ${simulationRun.id} completed: ${results.length} employees processed`,
+          );
+
+          return {
+            simulationRunId: simulationRun.id,
+            ruleSetId,
+            totalEmployees: results.length,
+            results,
+            impactSummary,
+            outliers,
+          };
+        } catch (error) {
+          // Mark as failed
+          await tx.simulationRun.update({
+            where: { id: simulationRun.id },
+            data: { status: 'FAILED' },
+          });
+          throw error;
+        }
+      },
+      { timeout: 60000 },
+    );
   }
 
   /**
