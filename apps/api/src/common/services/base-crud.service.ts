@@ -66,9 +66,9 @@ export abstract class BaseCrudService<T = unknown> {
   }
 
   async findOne(tenantId: string, id: string): Promise<T> {
-    const record = await this.db.forTenant(tenantId, (tx) =>
+    const record = (await this.db.forTenant(tenantId, (tx) =>
       this.getModel(tx).findFirst({ where: { id, tenantId } }),
-    );
+    )) as T | null;
 
     if (!record) {
       throw new NotFoundException(`${this.modelName} with id ${id} not found`);
