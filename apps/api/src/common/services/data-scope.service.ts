@@ -48,8 +48,8 @@ export class DataScopeService {
    * can spread into their queries to enforce row-level visibility.
    */
   async resolveScope(tenantId: string, userId: string, role: string): Promise<DataScope> {
-    // PLATFORM_ADMIN always gets full access
-    if (role === 'PLATFORM_ADMIN') {
+    // PLATFORM_ADMIN and ADMIN always get full access
+    if (role === 'PLATFORM_ADMIN' || role === 'ADMIN') {
       return { tier: 'FULL', employeeFilter: { tenantId } };
     }
 
