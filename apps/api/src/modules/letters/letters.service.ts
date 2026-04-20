@@ -106,13 +106,23 @@ export class LettersService {
         customInstructions: dto.customInstructions,
       });
 
+      // Inject company logo into generated HTML
+      const tenant = await this.db.client.tenant.findUnique({
+        where: { id: tenantId },
+        select: { name: true, logoUrl: true },
+      });
+      const logoHtml = tenant?.logoUrl
+        ? `<img src="${tenant.logoUrl}" alt="${tenant.name}" style="max-height:48px;max-width:200px" />`
+        : `<h1 style="margin:0;font-size:24px;color:#4f46e5;font-weight:bold">${tenant?.name ?? 'Company'}</h1>`;
+      const finalContent = result.content.replace(/\{\{COMPANY_LOGO\}\}/g, logoHtml);
+
       // Update letter with generated content
       return this.db.forTenant(tenantId, (tx) =>
         tx.compensationLetter.update({
           where: { id: letter.id },
           data: {
             subject: result.subject,
-            content: result.content,
+            content: finalContent,
             status: 'REVIEW' as never,
             generatedAt: new Date(),
           },

@@ -89,7 +89,7 @@ export const navGroups: NavGroup[] = [
       { title: 'EDGE Pay Equity', href: '/dashboard/analytics/pay-equity/edge', icon: ShieldCheck },
       { title: 'HR Dashboards', href: '/dashboard/analytics/hr-dashboards', icon: LayoutGrid },
       { title: 'Report Builder', href: '/dashboard/reports', icon: FileBarChart },
-      { title: 'Comp Letters', href: '/dashboard/letters', icon: FileText },
+      { title: 'Letters', href: '/dashboard/letters', icon: FileText },
       { title: 'Compliance', href: '/dashboard/compliance', icon: ShieldCheck },
       { title: 'Policy AI', href: '/dashboard/ai-policies', icon: BookOpen },
       { title: 'Retention Risk', href: '/dashboard/attrition', icon: UserX },

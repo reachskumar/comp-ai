@@ -143,11 +143,11 @@ export default function LettersPage() {
             <FileText className="h-4 w-4 text-primary" />
           </div>
           <div>
-            <h1 className="text-lg font-semibold">Compensation Letters</h1>
+            <h1 className="text-lg font-semibold">Letters</h1>
             <p className="text-xs text-muted-foreground">
               {isGenerating
                 ? 'Generating letter…'
-                : 'Generate, review, and send AI-powered compensation letters'}
+                : 'Generate beautiful, AI-powered compensation letters'}
             </p>
           </div>
         </div>
@@ -346,14 +346,17 @@ function GenerateForm({ form, onChange, onGenerate, isGenerating, error }: Gener
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="additionalNotes">Additional Notes</Label>
+            <Label htmlFor="additionalNotes">AI Instructions (optional)</Label>
             <Textarea
               id="additionalNotes"
-              placeholder="Any special notes for the AI to consider..."
-              rows={3}
+              placeholder="Tell the AI how to craft this letter, e.g.: 'Make it warm and celebratory, mention their 3 years of excellent performance, highlight the team leadership...' "
+              rows={4}
               value={form.additionalNotes ?? ''}
               onChange={(e) => onChange('additionalNotes', e.target.value || undefined)}
             />
+            <p className="text-xs text-muted-foreground">
+              The AI will generate a beautifully formatted HTML letter with company branding
+            </p>
           </div>
         </CardContent>
       </Card>
@@ -555,8 +558,12 @@ function LetterPreview({ letter, onBack, onApprove }: LetterPreviewProps) {
           </div>
         </CardHeader>
         <CardContent>
-          <ScrollArea className="h-[400px]">
-            <div className="prose prose-sm max-w-none whitespace-pre-wrap">{letter.content}</div>
+          <ScrollArea className="h-[500px]">
+            {letter.content.includes('<div') || letter.content.includes('<p') ? (
+              <div dangerouslySetInnerHTML={{ __html: letter.content }} />
+            ) : (
+              <div className="prose prose-sm max-w-none whitespace-pre-wrap">{letter.content}</div>
+            )}
           </ScrollArea>
         </CardContent>
       </Card>

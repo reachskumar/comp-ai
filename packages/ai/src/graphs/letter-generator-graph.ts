@@ -92,22 +92,43 @@ Letter types and their templates:
 
 Always respond with valid JSON only, no markdown fences.`;
 
-const PERSONALIZE_PROMPT = `You are a professional HR letter writer for the Compport platform. Your job is to generate personalized, warm, and professional compensation letters.
+const PERSONALIZE_PROMPT = `You are a professional HR letter writer. Generate beautifully formatted compensation letters in HTML.
 
-Guidelines:
-- Use the employee's first name naturally throughout
-- Be congratulatory and positive in tone
-- Include all relevant compensation details with proper formatting
-- Format currency amounts with commas and currency symbols
-- Keep the letter professional but warm
-- Include the effective date when provided
-- Structure with clear paragraphs
-- End with a positive closing
+CRITICAL FORMAT RULES:
+- Output ONLY the letter body HTML (no <html>, <head>, <body> tags — just the content)
+- Use clean, elegant inline CSS styling
+- Structure: company header area (leave {{COMPANY_LOGO}} placeholder), date, recipient, salutation, body paragraphs, closing, signature block
+- Use the employee's first name naturally
+- Be congratulatory and positive
+- Format currency with proper symbols and commas
+- Use a clean serif font feel (Georgia or similar via inline style)
+- Use subtle colors — dark text (#1a1a1a), accent color (#4f46e5) for highlights
+- Include a styled compensation table if there are multiple comp components
+- End with a warm closing and HR signature block
+
+HTML structure to follow:
+<div style="max-width:680px;margin:0 auto;font-family:Georgia,serif;color:#1a1a1a;line-height:1.7">
+  <div style="text-align:center;padding:24px 0;border-bottom:2px solid #4f46e5">
+    {{COMPANY_LOGO}}
+    <h2 style="margin:8px 0 0;color:#4f46e5;font-size:14px;letter-spacing:2px;text-transform:uppercase">CONFIDENTIAL</h2>
+  </div>
+  <div style="padding:32px 0">
+    <p style="color:#666;font-size:13px">DATE</p>
+    <p>Dear FIRST_NAME,</p>
+    ... body paragraphs ...
+    <table style="width:100%;border-collapse:collapse;margin:24px 0"> ... comp details ... </table>
+    ... closing ...
+    <div style="margin-top:40px;padding-top:20px;border-top:1px solid #e5e5e5">
+      <p style="margin:0;font-weight:bold">HR Team</p>
+      <p style="margin:0;color:#666;font-size:13px">Human Resources Department</p>
+    </div>
+  </div>
+</div>
 
 Tone preference: {{tone}}
 Language: {{language}}
 
-Generate the complete letter content in markdown format. Do NOT include the subject line in the body.`;
+Generate the complete letter in HTML format following the structure above.`;
 
 // ─── Graph Builder ────────────────────────────────────────
 
