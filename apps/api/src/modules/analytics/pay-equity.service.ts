@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { DatabaseService } from '../../database';
 
 /* ─── Types ─────────────────────────────────────────────── */
 
@@ -125,7 +126,7 @@ function generateMockEmployees(tenantId: string): MockEmployee[] {
 function seedRandom(seed: string): () => number {
   let h = 0;
   for (let i = 0; i < seed.length; i++) {
-    h = Math.imul(31, h) + seed.charCodeAt(i) | 0;
+    h = (Math.imul(31, h) + seed.charCodeAt(i)) | 0;
   }
   return () => {
     h = Math.imul(h ^ (h >>> 16), 0x45d9f3b);
@@ -146,7 +147,6 @@ function stddev(arr: number[]): number {
   return Math.sqrt(arr.reduce((s, v) => s + (v - m) ** 2, 0) / (arr.length - 1));
 }
 
-
 /**
  * Simple OLS regression for pay equity analysis.
  * Returns coefficient, standard error, t-statistic, and approximate p-value
@@ -156,7 +156,13 @@ function olsRegression(
   salaries: number[],
   groupIndicator: number[],
   controls: number[][],
-): { coefficient: number; standardError: number; tStatistic: number; pValue: number; rSquared: number } {
+): {
+  coefficient: number;
+  standardError: number;
+  tStatistic: number;
+  pValue: number;
+  rSquared: number;
+} {
   const n = salaries.length;
   if (n < 10) {
     return { coefficient: 0, standardError: 0, tStatistic: 0, pValue: 1, rSquared: 0 };
@@ -278,7 +284,7 @@ function olsRegression(
 function approximatePValue(t: number, df: number): number {
   if (df <= 0 || !isFinite(t)) return 1;
   // Use normal approximation for large df
-  const x = t * (1 - 1 / (4 * df)) / Math.sqrt(1 + t * t / (2 * df));
+  const x = (t * (1 - 1 / (4 * df))) / Math.sqrt(1 + (t * t) / (2 * df));
   // Standard normal CDF approximation
   const a1 = 0.254829592;
   const a2 = -0.284496736;
@@ -289,7 +295,11 @@ function approximatePValue(t: number, df: number): number {
   const sign = x < 0 ? -1 : 1;
   const absX = Math.abs(x);
   const tVal = 1 / (1 + p * absX);
-  const y = 1 - (((((a5 * tVal + a4) * tVal) + a3) * tVal + a2) * tVal + a1) * tVal * Math.exp(-absX * absX / 2);
+  const y =
+    1 -
+    ((((a5 * tVal + a4) * tVal + a3) * tVal + a2) * tVal + a1) *
+      tVal *
+      Math.exp((-absX * absX) / 2);
   const cdf = 0.5 * (1 + sign * y);
   return 2 * (1 - cdf); // two-tailed
 }
@@ -308,6 +318,81 @@ const reportStore = new Map<string, PayEquityReport>();
 export class PayEquityService {
   private readonly logger = new Logger(PayEquityService.name);
 
+  constructor(private readonly db: DatabaseService) {}
+
+  /**
+   * Load real employees from PG, falling back to mock data if PG has no salary data.
+   */
+  private async loadEmployees(tenantId: string): Promise<MockEmployee[]> {
+    try {
+      const pgEmployees = await this.db.forTenant(tenantId, (tx) =>
+        tx.employee.findMany({
+          where: { tenantId, baseSalary: { gt: 0 } },
+          select: {
+            id: true,
+            baseSalary: true,
+            gender: true,
+            department: true,
+            level: true,
+            location: true,
+            hireDate: true,
+            performanceRating: true,
+            compaRatio: true,
+            dateOfBirth: true,
+          },
+          take: 10000,
+        }),
+      );
+
+      if (pgEmployees.length >= 50) {
+        const now = Date.now();
+        return pgEmployees.map((e) => {
+          const salary = Number(e.baseSalary);
+          const levelNum = e.level
+            ? ['IC1', 'IC2', 'IC3', 'IC4', 'IC5', 'M1', 'M2', 'M3', 'VP', 'SVP'].indexOf(e.level) +
+                1 || 3
+            : 3;
+          const tenure = e.hireDate
+            ? Math.floor((now - new Date(e.hireDate).getTime()) / (365.25 * 24 * 60 * 60 * 1000))
+            : 3;
+          const perf = Number(e.performanceRating ?? 3);
+          const age = e.dateOfBirth
+            ? Math.floor((now - new Date(e.dateOfBirth).getTime()) / (365.25 * 24 * 60 * 60 * 1000))
+            : 35;
+          const ageBand =
+            age < 30
+              ? '20-29'
+              : age < 40
+                ? '30-39'
+                : age < 50
+                  ? '40-49'
+                  : age < 60
+                    ? '50-59'
+                    : '60+';
+          const midpoint = salary / (Number(e.compaRatio) || 1);
+
+          return {
+            id: e.id,
+            salary,
+            gender: e.gender || 'Unknown',
+            ethnicity: 'Not Specified',
+            ageBand,
+            jobLevel: levelNum,
+            tenure,
+            performance: perf,
+            location: e.location || 'Unknown',
+            department: e.department || 'Unknown',
+            midpoint: Math.round(midpoint),
+          };
+        });
+      }
+    } catch (err) {
+      this.logger.warn(`Failed to load PG employees for pay equity: ${(err as Error).message}`);
+    }
+    // Fallback to mock data
+    return generateMockEmployees(tenantId);
+  }
+
   /**
    * Run pay equity analysis for a tenant.
    */
@@ -320,9 +405,13 @@ export class PayEquityService {
       `Pay equity analysis: tenant=${tenantId} user=${userId} dimensions=${request.dimensions.join(',')}`,
     );
 
-    const employees = generateMockEmployees(tenantId);
+    const employees = await this.loadEmployees(tenantId);
     const controlVars = request.controlVariables ?? [
-      'job_level', 'tenure', 'performance', 'location', 'department',
+      'job_level',
+      'tenure',
+      'performance',
+      'location',
+      'department',
     ];
     const threshold = request.targetThreshold ?? 2;
 
@@ -337,10 +426,17 @@ export class PayEquityService {
 
       for (const group of groups.slice(1)) {
         const result = this.runGroupRegression(
-          employees, dimension, group, referenceGroup, controlVars,
+          employees,
+          dimension,
+          group,
+          referenceGroup,
+          controlVars,
         );
         regressionResults.push(result);
-        overallRSquared += result.coefficient !== 0 ? this.getRSquared(employees, dimension, group, referenceGroup, controlVars) : 0;
+        overallRSquared +=
+          result.coefficient !== 0
+            ? this.getRSquared(employees, dimension, group, referenceGroup, controlVars)
+            : 0;
         regressionCount++;
       }
     }
@@ -356,8 +452,19 @@ export class PayEquityService {
     const overallStats = {
       totalEmployees: employees.length,
       rSquared: Math.round(avgRSquared * 1000) / 1000,
-      adjustedRSquared: Math.round((avgRSquared - (1 - avgRSquared) * (controlVars.length / (employees.length - controlVars.length - 1))) * 1000) / 1000,
-      fStatistic: Math.round((avgRSquared / (1 - avgRSquared)) * ((employees.length - controlVars.length - 1) / controlVars.length) * 100) / 100,
+      adjustedRSquared:
+        Math.round(
+          (avgRSquared -
+            (1 - avgRSquared) *
+              (controlVars.length / (employees.length - controlVars.length - 1))) *
+            1000,
+        ) / 1000,
+      fStatistic:
+        Math.round(
+          (avgRSquared / (1 - avgRSquared)) *
+            ((employees.length - controlVars.length - 1) / controlVars.length) *
+            100,
+        ) / 100,
     };
 
     const reportId = `peq-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -407,19 +514,22 @@ export class PayEquityService {
       return { originalCost: 0, newCost: 0, savings: 0, affectedEmployees: 0, newGapEstimates: [] };
     }
 
-    const employees = generateMockEmployees(tenantId);
+    const employees = await this.loadEmployees(tenantId);
     const significantGaps = report.regressionResults.filter(
       (r) => r.significance === 'significant' || r.significance === 'marginal',
     );
 
-    const groups = targetGroups ?? significantGaps.map((r) => ({
-      dimension: r.dimension,
-      group: r.group,
-    }));
+    const groups =
+      targetGroups ??
+      significantGaps.map((r) => ({
+        dimension: r.dimension,
+        group: r.group,
+      }));
 
     let totalAffected = 0;
     let totalCost = 0;
-    const newGapEstimates: Array<{ dimension: string; group: string; estimatedNewGap: number }> = [];
+    const newGapEstimates: Array<{ dimension: string; group: string; estimatedNewGap: number }> =
+      [];
 
     for (const { dimension, group } of groups) {
       const dimKey = this.getDimensionKey(dimension);
@@ -459,9 +569,7 @@ export class PayEquityService {
       const val = String(emp[dimKey]);
       counts.set(val, (counts.get(val) ?? 0) + 1);
     }
-    return [...counts.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .map(([k]) => k);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k);
   }
 
   private getDimensionKey(dimension: string): keyof MockEmployee {
@@ -482,11 +590,12 @@ export class PayEquityService {
       tenure: emp.tenure,
       performance: emp.performance,
       location: ['New York', 'San Francisco', 'Chicago', 'Austin', 'Remote'].indexOf(emp.location),
-      department: ['Engineering', 'Sales', 'Marketing', 'Finance', 'HR', 'Operations'].indexOf(emp.department),
+      department: ['Engineering', 'Sales', 'Marketing', 'Finance', 'HR', 'Operations'].indexOf(
+        emp.department,
+      ),
     };
     return map[controlVar] ?? 0;
   }
-
 
   private runGroupRegression(
     employees: MockEmployee[],
@@ -509,12 +618,14 @@ export class PayEquityService {
     const gapPercent = avgSalary > 0 ? (result.coefficient / avgSalary) * 100 : 0;
 
     const significance: RegressionResult['significance'] =
-      result.pValue < 0.05 ? 'significant' :
-      result.pValue < 0.10 ? 'marginal' : 'not_significant';
+      result.pValue < 0.05 ? 'significant' : result.pValue < 0.1 ? 'marginal' : 'not_significant';
 
     const riskLevel: RegressionResult['riskLevel'] =
-      Math.abs(gapPercent) > 5 && result.pValue < 0.05 ? 'HIGH' :
-      Math.abs(gapPercent) > 2 && result.pValue < 0.10 ? 'MEDIUM' : 'LOW';
+      Math.abs(gapPercent) > 5 && result.pValue < 0.05
+        ? 'HIGH'
+        : Math.abs(gapPercent) > 2 && result.pValue < 0.1
+          ? 'MEDIUM'
+          : 'LOW';
 
     const ci: [number, number] = [
       Math.round((result.coefficient - 1.96 * result.standardError) * 100) / 100,
@@ -571,7 +682,7 @@ export class PayEquityService {
       }
 
       for (const [group, emps] of groups) {
-        const ratios = emps.map((e) => e.midpoint > 0 ? e.salary / e.midpoint : 1);
+        const ratios = emps.map((e) => (e.midpoint > 0 ? e.salary / e.midpoint : 1));
         results.push({
           dimension,
           group,
@@ -594,7 +705,9 @@ export class PayEquityService {
     threshold: number,
   ): RemediationEstimate {
     const significantGaps = regressionResults.filter(
-      (r) => (r.significance === 'significant' || r.significance === 'marginal') && Math.abs(r.gapPercent) > threshold,
+      (r) =>
+        (r.significance === 'significant' || r.significance === 'marginal') &&
+        Math.abs(r.gapPercent) > threshold,
     );
 
     let totalCost = 0;
