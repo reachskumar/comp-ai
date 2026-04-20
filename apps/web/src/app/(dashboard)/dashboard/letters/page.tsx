@@ -232,8 +232,12 @@ interface GenerateFormProps {
 
 function GenerateForm({ form, onChange, onGenerate, isGenerating, error }: GenerateFormProps) {
   const [empSearch, setEmpSearch] = useState('');
-  const { data: empResults } = useQuery({
-    queryKey: ['employee-search', empSearch],
+  const [showDropdown, setShowDropdown] = useState(false);
+  const [selectedLabel, setSelectedLabel] = useState('');
+
+  // Load employees on search (min 2 chars)
+  const { data: searchResults } = useQuery({
+    queryKey: ['emp-search', empSearch],
     queryFn: () =>
       apiClient.fetch<{
         data: Array<{
@@ -248,44 +252,45 @@ function GenerateForm({ form, onChange, onGenerate, isGenerating, error }: Gener
     enabled: empSearch.length >= 2,
     staleTime: 10000,
   });
-  const [selectedEmpName, setSelectedEmpName] = useState('');
-  const [showDropdown, setShowDropdown] = useState(false);
+
+  const employees = searchResults?.data ?? [];
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Letter Details</CardTitle>
-          <CardDescription>Configure the compensation letter parameters</CardDescription>
+          <CardDescription>Search for an employee and configure the letter</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2 relative">
-            <Label htmlFor="employeeSearch">Employee</Label>
+            <Label>Employee</Label>
             <Input
-              id="employeeSearch"
-              placeholder="Search by name, department, or employee code..."
-              value={selectedEmpName || empSearch}
+              placeholder="Type a name to search (e.g. James, Sarah, Engineering...)"
+              value={selectedLabel || empSearch}
               onChange={(e) => {
                 setEmpSearch(e.target.value);
-                setSelectedEmpName('');
+                setSelectedLabel('');
                 setShowDropdown(true);
                 if (!e.target.value) onChange('employeeId', '');
               }}
               onFocus={() => empSearch.length >= 2 && setShowDropdown(true)}
+              onBlur={() => setTimeout(() => setShowDropdown(false), 200)}
             />
-            {showDropdown && empResults?.data && empResults.data.length > 0 && (
+            {showDropdown && employees.length > 0 && (
               <div className="absolute z-50 mt-1 w-full rounded-md border bg-popover shadow-lg max-h-48 overflow-y-auto">
-                {empResults.data.map((emp) => (
+                {employees.map((emp) => (
                   <button
                     key={emp.id}
                     type="button"
                     className="w-full px-3 py-2 text-left text-sm hover:bg-muted flex justify-between"
                     onClick={() => {
                       onChange('employeeId', emp.id);
-                      setSelectedEmpName(
+                      setSelectedLabel(
                         `${emp.firstName} ${emp.lastName} — ${emp.department} (${emp.level})`,
                       );
                       setShowDropdown(false);
+                      setEmpSearch('');
                     }}
                   >
                     <span className="font-medium">
@@ -298,9 +303,7 @@ function GenerateForm({ form, onChange, onGenerate, isGenerating, error }: Gener
                 ))}
               </div>
             )}
-            {form.employeeId && selectedEmpName && (
-              <p className="text-xs text-muted-foreground">Selected: {selectedEmpName}</p>
-            )}
+            {selectedLabel && <p className="text-xs text-green-600">✓ {selectedLabel}</p>}
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
