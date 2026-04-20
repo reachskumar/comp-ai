@@ -327,94 +327,28 @@ function GenerateForm({ form, onChange, onGenerate, isGenerating, error }: Gener
             </div>
           </div>
 
-          <Separator />
-
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="newSalary">New Salary</Label>
-              <Input
-                id="newSalary"
-                type="number"
-                placeholder="e.g., 120000"
-                value={form.newSalary ?? ''}
-                onChange={(e) =>
-                  onChange('newSalary', e.target.value ? Number(e.target.value) : undefined)
-                }
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="salaryIncreasePercent">Increase %</Label>
-              <Input
-                id="salaryIncreasePercent"
-                type="number"
-                placeholder="e.g., 10"
-                value={form.salaryIncreasePercent ?? ''}
-                onChange={(e) =>
-                  onChange(
-                    'salaryIncreasePercent',
-                    e.target.value ? Number(e.target.value) : undefined,
-                  )
-                }
-              />
-            </div>
-          </div>
-
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="bonusAmount">Bonus Amount</Label>
-              <Input
-                id="bonusAmount"
-                type="number"
-                placeholder="e.g., 5000"
-                value={form.bonusAmount ?? ''}
-                onChange={(e) =>
-                  onChange('bonusAmount', e.target.value ? Number(e.target.value) : undefined)
-                }
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="effectiveDate">Effective Date</Label>
-              <Input
-                id="effectiveDate"
-                type="date"
-                value={form.effectiveDate ?? ''}
-                onChange={(e) => onChange('effectiveDate', e.target.value)}
-              />
-            </div>
-          </div>
-
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="newTitle">New Title</Label>
-              <Input
-                id="newTitle"
-                placeholder="e.g., Senior Engineer"
-                value={form.newTitle ?? ''}
-                onChange={(e) => onChange('newTitle', e.target.value || undefined)}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="newLevel">New Level</Label>
-              <Input
-                id="newLevel"
-                placeholder="e.g., L5"
-                value={form.newLevel ?? ''}
-                onChange={(e) => onChange('newLevel', e.target.value || undefined)}
-              />
-            </div>
-          </div>
-
           <div className="space-y-2">
-            <Label htmlFor="additionalNotes">AI Instructions (optional)</Label>
+            <Label htmlFor="prompt">What should the letter say?</Label>
             <Textarea
-              id="additionalNotes"
-              placeholder="Tell the AI how to craft this letter, e.g.: 'Make it warm and celebratory, mention their 3 years of excellent performance, highlight the team leadership...' "
-              rows={4}
+              id="prompt"
+              placeholder={
+                'Describe what this letter should include. Examples:\n\n• "Salary raise of 15% to $180,000, effective May 1, 2026. Mention their outstanding Q1 performance and leadership on the data migration project."\n\n• "Total rewards statement showing base salary $150K, bonus $25K, RSU grant of 500 shares. Include a warm message from the CEO recognizing 5 years of service."\n\n• "Promotion to Senior Manager with 20% salary increase. Highlight their mentorship of 3 junior engineers."'
+              }
+              rows={6}
               value={form.additionalNotes ?? ''}
-              onChange={(e) => onChange('additionalNotes', e.target.value || undefined)}
+              onChange={(e) => {
+                onChange('additionalNotes', e.target.value || undefined);
+                // Auto-extract salary if mentioned
+                const salaryMatch = e.target.value.match(/\$([0-9,]+)/);
+                if (salaryMatch)
+                  onChange('newSalary', parseInt(salaryMatch[1]!.replace(/,/g, ''), 10));
+                const pctMatch = e.target.value.match(/(\d+)%/);
+                if (pctMatch) onChange('salaryIncreasePercent', parseInt(pctMatch[1]!, 10));
+              }}
             />
             <p className="text-xs text-muted-foreground">
-              The AI will generate a beautifully formatted HTML letter with company branding
+              The AI will generate a beautifully formatted letter with company branding based on
+              your instructions
             </p>
           </div>
         </CardContent>
