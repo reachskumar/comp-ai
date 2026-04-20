@@ -45,7 +45,7 @@ const LETTER_TYPES: { value: LetterType; label: string }[] = [
   { value: 'raise', label: 'Salary Raise' },
   { value: 'promotion', label: 'Promotion' },
   { value: 'bonus', label: 'Bonus Notification' },
-  { value: 'total_comp_summary', label: 'Total Comp Summary' },
+  { value: 'total_comp_summary', label: 'Total Rewards Statement' },
 ];
 
 const TONE_OPTIONS = [
@@ -527,6 +527,25 @@ function LetterPreview({ letter, onBack, onApprove }: LetterPreviewProps) {
           Back
         </Button>
         <div className="flex gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              const url = `${process.env['NEXT_PUBLIC_API_URL'] || 'https://compportiq.ai'}/api/v1/letters/${letter.id}/pdf`;
+              const token = localStorage.getItem('accessToken');
+              fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+                .then((res) => res.blob())
+                .then((blob) => {
+                  const a = document.createElement('a');
+                  a.href = URL.createObjectURL(blob);
+                  a.download = `letter-${letter.id}.pdf`;
+                  a.click();
+                });
+            }}
+          >
+            <Download className="mr-1 h-4 w-4" />
+            Download PDF
+          </Button>
           {letter.status === 'REVIEW' && (
             <Button size="sm" onClick={() => void onApprove()}>
               <CheckCircle2 className="mr-1 h-4 w-4" />

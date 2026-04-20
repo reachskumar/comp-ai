@@ -88,7 +88,7 @@ Letter types and their templates:
 - raise: Annual salary increase notification
 - promotion: Promotion announcement with new title and compensation
 - bonus: Bonus notification with amount and reason
-- total_comp_summary: Complete total compensation breakdown
+- total_comp_summary: Total Rewards Statement — a comprehensive breakdown of the employee's full compensation package (base salary, bonus, equity, benefits value, perks) with an inspiring message from the CEO recognizing their contributions. Include a visually appealing compensation breakdown table and a warm, motivational CEO quote at the top.
 
 Always respond with valid JSON only, no markdown fences.`;
 
