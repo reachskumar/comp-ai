@@ -274,62 +274,226 @@ export class LettersService {
     });
   }
 
+  /**
+   * Strip HTML tags and extract clean text for PDF rendering.
+   * Preserves paragraph breaks and extracts table data.
+   */
+  private htmlToText(html: string): {
+    paragraphs: string[];
+    tables: Array<{ headers: string[]; rows: string[][] }>;
+    ceoQuote?: string;
+  } {
+    const paragraphs: string[] = [];
+    const tables: Array<{ headers: string[]; rows: string[][] }> = [];
+    let ceoQuote: string | undefined;
+
+    // Extract blockquote (CEO message)
+    const quoteMatch = html.match(/<blockquote[^>]*>([\s\S]*?)<\/blockquote>/i);
+    if (quoteMatch) {
+      ceoQuote = quoteMatch[1]!
+        .replace(/<[^>]+>/g, '')
+        .replace(/&[a-z]+;/g, ' ')
+        .trim();
+    }
+
+    // Extract tables
+    const tableMatches = html.matchAll(/<table[^>]*>([\s\S]*?)<\/table>/gi);
+    for (const tm of tableMatches) {
+      const headers: string[] = [];
+      const rows: string[][] = [];
+      const thMatches = tm[1]!.matchAll(/<th[^>]*>([\s\S]*?)<\/th>/gi);
+      for (const th of thMatches) headers.push(th[1]!.replace(/<[^>]+>/g, '').trim());
+      const trMatches = tm[1]!.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi);
+      let isFirst = true;
+      for (const tr of trMatches) {
+        if (isFirst && headers.length > 0) {
+          isFirst = false;
+          continue;
+        } // skip header row
+        isFirst = false;
+        const cells: string[] = [];
+        const tdMatches = tr[1]!.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi);
+        for (const td of tdMatches) cells.push(td[1]!.replace(/<[^>]+>/g, '').trim());
+        if (cells.length > 0) rows.push(cells);
+      }
+      if (headers.length > 0 || rows.length > 0) tables.push({ headers, rows });
+    }
+
+    // Extract paragraphs (text between tags)
+    const stripped = html
+      .replace(/<table[\s\S]*?<\/table>/gi, '') // remove tables
+      .replace(/<blockquote[\s\S]*?<\/blockquote>/gi, '') // remove quotes
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n\n')
+      .replace(/<\/div>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&nbsp;/g, ' ')
+      .replace(/CONFIDENTIAL/g, '');
+
+    for (const p of stripped.split(/\n\n+/)) {
+      const trimmed = p.trim();
+      if (trimmed && trimmed.length > 1) paragraphs.push(trimmed);
+    }
+
+    return { paragraphs, tables, ceoQuote };
+  }
+
   async getLetterPdf(tenantId: string, letterId: string): Promise<Buffer> {
     const letter = await this.getLetterById(tenantId, letterId);
+    const tenant = await this.db.client.tenant.findUnique({
+      where: { id: tenantId },
+      select: { name: true },
+    });
+    const companyName = tenant?.name ?? 'Company';
+
+    const content = letter.content ?? '';
+    const isHtml = content.includes('<div') || content.includes('<p');
+    const { paragraphs, tables, ceoQuote } = isHtml
+      ? this.htmlToText(content)
+      : {
+          paragraphs: content
+            .split(/\n\n+/)
+            .map((p: string) => p.trim())
+            .filter(Boolean),
+          tables: [],
+          ceoQuote: undefined,
+        };
+
+    const emp = letter.employee as {
+      firstName?: string;
+      lastName?: string;
+      department?: string;
+    } | null;
 
     return new Promise<Buffer>((resolve, reject) => {
       const doc = new PDFDocument({ size: 'A4', margin: 60 });
       const chunks: Buffer[] = [];
-
       doc.on('data', (chunk: Buffer) => chunks.push(chunk));
       doc.on('end', () => resolve(Buffer.concat(chunks)));
       doc.on('error', reject);
 
+      const ACCENT = '#4f46e5';
+      const GRAY = '#666666';
+      const LIGHT_GRAY = '#e5e5e5';
+
       // ─── Header ──────────────────────────────
-      doc.fontSize(20).font('Helvetica-Bold').text('Compport', { align: 'center' });
-      doc.moveDown(0.5);
       doc
-        .fontSize(10)
-        .font('Helvetica')
-        .fillColor('#666666')
-        .text(`Compensation Letter`, { align: 'center' });
+        .fontSize(24)
+        .font('Helvetica-Bold')
+        .fillColor(ACCENT)
+        .text(companyName, { align: 'center' });
       doc.moveDown(0.3);
-      doc.moveTo(60, doc.y).lineTo(535, doc.y).stroke('#cccccc');
-      doc.moveDown(1);
+      doc
+        .fontSize(9)
+        .font('Helvetica')
+        .fillColor(ACCENT)
+        .text('CONFIDENTIAL', { align: 'center', characterSpacing: 3 });
+      doc.moveDown(0.3);
+      doc.moveTo(60, doc.y).lineTo(535, doc.y).lineWidth(2).stroke(ACCENT);
+      doc.moveDown(1.2);
 
-      // ─── Meta ────────────────────────────────
-      doc.fillColor('#000000').fontSize(11).font('Helvetica-Bold');
+      // ─── Date ────────────────────────────────
+      doc.fontSize(10).font('Helvetica').fillColor(GRAY);
+      doc.text(
+        letter.generatedAt
+          ? new Date(letter.generatedAt).toLocaleDateString('en-US', {
+              year: 'numeric',
+              month: 'long',
+              day: 'numeric',
+            })
+          : new Date().toLocaleDateString('en-US', {
+              year: 'numeric',
+              month: 'long',
+              day: 'numeric',
+            }),
+      );
+      doc.moveDown(0.8);
+
+      // ─── Subject ─────────────────────────────
+      doc.fontSize(14).font('Helvetica-Bold').fillColor('#1a1a1a');
       doc.text(letter.subject ?? 'Compensation Letter');
-      doc.moveDown(0.5);
-      doc.fontSize(10).font('Helvetica');
-      const emp = letter.employee as {
-        firstName?: string;
-        lastName?: string;
-        department?: string;
-      } | null;
+      doc.moveDown(0.3);
       if (emp) {
-        doc.text(`Employee: ${emp.firstName ?? ''} ${emp.lastName ?? ''}`.trim());
-        if (emp.department) doc.text(`Department: ${emp.department}`);
-      }
-      doc.text(`Type: ${letter.letterType}`);
-      if (letter.generatedAt) {
-        doc.text(`Date: ${new Date(letter.generatedAt).toLocaleDateString()}`);
+        doc.fontSize(10).font('Helvetica').fillColor(GRAY);
+        doc.text(
+          `${emp.firstName ?? ''} ${emp.lastName ?? ''}`.trim() +
+            (emp.department ? ` · ${emp.department}` : ''),
+        );
       }
       doc.moveDown(1);
 
-      // ─── Body ────────────────────────────────
-      doc.fontSize(11).font('Helvetica');
-      const content = letter.content ?? '';
-      // Split into paragraphs and render
-      const paragraphs = content.split(/\n\n+/);
+      // ─── Body paragraphs ─────────────────────
+      doc.fontSize(11).font('Helvetica').fillColor('#1a1a1a');
       for (const para of paragraphs) {
-        doc.text(para.trim(), { align: 'left', lineGap: 4 });
-        doc.moveDown(0.8);
+        doc.text(para, { align: 'left', lineGap: 3 });
+        doc.moveDown(0.7);
       }
+
+      // ─── Tables ──────────────────────────────
+      for (const table of tables) {
+        doc.moveDown(0.5);
+        const colWidth = (535 - 60) / Math.max(table.headers.length, 1);
+        // Header row
+        if (table.headers.length > 0) {
+          doc.rect(60, doc.y, 535 - 60, 24).fill(ACCENT);
+          let hx = 60;
+          for (const h of table.headers) {
+            doc.fontSize(9).font('Helvetica-Bold').fillColor('#ffffff');
+            doc.text(h, hx + 8, doc.y - 18, {
+              width: colWidth - 16,
+              align: h.includes('Amount') || h.includes('USD') ? 'right' : 'left',
+            });
+            hx += colWidth;
+          }
+          doc.moveDown(0.3);
+        }
+        // Data rows
+        for (const row of table.rows) {
+          const rowY = doc.y;
+          doc.moveTo(60, rowY).lineTo(535, rowY).lineWidth(0.5).stroke(LIGHT_GRAY);
+          let rx = 60;
+          for (let i = 0; i < row.length; i++) {
+            doc.fontSize(10).font('Helvetica').fillColor('#1a1a1a');
+            doc.text(row[i]!, rx + 8, rowY + 4, {
+              width: colWidth - 16,
+              align: i > 0 ? 'right' : 'left',
+            });
+            rx += colWidth;
+          }
+          doc.moveDown(1.2);
+        }
+        doc.moveDown(0.5);
+      }
+
+      // ─── CEO Quote ───────────────────────────
+      if (ceoQuote) {
+        doc.moveDown(0.5);
+        const quoteY = doc.y;
+        doc.rect(60, quoteY, 3, 50).fill(ACCENT);
+        doc.fontSize(11).font('Helvetica-Oblique').fillColor(ACCENT);
+        doc.text(`"${ceoQuote}"`, 72, quoteY + 4, {
+          width: 535 - 72 - 20,
+          align: 'left',
+          lineGap: 3,
+        });
+        doc.moveDown(1);
+      }
+
+      // ─── Signature ───────────────────────────
+      doc.moveDown(2);
+      doc.moveTo(60, doc.y).lineTo(535, doc.y).lineWidth(0.5).stroke(LIGHT_GRAY);
+      doc.moveDown(0.5);
+      doc.fontSize(11).font('Helvetica-Bold').fillColor('#1a1a1a').text('HR Team');
+      doc.fontSize(9).font('Helvetica').fillColor(GRAY).text('Human Resources Department');
 
       // ─── Footer ──────────────────────────────
-      doc.moveDown(2);
-      doc.fontSize(8).fillColor('#999999').text('Generated by CompportIQ', { align: 'center' });
+      doc.moveDown(3);
+      doc.fontSize(7).fillColor('#cccccc').text('Generated by CompportIQ', { align: 'center' });
 
       doc.end();
     });
