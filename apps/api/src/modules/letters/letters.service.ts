@@ -454,17 +454,18 @@ export class LettersService {
         const colWidth = (535 - 60) / Math.max(table.headers.length, 1);
         // Header row
         if (table.headers.length > 0) {
-          doc.rect(60, doc.y, 535 - 60, 24).fill(ACCENT);
+          const headerY = doc.y;
+          doc.rect(60, headerY, 535 - 60, 22).fill(ACCENT);
           let hx = 60;
           for (const h of table.headers) {
             doc.fontSize(9).font('Helvetica-Bold').fillColor('#ffffff');
-            doc.text(h, hx + 8, doc.y - 18, {
+            doc.text(h, hx + 8, headerY + 6, {
               width: colWidth - 16,
               align: h.includes('Amount') || h.includes('USD') ? 'right' : 'left',
             });
             hx += colWidth;
           }
-          doc.moveDown(0.3);
+          doc.y = headerY + 26;
         }
         // Data rows
         for (const row of table.rows) {
@@ -479,7 +480,7 @@ export class LettersService {
             });
             rx += colWidth;
           }
-          doc.moveDown(1.2);
+          doc.y = rowY + 22;
         }
         doc.moveDown(0.5);
       }
