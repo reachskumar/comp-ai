@@ -49,7 +49,9 @@ RUN pnpm build --filter=@compensation/api
 # ── Stage 4: Production ───────────────────────────────────────
 FROM node:20-alpine AS runner
 RUN corepack enable && corepack prepare pnpm@10.29.3 --activate
-RUN apk add --no-cache libc6-compat
+RUN apk add --no-cache libc6-compat chromium nss freetype harfbuzz ca-certificates ttf-freefont
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 
 WORKDIR /app
 
