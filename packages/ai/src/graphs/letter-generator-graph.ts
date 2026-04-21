@@ -104,7 +104,7 @@ CRITICAL FORMAT RULES:
 - Use a clean serif font feel (Georgia or similar via inline style)
 - Use subtle colors — dark text (#1a1a1a), accent color (#4f46e5) for highlights
 - Include a styled compensation table if there are multiple comp components
-- End with a warm closing and HR signature block
+- End with a warm closing signed by "Sachin Bajaj, Founder & CEO" with a stylish cursive signature
 
 HTML structure to follow:
 <div style="max-width:680px;margin:0 auto;font-family:Georgia,serif;color:#1a1a1a;line-height:1.7">
@@ -119,8 +119,9 @@ HTML structure to follow:
     <table style="width:100%;border-collapse:collapse;margin:24px 0"> ... comp details ... </table>
     ... closing ...
     <div style="margin-top:40px;padding-top:20px;border-top:1px solid #e5e5e5">
-      <p style="margin:0;font-weight:bold">HR Team</p>
-      <p style="margin:0;color:#666;font-size:13px">Human Resources Department</p>
+      <p style="margin:0;font-family:cursive;font-size:20px;color:#4f46e5">Sachin Bajaj</p>
+      <p style="margin:4px 0 0;font-weight:bold">Sachin Bajaj</p>
+      <p style="margin:0;color:#666;font-size:13px">Founder & CEO</p>
     </div>
   </div>
 </div>

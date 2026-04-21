@@ -488,8 +488,11 @@ export class LettersService {
       doc.moveDown(2);
       doc.moveTo(60, doc.y).lineTo(535, doc.y).lineWidth(0.5).stroke(LIGHT_GRAY);
       doc.moveDown(0.5);
-      doc.fontSize(11).font('Helvetica-Bold').fillColor('#1a1a1a').text('HR Team');
-      doc.fontSize(9).font('Helvetica').fillColor(GRAY).text('Human Resources Department');
+      // Stylized signature
+      doc.fontSize(18).font('Helvetica-Oblique').fillColor(ACCENT).text('Sachin Bajaj');
+      doc.moveDown(0.2);
+      doc.fontSize(10).font('Helvetica-Bold').fillColor('#1a1a1a').text('Sachin Bajaj');
+      doc.fontSize(9).font('Helvetica').fillColor(GRAY).text('Founder & CEO');
 
       // ─── Footer ──────────────────────────────
       doc.moveDown(3);
