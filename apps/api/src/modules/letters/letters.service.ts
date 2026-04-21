@@ -343,6 +343,20 @@ export class LettersService {
     return { paragraphs, tables, ceoQuote };
   }
 
+  async getLetterPdfWithName(
+    tenantId: string,
+    letterId: string,
+  ): Promise<{ buffer: Buffer; fileName: string }> {
+    const buffer = await this.getLetterPdf(tenantId, letterId);
+    const letter = await this.getLetterById(tenantId, letterId);
+    const emp = letter.employee as { firstName?: string; lastName?: string } | null;
+    const name = emp
+      ? `${emp.firstName ?? ''}_${emp.lastName ?? ''}`.trim().replace(/\s+/g, '_')
+      : 'letter';
+    const type = (letter.letterType ?? 'letter').toLowerCase().replace(/_/g, '-');
+    return { buffer, fileName: `${name}_${type}.pdf` };
+  }
+
   async getLetterPdf(tenantId: string, letterId: string): Promise<Buffer> {
     const letter = await this.getLetterById(tenantId, letterId);
     const tenant = await this.db.client.tenant.findUnique({

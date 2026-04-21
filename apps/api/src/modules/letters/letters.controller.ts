@@ -77,11 +77,11 @@ export class LettersController {
   @ApiOperation({ summary: 'Download letter as PDF' })
   async getPdf(@Param('id') id: string, @Request() req: AuthRequest, @Res() reply: FastifyReply) {
     const { tenantId } = req.user;
-    const pdfBuffer = await this.lettersService.getLetterPdf(tenantId, id);
+    const { buffer, fileName } = await this.lettersService.getLetterPdfWithName(tenantId, id);
     void reply
       .header('Content-Type', 'application/pdf')
-      .header('Content-Disposition', `attachment; filename="letter-${id}.pdf"`)
-      .send(pdfBuffer);
+      .header('Content-Disposition', `attachment; filename="${fileName}"`)
+      .send(buffer);
   }
 
   @Put(':id')
