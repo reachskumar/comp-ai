@@ -531,7 +531,11 @@ function LetterPreview({ letter, onBack, onApprove }: LetterPreviewProps) {
                 .then((blob) => {
                   const a = document.createElement('a');
                   a.href = URL.createObjectURL(blob);
-                  a.download = `letter-${letter.id}.pdf`;
+                  // Use server filename from Content-Disposition, fallback to employee name
+                  const empF = letter.employee?.firstName ?? '';
+                  const empL = letter.employee?.lastName ?? '';
+                  const lt = letter.letterType?.toLowerCase().replace(/_/g, '-') ?? 'letter';
+                  a.download = `${empF}_${empL}_${lt}.pdf`;
                   a.click();
                 });
             }}

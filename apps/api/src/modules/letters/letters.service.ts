@@ -391,8 +391,9 @@ export class LettersService {
     if (isHtml) {
       bodyHtml = content.replace(/\{\{COMPANY_LOGO\}\}/g, logoHtml);
     } else {
-      // Convert plain text to styled HTML
-      const paragraphs = content
+      // Convert plain text to styled HTML — strip markdown bold first
+      const cleanContent = content.replace(/\*\*([^*]+)\*\*/g, '$1');
+      const paragraphs = cleanContent
         .split(/\n\n+/)
         .map((p: string) => p.trim())
         .filter(Boolean);
