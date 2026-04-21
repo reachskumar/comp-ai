@@ -280,28 +280,65 @@ export async function invokeLetterGenerator(
   input: LetterGeneratorInput,
   options: CreateGraphOptions = {},
 ): Promise<LetterGeneratorOutput> {
-  const { graph } = await buildLetterGeneratorGraph(options);
+  // Single LLM call instead of 3-node graph — much faster
+  const { loadAIConfig, resolveModelConfig, createChatModel } = await import('../config.js');
+  const aiConfig = options.config ?? loadAIConfig();
+  const modelConfig = {
+    ...resolveModelConfig(aiConfig, 'letter-generator'),
+    ...options.modelConfig,
+  };
+  const model = await createChatModel(aiConfig, modelConfig);
 
-  const result = await graph.invoke({
-    tenantId: input.tenantId,
-    userId: input.userId,
-    messages: [],
-    metadata: {},
-    employee: input.employee,
-    compData: input.compData,
-    tone: input.tone ?? 'professional',
-    language: input.language ?? 'en',
-    template: '',
-    subject: '',
-    content: '',
-  });
+  const { employee, compData } = input;
+  const tone = input.tone ?? 'professional';
+
+  const prompt = `Generate a ${compData.letterType} letter for ${employee.firstName} ${employee.lastName}.
+
+Employee: ${employee.firstName} ${employee.lastName}, ${employee.department}, ${employee.level}
+Location: ${employee.location || 'N/A'}, Hire Date: ${employee.hireDate || 'N/A'}
+Current Salary: ${employee.currency || 'USD'} ${employee.currentSalary?.toLocaleString() || 'N/A'}
+${compData.newSalary ? `New Salary: ${employee.currency || 'USD'} ${compData.newSalary.toLocaleString()}` : ''}
+${compData.salaryIncreasePercent ? `Increase: ${compData.salaryIncreasePercent}%` : ''}
+${compData.bonusAmount ? `Bonus: ${employee.currency || 'USD'} ${compData.bonusAmount.toLocaleString()}` : ''}
+${compData.newTitle ? `New Title: ${compData.newTitle}` : ''}
+${compData.effectiveDate ? `Effective: ${compData.effectiveDate}` : ''}
+${compData.additionalNotes ? `Instructions: ${compData.additionalNotes}` : ''}
+Tone: ${tone}
+
+Return a JSON object with "subject" (email subject line) and "content" (the complete letter in HTML format).
+The HTML should be elegant with inline CSS — use a clean layout, proper spacing, styled compensation details.
+Include {{COMPANY_LOGO}} placeholder in the header.
+Return ONLY valid JSON, no markdown fences.`;
+
+  const response = await model.invoke([
+    new SystemMessage(PERSONALIZE_PROMPT),
+    new HumanMessage(prompt),
+  ]);
+
+  const raw =
+    typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
+
+  let subject = `${compData.letterType} letter - ${employee.firstName} ${employee.lastName}`;
+  let content = raw;
+  try {
+    const parsed = JSON.parse(
+      raw
+        .replace(/```json?\s*/g, '')
+        .replace(/```/g, '')
+        .trim(),
+    );
+    subject = parsed.subject || subject;
+    content = parsed.content || raw;
+  } catch {
+    // Not JSON — use raw as content
+  }
 
   return {
     tenantId: input.tenantId,
     userId: input.userId,
-    subject: (result as LetterStateType).subject ?? '',
-    content: (result as LetterStateType).content ?? '',
-    letterType: input.compData.letterType,
-    messages: ((result as LetterStateType).messages as BaseMessage[]) ?? [],
+    subject,
+    content,
+    letterType: compData.letterType,
+    messages: [response],
   };
 }
