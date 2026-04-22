@@ -106,15 +106,129 @@ export class LettersService {
         customInstructions: dto.customInstructions,
       });
 
-      // Inject company logo into generated HTML
+      // Wrap LLM content in premium HTML template
       const tenant = await this.db.client.tenant.findUnique({
         where: { id: tenantId },
         select: { name: true, logoUrl: true },
       });
+      const companyName = tenant?.name ?? 'Company';
       const logoHtml = tenant?.logoUrl
-        ? `<img src="${tenant.logoUrl}" alt="${tenant.name}" style="max-height:48px;max-width:200px" />`
-        : `<h1 style="margin:0;font-size:24px;color:#4f46e5;font-weight:bold">${tenant?.name ?? 'Company'}</h1>`;
-      const finalContent = result.content.replace(/\{\{COMPANY_LOGO\}\}/g, logoHtml);
+        ? `<img src="${tenant.logoUrl}" alt="${companyName}" style="max-height:44px" />`
+        : `<span style="font-size:26px;font-weight:800;color:#4f46e5;letter-spacing:-0.5px">${companyName}</span>`;
+      const dateStr = new Date().toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      });
+      const empFullName = `${employee.firstName} ${employee.lastName}`;
+
+      // Strip HTML if LLM returned it — we use our own template
+      let bodyText = result.content
+        .replace(/\{\{COMPANY_LOGO\}\}/g, '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&[a-z]+;/g, ' ')
+        .replace(/CONFIDENTIAL/gi, '')
+        .replace(new RegExp(companyName, 'gi'), '')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      // Extract comp breakdown lines
+      const compLines: Array<{ label: string; value: string }> = [];
+      const compMatch = bodyText.match(
+        /(Base Salary|Bonus|RSU|Total|Equity|Benefits)[:\s]+\$?[\d,]+[^\n]*/gi,
+      );
+      if (compMatch) {
+        for (const line of compMatch) {
+          const [label, ...vals] = line.split(/:\s*/);
+          if (label && vals.length)
+            compLines.push({
+              label: label.replace(/\*\*/g, '').trim(),
+              value: vals.join(':').trim(),
+            });
+          bodyText = bodyText.replace(line, '');
+        }
+      }
+
+      // Extract CEO quote
+      let ceoQuote = '';
+      const quoteMatch = bodyText.match(/"([^"]{30,})"/);
+      if (quoteMatch) {
+        ceoQuote = quoteMatch[1]!;
+        bodyText = bodyText.replace(quoteMatch[0], '');
+      }
+
+      // Split remaining into paragraphs
+      const paragraphs = bodyText
+        .split(/\.\s+/)
+        .filter((p) => p.trim().length > 20)
+        .map((p) => p.trim() + (p.endsWith('.') ? '' : '.'));
+
+      const finalContent = `
+<div style="max-width:640px;margin:0 auto;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;color:#1e293b">
+  <!-- Header -->
+  <div style="background:linear-gradient(135deg,#4f46e5 0%,#7c3aed 100%);padding:32px;border-radius:12px 12px 0 0;text-align:center">
+    <div style="color:white;margin-bottom:8px">${logoHtml.replace(/color:#4f46e5/g, 'color:white')}</div>
+    <p style="margin:0;color:rgba(255,255,255,0.7);font-size:10px;letter-spacing:3px;text-transform:uppercase">CONFIDENTIAL</p>
+  </div>
+
+  <!-- Body -->
+  <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;background:#ffffff">
+    <p style="color:#94a3b8;font-size:12px;margin:0 0 20px">${dateStr}</p>
+
+    <p style="font-size:15px;color:#334155;line-height:1.7;margin:0 0 16px">Dear ${employee.firstName},</p>
+
+    ${paragraphs
+      .slice(0, 4)
+      .map(
+        (p) => `<p style="font-size:14px;color:#475569;line-height:1.7;margin:0 0 14px">${p}</p>`,
+      )
+      .join('')}
+
+    ${
+      compLines.length > 0
+        ? `
+    <!-- Compensation Card -->
+    <div style="background:linear-gradient(135deg,#f8fafc 0%,#f1f5f9 100%);border:1px solid #e2e8f0;border-radius:10px;padding:20px;margin:24px 0">
+      <p style="margin:0 0 12px;font-size:12px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:1px">Compensation Summary</p>
+      ${compLines
+        .map(
+          (c) => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #e2e8f0">
+        <span style="color:#64748b;font-size:14px">${c.label}</span>
+        <span style="font-weight:700;color:#1e293b;font-size:15px">${c.value}</span>
+      </div>`,
+        )
+        .join('')}
+    </div>`
+        : ''
+    }
+
+    ${
+      ceoQuote
+        ? `
+    <!-- CEO Quote -->
+    <div style="background:linear-gradient(135deg,#eef2ff 0%,#f5f3ff 100%);border-left:4px solid #4f46e5;border-radius:0 10px 10px 0;padding:20px;margin:24px 0">
+      <p style="margin:0;font-style:italic;color:#4338ca;font-size:14px;line-height:1.7">"${ceoQuote}"</p>
+      <p style="margin:10px 0 0;font-size:12px;color:#6366f1;font-weight:600">— Sachin Bajaj, Founder & CEO</p>
+    </div>`
+        : ''
+    }
+
+    <p style="color:#475569;font-size:14px;margin:24px 0 0">Warm regards,</p>
+
+    <!-- Signature -->
+    <div style="margin-top:24px;padding-top:16px;border-top:1px solid #e2e8f0">
+      <p style="margin:0;font-family:cursive;font-size:24px;color:#4f46e5">Sachin Bajaj</p>
+      <p style="margin:4px 0 0;font-weight:700;font-size:13px;color:#1e293b">Sachin Bajaj</p>
+      <p style="margin:0;color:#94a3b8;font-size:11px">Founder & CEO</p>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <div style="text-align:center;padding:16px 0">
+    <p style="margin:0;font-size:9px;color:#cbd5e1">Generated by CompportIQ · Confidential</p>
+  </div>
+</div>`;
 
       // Update letter with generated content
       return this.db.forTenant(tenantId, (tx) =>
