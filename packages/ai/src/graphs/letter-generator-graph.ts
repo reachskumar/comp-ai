@@ -92,45 +92,31 @@ Letter types and their templates:
 
 Always respond with valid JSON only, no markdown fences.`;
 
-const PERSONALIZE_PROMPT = `You are a premium compensation letter designer. Generate beautiful HTML letters.
+const PERSONALIZE_PROMPT = `You write compensation letter content. Return a JSON object ONLY.
 
-OUTPUT FORMAT: Return ONLY the inner HTML content (no <html>, <head>, <body> tags).
+JSON format:
+{
+  "subject": "short email subject line",
+  "paragraphs": ["paragraph 1 text", "paragraph 2 text", "paragraph 3 text"],
+  "compensation": [
+    {"label": "Base Salary", "value": "$150,000"},
+    {"label": "Annual Bonus", "value": "$25,000"},
+    {"label": "RSU Grant", "value": "500 shares"},
+    {"label": "Total", "value": "$175,000 + RSUs"}
+  ],
+  "ceoQuote": "A warm, personal message from the CEO recognizing this employee's contributions..."
+}
 
-DESIGN RULES:
-- Use elegant inline CSS — Georgia font, #1a1a1a text, #4f46e5 accent color
-- Start with {{COMPANY_LOGO}} placeholder centered, then "CONFIDENTIAL" in small caps
-- Include date, "Dear FirstName," salutation
-- Body: warm, congratulatory, 3-4 paragraphs max
-- Compensation breakdown: use a styled card with rounded corners (#f9fafb background, #e5e7eb border)
-  with flexbox rows showing label on left, value on right, separated by subtle borders
-- CEO quote: use a styled blockquote with left accent border (#4f46e5), italic, light purple background
-- DO NOT include any signature — the system appends "Sachin Bajaj, Founder & CEO" automatically
-- End with "Warm regards," — nothing after it
-- Currency: use $ with commas
-- Keep the overall width to max-width:640px, centered
+RULES:
+- paragraphs: 3-4 warm, congratulatory paragraphs. Use first name naturally. Mention department, role, achievements.
+- compensation: include ALL comp components mentioned in the input. Use $ with commas.
+- ceoQuote: a heartfelt 2-3 sentence message. Personal and inspiring.
+- subject: concise, celebratory subject line.
+- DO NOT include any HTML, markdown, signature, date, or company name in the text.
+- DO NOT include "Dear Name" or "Warm regards" — the template adds those.
+- Return ONLY valid JSON, no markdown fences, no extra text.
 
-Example structure:
-<div style="max-width:640px;margin:0 auto;font-family:Georgia,serif;color:#1a1a1a;line-height:1.7">
-  <div style="text-align:center;padding:24px 0;border-bottom:2px solid #4f46e5">
-    {{COMPANY_LOGO}}
-    <p style="margin:8px 0 0;color:#4f46e5;font-size:10px;letter-spacing:3px">CONFIDENTIAL</p>
-  </div>
-  <div style="padding:28px 0">
-    <p style="color:#999;font-size:12px">DATE</p>
-    <p>Dear NAME,</p>
-    <p>...body...</p>
-    <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin:20px 0">
-      comp breakdown rows...
-    </div>
-    <blockquote style="border-left:4px solid #4f46e5;padding:12px 16px;margin:20px 0;color:#4f46e5;font-style:italic;background:#f8f7ff;border-radius:0 8px 8px 0">
-      CEO quote...
-    </blockquote>
-    <p>Warm regards,</p>
-  </div>
-</div>
-
-Tone: {{tone}}
-Language: {{language}}`;
+Tone: {{tone}}`;
 
 // ─── Graph Builder ────────────────────────────────────────
 
@@ -307,9 +293,7 @@ ${compData.effectiveDate ? `Effective: ${compData.effectiveDate}` : ''}
 ${compData.additionalNotes ? `Instructions: ${compData.additionalNotes}` : ''}
 Tone: ${tone}
 
-Return a JSON object with "subject" (email subject line) and "content" (the complete letter in HTML format).
-The HTML should be elegant with inline CSS — use a clean layout, proper spacing, styled compensation details.
-Include {{COMPANY_LOGO}} placeholder in the header.
+Return the JSON object as described in the system prompt.
 Return ONLY valid JSON, no markdown fences.`;
 
   const response = await model.invoke([
@@ -321,6 +305,7 @@ Return ONLY valid JSON, no markdown fences.`;
     typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
 
   let subject = `${compData.letterType} letter - ${employee.firstName} ${employee.lastName}`;
+  // Content will be the raw JSON — the backend template wraps it in HTML
   let content = raw;
   try {
     const parsed = JSON.parse(
@@ -330,7 +315,8 @@ Return ONLY valid JSON, no markdown fences.`;
         .trim(),
     );
     subject = parsed.subject || subject;
-    content = parsed.content || raw;
+    // Pass the full structured JSON as content — backend template renders it
+    content = JSON.stringify(parsed);
   } catch {
     // Not JSON — use raw as content
   }

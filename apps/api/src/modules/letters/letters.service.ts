@@ -122,46 +122,32 @@ export class LettersService {
       });
       const empFullName = `${employee.firstName} ${employee.lastName}`;
 
-      // Strip HTML if LLM returned it — we use our own template
-      let bodyText = result.content
-        .replace(/\{\{COMPANY_LOGO\}\}/g, '')
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/&[a-z]+;/g, ' ')
-        .replace(/CONFIDENTIAL/gi, '')
-        .replace(new RegExp(companyName, 'gi'), '')
-        .replace(/\s+/g, ' ')
-        .trim();
-
-      // Extract comp breakdown lines
-      const compLines: Array<{ label: string; value: string }> = [];
-      const compMatch = bodyText.match(
-        /(Base Salary|Bonus|RSU|Total|Equity|Benefits)[:\s]+\$?[\d,]+[^\n]*/gi,
-      );
-      if (compMatch) {
-        for (const line of compMatch) {
-          const [label, ...vals] = line.split(/:\s*/);
-          if (label && vals.length)
-            compLines.push({
-              label: label.replace(/\*\*/g, '').trim(),
-              value: vals.join(':').trim(),
-            });
-          bodyText = bodyText.replace(line, '');
-        }
-      }
-
-      // Extract CEO quote
+      // Parse structured JSON from LLM
+      let paragraphs: string[] = [];
+      let compLines: Array<{ label: string; value: string }> = [];
       let ceoQuote = '';
-      const quoteMatch = bodyText.match(/"([^"]{30,})"/);
-      if (quoteMatch) {
-        ceoQuote = quoteMatch[1]!;
-        bodyText = bodyText.replace(quoteMatch[0], '');
+      try {
+        const structured = JSON.parse(
+          result.content
+            .replace(/```json?\s*/g, '')
+            .replace(/```/g, '')
+            .trim(),
+        );
+        paragraphs = structured.paragraphs ?? [];
+        compLines = (structured.compensation ?? []).map((c: { label: string; value: string }) => ({
+          label: c.label,
+          value: c.value,
+        }));
+        ceoQuote = structured.ceoQuote ?? '';
+      } catch {
+        // Fallback: treat as plain text
+        paragraphs = result.content
+          .replace(/<[^>]+>/g, '')
+          .replace(/\*\*/g, '')
+          .split(/\n\n+/)
+          .map((p: string) => p.trim())
+          .filter((p: string) => p.length > 20);
       }
-
-      // Split remaining into paragraphs
-      const paragraphs = bodyText
-        .split(/\.\s+/)
-        .filter((p) => p.trim().length > 20)
-        .map((p) => p.trim() + (p.endsWith('.') ? '' : '.'));
 
       const finalContent = `
 <div style="max-width:640px;margin:0 auto;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;color:#1e293b">
