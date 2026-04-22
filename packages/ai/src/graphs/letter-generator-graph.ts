@@ -92,27 +92,44 @@ Letter types and their templates:
 
 Always respond with valid JSON only, no markdown fences.`;
 
-const PERSONALIZE_PROMPT = `You are a professional HR letter writer. Generate compensation letters in clean text format.
+const PERSONALIZE_PROMPT = `You are a premium compensation letter designer. Generate beautiful HTML letters.
 
-CRITICAL RULES:
-- Write the letter as PLAIN TEXT with paragraph breaks — NOT HTML
-- Use the employee's first name naturally
-- Be congratulatory and positive
-- Format currency with $ and commas
-- DO NOT include any signature block — the system adds it automatically
-- DO NOT write "From the desk of..." or any CEO attribution — the system handles signing
-- DO NOT include company name header or "CONFIDENTIAL" — the PDF template adds those
-- If the letter type is total_comp_summary, include a compensation breakdown as a simple list:
-  Base Salary: $XXX,XXX
-  Bonus: $XX,XXX
-  RSU Grant: XXX shares
-  Total: $XXX,XXX
-- If there's a CEO message in the instructions, write it as a quoted paragraph starting with a quote mark
-- End with "Warm regards," and nothing else — no name after it
+OUTPUT FORMAT: Return ONLY the inner HTML content (no <html>, <head>, <body> tags).
 
-Keep the letter concise — 3-5 paragraphs max.
+DESIGN RULES:
+- Use elegant inline CSS — Georgia font, #1a1a1a text, #4f46e5 accent color
+- Start with {{COMPANY_LOGO}} placeholder centered, then "CONFIDENTIAL" in small caps
+- Include date, "Dear FirstName," salutation
+- Body: warm, congratulatory, 3-4 paragraphs max
+- Compensation breakdown: use a styled card with rounded corners (#f9fafb background, #e5e7eb border)
+  with flexbox rows showing label on left, value on right, separated by subtle borders
+- CEO quote: use a styled blockquote with left accent border (#4f46e5), italic, light purple background
+- DO NOT include any signature — the system appends "Sachin Bajaj, Founder & CEO" automatically
+- End with "Warm regards," — nothing after it
+- Currency: use $ with commas
+- Keep the overall width to max-width:640px, centered
 
-Tone preference: {{tone}}
+Example structure:
+<div style="max-width:640px;margin:0 auto;font-family:Georgia,serif;color:#1a1a1a;line-height:1.7">
+  <div style="text-align:center;padding:24px 0;border-bottom:2px solid #4f46e5">
+    {{COMPANY_LOGO}}
+    <p style="margin:8px 0 0;color:#4f46e5;font-size:10px;letter-spacing:3px">CONFIDENTIAL</p>
+  </div>
+  <div style="padding:28px 0">
+    <p style="color:#999;font-size:12px">DATE</p>
+    <p>Dear NAME,</p>
+    <p>...body...</p>
+    <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin:20px 0">
+      comp breakdown rows...
+    </div>
+    <blockquote style="border-left:4px solid #4f46e5;padding:12px 16px;margin:20px 0;color:#4f46e5;font-style:italic;background:#f8f7ff;border-radius:0 8px 8px 0">
+      CEO quote...
+    </blockquote>
+    <p>Warm regards,</p>
+  </div>
+</div>
+
+Tone: {{tone}}
 Language: {{language}}`;
 
 // ─── Graph Builder ────────────────────────────────────────
