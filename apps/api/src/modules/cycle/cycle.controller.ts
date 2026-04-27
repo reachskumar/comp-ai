@@ -94,6 +94,7 @@ export class CycleController {
       req.user.role,
       req.user.userId,
       dto.reason,
+      { generateLetters: dto.generateLetters === true },
     );
   }
 

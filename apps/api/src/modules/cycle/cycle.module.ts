@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { CycleController } from './cycle.controller';
 import { CycleService } from './cycle.service';
+import { LettersModule } from '../letters/letters.module';
 import { ApprovalController } from './approval.controller';
 import { ApprovalService } from './services/approval.service';
 import { CalibrationService } from './services/calibration.service';
@@ -20,6 +21,7 @@ import {
   imports: [
     BullModule.registerQueue({ name: 'cycle-processing' }),
     BullModule.registerQueue({ name: 'cycle-monitors' }),
+    LettersModule,
   ],
   controllers: [CycleController, ApprovalController, MonitorsController],
   providers: [

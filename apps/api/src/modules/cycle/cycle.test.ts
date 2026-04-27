@@ -1,12 +1,23 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { CycleService } from './cycle.service';
 import { createMockDatabaseService, TEST_TENANT_ID, TEST_USER_ID } from '../../test/setup';
 
+interface MockLetters {
+  enqueueBatch: ReturnType<typeof vi.fn>;
+}
+
+function createMockLetters(): MockLetters {
+  return {
+    enqueueBatch: vi.fn().mockResolvedValue({ batchId: 'batch-stub', total: 0, status: 'queued' }),
+  };
+}
+
 function createCycleService() {
   const db = createMockDatabaseService();
-  const service = new (CycleService as any)(db);
-  return { service: service as CycleService, db };
+  const letters = createMockLetters();
+  const service = new (CycleService as any)(db, letters);
+  return { service: service as CycleService, db, letters };
 }
 
 const MOCK_CYCLE = {
@@ -417,5 +428,179 @@ describe('CycleService — closure writeback (APPROVAL → COMPLETED)', () => {
     expect(result.closure).toBeUndefined();
     expect(db.client.compRecommendation.findMany).not.toHaveBeenCalled();
     expect(db.client.employee.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('CycleService — closure-letters opt-in', () => {
+  let service: CycleService;
+  let db: ReturnType<typeof createMockDatabaseService>;
+  let letters: MockLetters;
+
+  beforeEach(() => {
+    ({ service, db, letters } = createCycleService());
+  });
+
+  function setupApprovedCycle(
+    recs: Array<{
+      id: string;
+      employeeId: string;
+      recType: string;
+      currentValue: number;
+      proposedValue: number;
+    }>,
+  ) {
+    db.client.compCycle.findFirst.mockResolvedValue({
+      ...MOCK_CYCLE,
+      status: 'APPROVAL',
+      budgets: [],
+      recommendations: recs.map((r) => ({ id: r.id })),
+    });
+    db.client.compRecommendation.findMany.mockResolvedValueOnce(recs);
+    db.client.employee.update.mockResolvedValue({});
+    db.client.auditLog.create.mockResolvedValue({});
+    db.client.compRecommendation.update.mockResolvedValue({});
+    db.client.compCycle.update.mockResolvedValue({ ...MOCK_CYCLE, status: 'COMPLETED' });
+  }
+
+  it('does NOT enqueue letters by default (opt-in flag is required)', async () => {
+    setupApprovedCycle([
+      {
+        id: 'rec-1',
+        employeeId: 'emp-1',
+        recType: 'MERIT_INCREASE',
+        currentValue: 100000,
+        proposedValue: 105000,
+      },
+    ]);
+
+    await service.transitionCycle(TEST_TENANT_ID, 'cycle-001', 'COMPLETED', 'ADMIN', TEST_USER_ID);
+
+    expect(letters.enqueueBatch).not.toHaveBeenCalled();
+  });
+
+  it('enqueues one BullMQ batch per letter type when generateLetters=true', async () => {
+    setupApprovedCycle([
+      {
+        id: 'rec-1',
+        employeeId: 'emp-1',
+        recType: 'MERIT_INCREASE',
+        currentValue: 100000,
+        proposedValue: 105000,
+      },
+      {
+        id: 'rec-2',
+        employeeId: 'emp-2',
+        recType: 'PROMOTION',
+        currentValue: 120000,
+        proposedValue: 140000,
+      },
+      {
+        id: 'rec-3',
+        employeeId: 'emp-3',
+        recType: 'ADJUSTMENT',
+        currentValue: 90000,
+        proposedValue: 95000,
+      },
+    ]);
+    // Second findMany call (in enqueueClosureLetters) — return the just-applied recs.
+    db.client.compRecommendation.findMany.mockResolvedValueOnce([
+      {
+        employeeId: 'emp-1',
+        recType: 'MERIT_INCREASE',
+        currentValue: 100000,
+        proposedValue: 105000,
+      },
+      { employeeId: 'emp-2', recType: 'PROMOTION', currentValue: 120000, proposedValue: 140000 },
+      { employeeId: 'emp-3', recType: 'ADJUSTMENT', currentValue: 90000, proposedValue: 95000 },
+    ]);
+
+    const result = (await service.transitionCycle(
+      TEST_TENANT_ID,
+      'cycle-001',
+      'COMPLETED',
+      'ADMIN',
+      TEST_USER_ID,
+      undefined,
+      { generateLetters: true },
+    )) as { letters?: { enqueued: number; batches: Array<{ letterType: string; total: number }> } };
+
+    // Two batches: RAISE (merit + adjustment) and PROMOTION.
+    expect(letters.enqueueBatch).toHaveBeenCalledTimes(2);
+    const types = letters.enqueueBatch.mock.calls.map((c) => c[2].letterType).sort();
+    expect(types).toEqual(['promotion', 'raise']);
+    expect(result.letters?.enqueued).toBe(3);
+    expect(result.letters?.batches).toHaveLength(2);
+  });
+
+  it('chunks employees into batches of 100', async () => {
+    const employeeIds = Array.from({ length: 250 }, (_, i) => `emp-${i}`);
+    setupApprovedCycle(
+      employeeIds.map((employeeId, i) => ({
+        id: `rec-${i}`,
+        employeeId,
+        recType: 'MERIT_INCREASE',
+        currentValue: 100000,
+        proposedValue: 105000,
+      })),
+    );
+    db.client.compRecommendation.findMany.mockResolvedValueOnce(
+      employeeIds.map((employeeId) => ({
+        employeeId,
+        recType: 'MERIT_INCREASE',
+        currentValue: 100000,
+        proposedValue: 105000,
+      })),
+    );
+
+    await service.transitionCycle(
+      TEST_TENANT_ID,
+      'cycle-001',
+      'COMPLETED',
+      'ADMIN',
+      TEST_USER_ID,
+      undefined,
+      { generateLetters: true },
+    );
+
+    // 250 → 100 + 100 + 50 across 3 batches.
+    expect(letters.enqueueBatch).toHaveBeenCalledTimes(3);
+    const sizes = letters.enqueueBatch.mock.calls
+      .map((c) => c[2].employeeIds.length)
+      .sort((a, b) => a - b);
+    expect(sizes).toEqual([50, 100, 100]);
+  });
+
+  it('returns enqueue error in response without rolling back the closure', async () => {
+    setupApprovedCycle([
+      {
+        id: 'rec-1',
+        employeeId: 'emp-1',
+        recType: 'MERIT_INCREASE',
+        currentValue: 100000,
+        proposedValue: 105000,
+      },
+    ]);
+    db.client.compRecommendation.findMany.mockResolvedValueOnce([
+      {
+        employeeId: 'emp-1',
+        recType: 'MERIT_INCREASE',
+        currentValue: 100000,
+        proposedValue: 105000,
+      },
+    ]);
+    letters.enqueueBatch.mockRejectedValue(new Error('Redis is down'));
+
+    const result = (await service.transitionCycle(
+      TEST_TENANT_ID,
+      'cycle-001',
+      'COMPLETED',
+      'ADMIN',
+      TEST_USER_ID,
+      undefined,
+      { generateLetters: true },
+    )) as { letters?: { error?: string }; closure?: { applied: number } };
+
+    expect(result.letters?.error).toMatch(/Redis is down/);
+    expect(result.closure?.applied).toBe(1); // writeback was NOT rolled back
   });
 });

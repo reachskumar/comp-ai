@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsOptional } from 'class-validator';
+import { IsBoolean, IsString, IsNotEmpty, IsOptional } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class TransitionCycleDto {
@@ -15,5 +15,13 @@ export class TransitionCycleDto {
   @IsOptional()
   @IsString()
   reason?: string;
-}
 
+  @ApiPropertyOptional({
+    description:
+      'Only meaningful for APPROVAL → COMPLETED. When true, enqueue letters for every employee whose recommendation was just written back. Each letter is one paid LLM call.',
+    default: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  generateLetters?: boolean;
+}

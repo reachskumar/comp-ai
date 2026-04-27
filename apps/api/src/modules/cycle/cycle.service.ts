@@ -15,6 +15,8 @@ import type {
 import type { CycleQueryDto, RecommendationQueryDto } from './dto/cycle-query.dto';
 import type { CycleEligibilityDto } from './dto/eligibility.dto';
 import { Prisma } from '@compensation/database';
+import { LettersService } from '../letters/letters.service';
+import { LetterTypeDto } from '../letters/dto/generate-letter.dto';
 
 // ─── Eligibility helpers ───────────────────────────────────────────────────
 
@@ -147,7 +149,10 @@ const BULK_BATCH_SIZE = 500;
 export class CycleService {
   private readonly logger = new Logger(CycleService.name);
 
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly letters: LettersService,
+  ) {}
 
   // ─── Cycle CRUD ─────────────────────────────────────────────────────────
 
@@ -244,8 +249,9 @@ export class CycleService {
     userRole: string,
     userId: string,
     reason?: string,
+    options?: { generateLetters?: boolean },
   ) {
-    return this.db.forTenant(tenantId, async (tx) => {
+    const result = await this.db.forTenant(tenantId, async (tx) => {
       const cycle = await tx.compCycle.findFirst({
         where: { id: cycleId, tenantId },
         include: {
@@ -288,7 +294,9 @@ export class CycleService {
 
       // 4. Closure side-effects (APPROVAL → COMPLETED only). Runs in the same
       // transaction as the status flip so a partial close is impossible.
-      let closure: { applied: number; skipped: number; total: number } | undefined;
+      let closure:
+        | { applied: number; skipped: number; total: number; appliedEmployeeIds: string[] }
+        | undefined;
       if (currentStatus === 'APPROVAL' && targetStatus === 'COMPLETED') {
         closure = await this.applyClosureWriteback(tx, tenantId, cycleId, userId);
       }
@@ -318,6 +326,85 @@ export class CycleService {
       );
       return closure ? { ...updated, closure } : updated;
     });
+
+    // Letter enqueue runs AFTER the transaction so its (potentially slow)
+    // BullMQ + tenant-config lookups don't hold the cycle write open. If
+    // enqueue fails the cycle is still cleanly COMPLETED — we surface the
+    // error in the response but don't roll back the writeback.
+    if (
+      options?.generateLetters &&
+      result &&
+      typeof result === 'object' &&
+      'closure' in result &&
+      result.closure
+    ) {
+      const closure = result.closure as {
+        appliedEmployeeIds: string[];
+      };
+      const lettersResult = await this.enqueueClosureLetters(tenantId, cycleId, userId).catch(
+        (err: unknown) => ({
+          error: err instanceof Error ? err.message : String(err),
+          enqueued: 0,
+          batches: [] as Array<{ batchId: string; letterType: string; total: number }>,
+        }),
+      );
+      return {
+        ...result,
+        letters: {
+          requested: closure.appliedEmployeeIds.length,
+          ...lettersResult,
+        },
+      };
+    }
+
+    return result;
+  }
+
+  /**
+   * Enqueue letter batches for every recommendation just written back.
+   * Splits by recommendation type (one BullMQ batch per letter type) so
+   * each batch's downstream prompt + UI groups cleanly.
+   *
+   * Read-only against the cycle/recommendations — fine to run after the
+   * closure transaction commits.
+   */
+  private async enqueueClosureLetters(tenantId: string, cycleId: string, userId: string) {
+    const recs = await this.db.forTenant(tenantId, (tx) =>
+      tx.compRecommendation.findMany({
+        where: { cycleId, status: 'APPLIED_TO_COMPPORT' },
+        select: { employeeId: true, recType: true, proposedValue: true, currentValue: true },
+      }),
+    );
+
+    // Bucket employees by the letter type their rec maps to.
+    const byLetterType = new Map<LetterTypeDto, string[]>();
+    for (const rec of recs) {
+      const letterType = this.letterTypeForRec(rec.recType);
+      if (!letterType) continue;
+      const arr = byLetterType.get(letterType) ?? [];
+      arr.push(rec.employeeId);
+      byLetterType.set(letterType, arr);
+    }
+
+    const batches: Array<{ batchId: string; letterType: string; total: number }> = [];
+    let enqueued = 0;
+    for (const [letterType, employeeIds] of byLetterType) {
+      // Letters batch is capped at 100 employees per BullMQ job.
+      for (let i = 0; i < employeeIds.length; i += 100) {
+        const chunk = employeeIds.slice(i, i + 100);
+        const batch = await this.letters.enqueueBatch(tenantId, userId, {
+          employeeIds: chunk,
+          letterType,
+        });
+        batches.push({ batchId: batch.batchId, letterType, total: chunk.length });
+        enqueued += chunk.length;
+      }
+    }
+
+    this.logger.log(
+      `Cycle ${cycleId} closure-letters: enqueued ${enqueued} across ${batches.length} batch(es)`,
+    );
+    return { enqueued, batches };
   }
 
   // ─── Budget Allocation ──────────────────────────────────────────────────
@@ -848,6 +935,7 @@ export class CycleService {
 
     let applied = 0;
     let skipped = 0;
+    const appliedEmployeeIds: string[] = [];
 
     for (const rec of approved) {
       // Only salary-affecting types update baseSalary.
@@ -894,12 +982,31 @@ export class CycleService {
       });
 
       applied++;
+      appliedEmployeeIds.push(rec.employeeId);
     }
 
     this.logger.log(
       `Cycle ${cycleId} closure: applied=${applied} skipped=${skipped} of ${approved.length} approved recs`,
     );
-    return { applied, skipped, total: approved.length };
+    return { applied, skipped, total: approved.length, appliedEmployeeIds };
+  }
+
+  /**
+   * Map a recommendation type to the corresponding letter type. Recs that
+   * don't fit any letter type return null and are skipped.
+   */
+  private letterTypeForRec(recType: string): LetterTypeDto | null {
+    switch (recType) {
+      case 'MERIT_INCREASE':
+      case 'ADJUSTMENT':
+        return LetterTypeDto.RAISE;
+      case 'PROMOTION':
+        return LetterTypeDto.PROMOTION;
+      case 'BONUS':
+        return LetterTypeDto.BONUS;
+      default:
+        return null;
+    }
   }
 
   // ─── Private Helpers ──────────────────────────────────────────────────
