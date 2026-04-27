@@ -524,20 +524,28 @@ function LetterPreview({ letter, onBack, onApprove }: LetterPreviewProps) {
             variant="outline"
             size="sm"
             onClick={() => {
-              const url = `${process.env['NEXT_PUBLIC_API_URL'] || 'https://compportiq.ai'}/api/v1/letters/${letter.id}/pdf`;
-              const token = localStorage.getItem('accessToken');
-              fetch(url, { headers: { Authorization: `Bearer ${token}` } })
-                .then((res) => res.blob())
-                .then((blob) => {
-                  const a = document.createElement('a');
-                  a.href = URL.createObjectURL(blob);
-                  // Use server filename from Content-Disposition, fallback to employee name
+              void (async () => {
+                try {
+                  const { blob, fileName } = await apiClient.fetchBlob(
+                    `/api/v1/letters/${letter.id}/pdf`,
+                  );
                   const empF = letter.employee?.firstName ?? '';
                   const empL = letter.employee?.lastName ?? '';
                   const lt = letter.letterType?.toLowerCase().replace(/_/g, '-') ?? 'letter';
-                  a.download = `${empF}_${empL}_${lt}.pdf`;
+                  const fallback = `${empF}_${empL}_${lt}.pdf`;
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = fileName ?? fallback;
+                  document.body.appendChild(a);
                   a.click();
-                });
+                  a.remove();
+                  URL.revokeObjectURL(url);
+                } catch (err) {
+                  console.error('PDF download failed', err);
+                  alert(err instanceof Error ? err.message : 'PDF download failed');
+                }
+              })();
             }}
           >
             <Download className="mr-1 h-4 w-4" />

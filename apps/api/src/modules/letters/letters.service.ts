@@ -1,4 +1,5 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
+import { existsSync } from 'fs';
 import { DatabaseService } from '../../database';
 import {
   invokeLetterGenerator,
@@ -6,7 +7,7 @@ import {
   type LetterCompData,
   type LetterType,
 } from '@compensation/ai';
-import { Prisma } from '@compensation/database';
+import { LetterStatus, LetterType as PrismaLetterType, Prisma } from '@compensation/database';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const PDFDocument = require('pdfkit') as typeof import('pdfkit');
 import { GenerateLetterDto, LetterTypeDto } from './dto/generate-letter.dto';
@@ -14,36 +15,189 @@ import { GenerateBatchLetterDto } from './dto/generate-batch-letter.dto';
 import { UpdateLetterDto } from './dto/update-letter.dto';
 import { ListLettersDto } from './dto/list-letters.dto';
 
-function mapLetterType(dto: LetterTypeDto): LetterType {
-  const map: Record<LetterTypeDto, LetterType> = {
-    [LetterTypeDto.OFFER]: 'offer',
-    [LetterTypeDto.RAISE]: 'raise',
-    [LetterTypeDto.PROMOTION]: 'promotion',
-    [LetterTypeDto.BONUS]: 'bonus',
-    [LetterTypeDto.TOTAL_COMP_SUMMARY]: 'total_comp_summary',
-  };
-  return map[dto];
+// ─── Constants ──────────────────────────────────────────────────────────────
+
+/** Hard ceiling on a single LLM generation call. */
+const LLM_TIMEOUT_MS = 60_000;
+
+/** Reaper interval — sweeps stuck GENERATING rows. */
+const REAPER_INTERVAL_MS = 60_000;
+
+/** A row in GENERATING longer than this is considered orphaned by a crashed worker. */
+const STUCK_GENERATING_MS = 5 * 60_000;
+
+/** Cap concurrent letters in a batch. Each letter = 1 LLM call. */
+const BATCH_CONCURRENCY = 3;
+
+/** Cap on a single PDF render. */
+const PDF_TIMEOUT_MS = 20_000;
+
+const CHROME_CANDIDATES = [
+  '/usr/bin/chromium-browser',
+  '/usr/bin/chromium',
+  '/usr/bin/google-chrome-stable',
+];
+
+const LETTER_TYPE_MAP: Record<LetterTypeDto, { ai: LetterType; prisma: PrismaLetterType }> = {
+  [LetterTypeDto.OFFER]: { ai: 'offer', prisma: PrismaLetterType.OFFER },
+  [LetterTypeDto.RAISE]: { ai: 'raise', prisma: PrismaLetterType.RAISE },
+  [LetterTypeDto.PROMOTION]: { ai: 'promotion', prisma: PrismaLetterType.PROMOTION },
+  [LetterTypeDto.BONUS]: { ai: 'bonus', prisma: PrismaLetterType.BONUS },
+  [LetterTypeDto.TOTAL_COMP_SUMMARY]: {
+    ai: 'total_comp_summary',
+    prisma: PrismaLetterType.TOTAL_COMP_SUMMARY,
+  },
+};
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+/** Escape user/LLM/tenant text for safe interpolation into HTML. */
+function esc(input: unknown): string {
+  if (input === null || input === undefined) return '';
+  return String(input)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
-function mapLetterTypeToEnum(dto: LetterTypeDto): string {
-  const map: Record<LetterTypeDto, string> = {
-    [LetterTypeDto.OFFER]: 'OFFER',
-    [LetterTypeDto.RAISE]: 'RAISE',
-    [LetterTypeDto.PROMOTION]: 'PROMOTION',
-    [LetterTypeDto.BONUS]: 'BONUS',
-    [LetterTypeDto.TOTAL_COMP_SUMMARY]: 'TOTAL_COMP_SUMMARY',
-  };
-  return map[dto];
+/** Tenant-supplied logoUrl is rendered into <img src>. Allow only http(s) URLs. */
+function safeLogoUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    return u.toString();
+  } catch {
+    return null;
+  }
 }
+
+interface SignatureConfig {
+  name: string;
+  title: string;
+  initialsForCursive: string;
+}
+
+function resolveSignature(tenant: { name: string; settings: Prisma.JsonValue }): SignatureConfig {
+  const settings =
+    tenant.settings && typeof tenant.settings === 'object' && !Array.isArray(tenant.settings)
+      ? (tenant.settings as Record<string, unknown>)
+      : {};
+  const sig =
+    settings['letterSignature'] && typeof settings['letterSignature'] === 'object'
+      ? (settings['letterSignature'] as Record<string, unknown>)
+      : {};
+  const name = typeof sig['name'] === 'string' && sig['name'].trim() ? sig['name'].trim() : '';
+  const title = typeof sig['title'] === 'string' && sig['title'].trim() ? sig['title'].trim() : '';
+  return {
+    name: name || `${tenant.name} HR Team`,
+    title: title || 'People & Compensation',
+    initialsForCursive: (name || tenant.name).slice(0, 40),
+  };
+}
+
+interface StructuredLetter {
+  paragraphs: string[];
+  compensation: Array<{ label: string; value: string }>;
+  ceoQuote: string;
+  subject?: string;
+}
+
+function parseStructured(raw: string): StructuredLetter | null {
+  try {
+    const cleaned = raw
+      .replace(/```json?\s*/gi, '')
+      .replace(/```/g, '')
+      .trim();
+    const parsed = JSON.parse(cleaned) as Partial<StructuredLetter>;
+    if (!Array.isArray(parsed.paragraphs)) return null;
+    return {
+      paragraphs: parsed.paragraphs.filter((p): p is string => typeof p === 'string'),
+      compensation: Array.isArray(parsed.compensation)
+        ? parsed.compensation
+            .filter(
+              (c): c is { label: string; value: string } =>
+                typeof c === 'object' &&
+                c !== null &&
+                typeof (c as { label?: unknown }).label === 'string' &&
+                typeof (c as { value?: unknown }).value === 'string',
+            )
+            .map((c) => ({ label: c.label, value: c.value }))
+        : [],
+      ceoQuote: typeof parsed.ceoQuote === 'string' ? parsed.ceoQuote : '',
+      subject: typeof parsed.subject === 'string' ? parsed.subject : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e: unknown) => {
+        clearTimeout(timer);
+        reject(e instanceof Error ? e : new Error(String(e)));
+      },
+    );
+  });
+}
+
+// ─── Service ────────────────────────────────────────────────────────────────
 
 @Injectable()
-export class LettersService {
+export class LettersService implements OnModuleInit {
   private readonly logger = new Logger(LettersService.name);
+  private chromePathCache: string | null | undefined; // undefined = not resolved yet
+  private reaperHandle: NodeJS.Timeout | null = null;
 
   constructor(private readonly db: DatabaseService) {}
 
+  onModuleInit() {
+    // Resolve Chrome path once at startup (no per-request fs probing).
+    const envPath = process.env['PUPPETEER_EXECUTABLE_PATH'];
+    if (envPath && existsSync(envPath)) {
+      this.chromePathCache = envPath;
+    } else {
+      this.chromePathCache = CHROME_CANDIDATES.find((p) => existsSync(p)) ?? null;
+    }
+    if (!this.chromePathCache) {
+      this.logger.warn('No Chrome/Chromium binary found — PDF rendering will use pdfkit fallback');
+    }
+
+    // Reaper for orphaned GENERATING rows from crashed workers.
+    this.reaperHandle = setInterval(() => {
+      void this.reapStuckRows();
+    }, REAPER_INTERVAL_MS);
+    // Allow process to exit even if reaper is scheduled.
+    if (typeof this.reaperHandle.unref === 'function') this.reaperHandle.unref();
+  }
+
+  private async reapStuckRows() {
+    try {
+      const cutoff = new Date(Date.now() - STUCK_GENERATING_MS);
+      const result = await this.db.client.compensationLetter.updateMany({
+        where: { status: LetterStatus.GENERATING, createdAt: { lt: cutoff } },
+        data: { status: LetterStatus.FAILED, errorMsg: 'Generation timed out (reaper)' },
+      });
+      if (result.count > 0) {
+        this.logger.warn(`Reaper: marked ${result.count} stuck GENERATING letter(s) as FAILED`);
+      }
+    } catch (err) {
+      this.logger.error('Reaper sweep failed', err);
+    }
+  }
+
+  // ─── Generation ──────────────────────────────────────────────────────────
+
   async generateLetter(tenantId: string, userId: string, dto: GenerateLetterDto) {
-    // Fetch employee data
     const employee = await this.db.forTenant(tenantId, (tx) =>
       tx.employee.findFirst({ where: { id: dto.employeeId, tenantId } }),
     );
@@ -63,7 +217,7 @@ export class LettersService {
     };
 
     const compData: LetterCompData = {
-      letterType: mapLetterType(dto.letterType),
+      letterType: LETTER_TYPE_MAP[dto.letterType].ai,
       newSalary: dto.newSalary,
       salaryIncrease: dto.salaryIncrease,
       salaryIncreasePercent: dto.salaryIncreasePercent,
@@ -76,15 +230,14 @@ export class LettersService {
       additionalNotes: dto.additionalNotes,
     };
 
-    // Create letter record in GENERATING status
     const letter = await this.db.forTenant(tenantId, (tx) =>
       tx.compensationLetter.create({
         data: {
           tenantId,
           userId,
           employeeId: dto.employeeId,
-          letterType: mapLetterTypeToEnum(dto.letterType) as never,
-          status: 'GENERATING' as never,
+          letterType: LETTER_TYPE_MAP[dto.letterType].prisma,
+          status: LetterStatus.GENERATING,
           subject: `${dto.letterType} letter - ${employee.firstName} ${employee.lastName}`,
           content: '',
           compData: compData as unknown as Prisma.InputJsonValue,
@@ -94,136 +247,54 @@ export class LettersService {
       }),
     );
 
-    // Generate letter asynchronously
     try {
-      const result = await invokeLetterGenerator({
-        tenantId,
-        userId,
-        employee: employeeData,
-        compData,
-        tone: dto.tone,
-        language: dto.language,
-        customInstructions: dto.customInstructions,
-      });
+      const result = await withTimeout(
+        invokeLetterGenerator({
+          tenantId,
+          userId,
+          employee: employeeData,
+          compData,
+          tone: dto.tone,
+          language: dto.language,
+          customInstructions: dto.customInstructions,
+        }),
+        LLM_TIMEOUT_MS,
+        'letter LLM call',
+      );
 
-      // Wrap LLM content in premium HTML template
-      const tenant = await this.db.client.tenant.findUnique({
-        where: { id: tenantId },
-        select: { name: true, logoUrl: true },
-      });
-      const companyName = tenant?.name ?? 'Company';
-      const logoHtml = tenant?.logoUrl
-        ? `<img src="${tenant.logoUrl}" alt="${companyName}" style="max-height:44px" />`
-        : `<span style="font-size:26px;font-weight:800;color:#4f46e5;letter-spacing:-0.5px">${companyName}</span>`;
-      const dateStr = new Date().toLocaleDateString('en-US', {
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric',
-      });
-      const empFullName = `${employee.firstName} ${employee.lastName}`;
-
-      // Parse structured JSON from LLM
-      let paragraphs: string[] = [];
-      let compLines: Array<{ label: string; value: string }> = [];
-      let ceoQuote = '';
-      try {
-        const structured = JSON.parse(
-          result.content
-            .replace(/```json?\s*/g, '')
-            .replace(/```/g, '')
-            .trim(),
-        );
-        paragraphs = structured.paragraphs ?? [];
-        compLines = (structured.compensation ?? []).map((c: { label: string; value: string }) => ({
-          label: c.label,
-          value: c.value,
-        }));
-        ceoQuote = structured.ceoQuote ?? '';
-      } catch {
-        // Fallback: treat as plain text
-        paragraphs = result.content
-          .replace(/<[^>]+>/g, '')
-          .replace(/\*\*/g, '')
-          .split(/\n\n+/)
-          .map((p: string) => p.trim())
-          .filter((p: string) => p.length > 20);
+      const structured = parseStructured(result.content);
+      if (!structured || structured.paragraphs.length === 0) {
+        throw new Error('LLM returned malformed content (no paragraphs)');
       }
 
-      const finalContent = `
-<div style="max-width:640px;margin:0 auto;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;color:#1e293b">
-  <!-- Header -->
-  <div style="background:linear-gradient(135deg,#4f46e5 0%,#7c3aed 100%);padding:32px;border-radius:12px 12px 0 0;text-align:center">
-    <div style="color:white;margin-bottom:8px">${logoHtml.replace(/color:#4f46e5/g, 'color:white')}</div>
-    <p style="margin:0;color:rgba(255,255,255,0.7);font-size:10px;letter-spacing:3px;text-transform:uppercase">CONFIDENTIAL</p>
-  </div>
+      const tenant = await this.db.forTenant(tenantId, (tx) =>
+        tx.tenant.findUnique({
+          where: { id: tenantId },
+          select: { name: true, logoUrl: true, settings: true },
+        }),
+      );
 
-  <!-- Body -->
-  <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;background:#ffffff">
-    <p style="color:#94a3b8;font-size:12px;margin:0 0 20px">${dateStr}</p>
+      const finalContent = this.renderLetterHtml({
+        structured,
+        tenant: tenant ?? { name: 'Company', logoUrl: null, settings: {} },
+        firstName: employee.firstName,
+      });
 
-    <p style="font-size:15px;color:#334155;line-height:1.7;margin:0 0 16px">Dear ${employee.firstName},</p>
+      // Persist both the rendered HTML (for backward-compat readers) AND the
+      // structured JSON in metadata, so we can re-render with new themes later.
+      const metadata: Prisma.InputJsonValue = {
+        structured: structured as unknown as Prisma.InputJsonValue,
+        renderedAt: new Date().toISOString(),
+      };
 
-    ${paragraphs
-      .slice(0, 4)
-      .map(
-        (p) => `<p style="font-size:14px;color:#475569;line-height:1.7;margin:0 0 14px">${p}</p>`,
-      )
-      .join('')}
-
-    ${
-      compLines.length > 0
-        ? `
-    <!-- Compensation Card -->
-    <div style="background:linear-gradient(135deg,#f8fafc 0%,#f1f5f9 100%);border:1px solid #e2e8f0;border-radius:10px;padding:20px;margin:24px 0">
-      <p style="margin:0 0 12px;font-size:12px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:1px">Compensation Summary</p>
-      ${compLines
-        .map(
-          (c) => `
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #e2e8f0">
-        <span style="color:#64748b;font-size:14px">${c.label}</span>
-        <span style="font-weight:700;color:#1e293b;font-size:15px">${c.value}</span>
-      </div>`,
-        )
-        .join('')}
-    </div>`
-        : ''
-    }
-
-    ${
-      ceoQuote
-        ? `
-    <!-- CEO Quote -->
-    <div style="background:linear-gradient(135deg,#eef2ff 0%,#f5f3ff 100%);border-left:4px solid #4f46e5;border-radius:0 10px 10px 0;padding:20px;margin:24px 0">
-      <p style="margin:0;font-style:italic;color:#4338ca;font-size:14px;line-height:1.7">"${ceoQuote}"</p>
-      <p style="margin:10px 0 0;font-size:12px;color:#6366f1;font-weight:600">— Sachin Bajaj, Founder & CEO</p>
-    </div>`
-        : ''
-    }
-
-    <p style="color:#475569;font-size:14px;margin:24px 0 0">Warm regards,</p>
-
-    <!-- Signature -->
-    <div style="margin-top:24px;padding-top:16px;border-top:1px solid #e2e8f0">
-      <p style="margin:0;font-family:cursive;font-size:24px;color:#4f46e5">Sachin Bajaj</p>
-      <p style="margin:4px 0 0;font-weight:700;font-size:13px;color:#1e293b">Sachin Bajaj</p>
-      <p style="margin:0;color:#94a3b8;font-size:11px">Founder & CEO</p>
-    </div>
-  </div>
-
-  <!-- Footer -->
-  <div style="text-align:center;padding:16px 0">
-    <p style="margin:0;font-size:9px;color:#cbd5e1">Generated by CompportIQ · Confidential</p>
-  </div>
-</div>`;
-
-      // Update letter with generated content
       return this.db.forTenant(tenantId, (tx) =>
         tx.compensationLetter.update({
           where: { id: letter.id },
           data: {
             subject: result.subject,
             content: finalContent,
-            status: 'REVIEW' as never,
+            metadata,
+            status: LetterStatus.REVIEW,
             generatedAt: new Date(),
           },
           include: {
@@ -239,7 +310,7 @@ export class LettersService {
         tx.compensationLetter.update({
           where: { id: letter.id },
           data: {
-            status: 'FAILED' as never,
+            status: LetterStatus.FAILED,
             errorMsg: error instanceof Error ? error.message : 'Generation failed',
           },
         }),
@@ -248,11 +319,104 @@ export class LettersService {
     }
   }
 
+  // ─── Rendering ───────────────────────────────────────────────────────────
+
+  /**
+   * Render structured letter data to HTML. ALL interpolated text is escaped —
+   * `structured` comes from the LLM, `tenant` fields come from tenant config;
+   * neither is trusted.
+   */
+  private renderLetterHtml(input: {
+    structured: StructuredLetter;
+    tenant: { name: string; logoUrl: string | null; settings: Prisma.JsonValue };
+    firstName: string;
+  }): string {
+    const { structured, tenant, firstName } = input;
+    const companyName = tenant.name || 'Company';
+    const logo = safeLogoUrl(tenant.logoUrl);
+    const sig = resolveSignature(tenant);
+
+    const logoHtml = logo
+      ? `<img src="${esc(logo)}" alt="${esc(companyName)}" style="max-height:44px" />`
+      : `<span style="font-size:26px;font-weight:800;color:white;letter-spacing:-0.5px">${esc(companyName)}</span>`;
+
+    const dateStr = new Date().toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+
+    const paragraphsHtml = structured.paragraphs
+      .slice(0, 4)
+      .map(
+        (p) =>
+          `<p style="font-size:14px;color:#475569;line-height:1.7;margin:0 0 14px">${esc(p)}</p>`,
+      )
+      .join('');
+
+    const compHtml =
+      structured.compensation.length > 0
+        ? `
+    <div style="background:linear-gradient(135deg,#f8fafc 0%,#f1f5f9 100%);border:1px solid #e2e8f0;border-radius:10px;padding:20px;margin:24px 0">
+      <p style="margin:0 0 12px;font-size:12px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:1px">Compensation Summary</p>
+      ${structured.compensation
+        .map(
+          (c) => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #e2e8f0">
+        <span style="color:#64748b;font-size:14px">${esc(c.label)}</span>
+        <span style="font-weight:700;color:#1e293b;font-size:15px">${esc(c.value)}</span>
+      </div>`,
+        )
+        .join('')}
+    </div>`
+        : '';
+
+    const quoteHtml = structured.ceoQuote
+      ? `
+    <div style="background:linear-gradient(135deg,#eef2ff 0%,#f5f3ff 100%);border-left:4px solid #4f46e5;border-radius:0 10px 10px 0;padding:20px;margin:24px 0">
+      <p style="margin:0;font-style:italic;color:#4338ca;font-size:14px;line-height:1.7">&ldquo;${esc(structured.ceoQuote)}&rdquo;</p>
+      <p style="margin:10px 0 0;font-size:12px;color:#6366f1;font-weight:600">— ${esc(sig.name)}, ${esc(sig.title)}</p>
+    </div>`
+      : '';
+
+    return `
+<div style="max-width:640px;margin:0 auto;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;color:#1e293b">
+  <div style="background:linear-gradient(135deg,#4f46e5 0%,#7c3aed 100%);padding:32px;border-radius:12px 12px 0 0;text-align:center">
+    <div style="color:white;margin-bottom:8px">${logoHtml}</div>
+    <p style="margin:0;color:rgba(255,255,255,0.7);font-size:10px;letter-spacing:3px;text-transform:uppercase">CONFIDENTIAL</p>
+  </div>
+
+  <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;background:#ffffff">
+    <p style="color:#94a3b8;font-size:12px;margin:0 0 20px">${esc(dateStr)}</p>
+    <p style="font-size:15px;color:#334155;line-height:1.7;margin:0 0 16px">Dear ${esc(firstName)},</p>
+    ${paragraphsHtml}
+    ${compHtml}
+    ${quoteHtml}
+    <p style="color:#475569;font-size:14px;margin:24px 0 0">Warm regards,</p>
+    <div style="margin-top:24px;padding-top:16px;border-top:1px solid #e2e8f0">
+      <p style="margin:0;font-family:cursive;font-size:24px;color:#4f46e5">${esc(sig.initialsForCursive)}</p>
+      <p style="margin:4px 0 0;font-weight:700;font-size:13px;color:#1e293b">${esc(sig.name)}</p>
+      <p style="margin:0;color:#94a3b8;font-size:11px">${esc(sig.title)}</p>
+    </div>
+  </div>
+
+  <div style="text-align:center;padding:16px 0">
+    <p style="margin:0;font-size:9px;color:#cbd5e1">Generated by CompportIQ · Confidential</p>
+  </div>
+</div>`;
+  }
+
+  // ─── Batch ───────────────────────────────────────────────────────────────
+
   async generateBatch(tenantId: string, userId: string, dto: GenerateBatchLetterDto) {
     const batchId = `batch-${Date.now()}`;
-    const results = [];
+    const queue = [...dto.employeeIds];
+    const results: Array<
+      | { employeeId: string; letterId: string; status: 'success' }
+      | { employeeId: string; status: 'failed'; error: string }
+    > = [];
 
-    for (const employeeId of dto.employeeIds) {
+    const runOne = async (employeeId: string) => {
       try {
         const letterDto: GenerateLetterDto = {
           employeeId,
@@ -265,12 +429,8 @@ export class LettersService {
           additionalNotes: dto.additionalNotes,
         };
         const letter = await this.generateLetter(tenantId, userId, letterDto);
-        // Tag with batch ID
         await this.db.forTenant(tenantId, (tx) =>
-          tx.compensationLetter.update({
-            where: { id: letter.id },
-            data: { batchId },
-          }),
+          tx.compensationLetter.update({ where: { id: letter.id }, data: { batchId } }),
         );
         results.push({ employeeId, letterId: letter.id, status: 'success' });
       } catch (error) {
@@ -280,10 +440,23 @@ export class LettersService {
           error: error instanceof Error ? error.message : 'Unknown error',
         });
       }
-    }
+    };
+
+    const worker = async () => {
+      while (queue.length > 0) {
+        const next = queue.shift();
+        if (!next) break;
+        await runOne(next);
+      }
+    };
+
+    const workerCount = Math.min(BATCH_CONCURRENCY, dto.employeeIds.length);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
     return { batchId, total: dto.employeeIds.length, results };
   }
+
+  // ─── Read ────────────────────────────────────────────────────────────────
 
   async listLetters(tenantId: string, dto: ListLettersDto) {
     const page = dto.page ?? 1;
@@ -291,15 +464,24 @@ export class LettersService {
     const skip = (page - 1) * limit;
 
     const where: Prisma.CompensationLetterWhereInput = { tenantId };
-    if (dto.letterType) where.letterType = mapLetterTypeToEnum(dto.letterType) as never;
-    if (dto.status) where.status = dto.status as never;
+    if (dto.letterType) where.letterType = LETTER_TYPE_MAP[dto.letterType].prisma;
+    if (dto.status) {
+      const statusEnum = LetterStatus[dto.status as keyof typeof LetterStatus];
+      if (statusEnum) where.status = statusEnum;
+    }
     if (dto.employeeId) where.employeeId = dto.employeeId;
     if (dto.batchId) where.batchId = dto.batchId;
     if (dto.search) {
-      where.OR = [
-        { subject: { contains: dto.search, mode: 'insensitive' } },
-        { content: { contains: dto.search, mode: 'insensitive' } },
-      ];
+      // Search only the indexed-friendly fields (subject + employee name).
+      // `content` may be very large HTML; full-text search there needs an FTS index.
+      const term = dto.search.trim().slice(0, 200);
+      if (term.length > 0) {
+        where.OR = [
+          { subject: { contains: term, mode: 'insensitive' } },
+          { employee: { firstName: { contains: term, mode: 'insensitive' } } },
+          { employee: { lastName: { contains: term, mode: 'insensitive' } } },
+        ];
+      }
     }
 
     const [items, total] = await this.db.forTenant(tenantId, async (tx) => {
@@ -357,9 +539,12 @@ export class LettersService {
       if (dto.subject) data.subject = dto.subject;
       if (dto.content) data.content = dto.content;
       if (dto.status) {
-        data.status = dto.status as never;
-        if (dto.status === 'APPROVED') data.approvedAt = new Date();
-        if (dto.status === 'SENT') data.sentAt = new Date();
+        const statusEnum = LetterStatus[dto.status as keyof typeof LetterStatus];
+        if (statusEnum) {
+          data.status = statusEnum;
+          if (statusEnum === LetterStatus.APPROVED) data.approvedAt = new Date();
+          if (statusEnum === LetterStatus.SENT) data.sentAt = new Date();
+        }
       }
 
       return tx.compensationLetter.update({
@@ -374,206 +559,138 @@ export class LettersService {
     });
   }
 
-  /**
-   * Strip HTML tags and extract clean text for PDF rendering.
-   * Preserves paragraph breaks and extracts table data.
-   */
-  private htmlToText(html: string): {
-    paragraphs: string[];
-    tables: Array<{ headers: string[]; rows: string[][] }>;
-    ceoQuote?: string;
-  } {
-    const paragraphs: string[] = [];
-    const tables: Array<{ headers: string[]; rows: string[][] }> = [];
-    let ceoQuote: string | undefined;
-
-    // Extract blockquote (CEO message)
-    const quoteMatch = html.match(/<blockquote[^>]*>([\s\S]*?)<\/blockquote>/i);
-    if (quoteMatch) {
-      ceoQuote = quoteMatch[1]!
-        .replace(/<[^>]+>/g, '')
-        .replace(/&[a-z]+;/g, ' ')
-        .trim();
-    }
-
-    // Extract tables
-    const tableMatches = html.matchAll(/<table[^>]*>([\s\S]*?)<\/table>/gi);
-    for (const tm of tableMatches) {
-      const headers: string[] = [];
-      const rows: string[][] = [];
-      const thMatches = tm[1]!.matchAll(/<th[^>]*>([\s\S]*?)<\/th>/gi);
-      for (const th of thMatches) headers.push(th[1]!.replace(/<[^>]+>/g, '').trim());
-      const trMatches = tm[1]!.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi);
-      let isFirst = true;
-      for (const tr of trMatches) {
-        if (isFirst && headers.length > 0) {
-          isFirst = false;
-          continue;
-        } // skip header row
-        isFirst = false;
-        const cells: string[] = [];
-        const tdMatches = tr[1]!.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi);
-        for (const td of tdMatches) cells.push(td[1]!.replace(/<[^>]+>/g, '').trim());
-        if (cells.length > 0) rows.push(cells);
-      }
-      if (headers.length > 0 || rows.length > 0) tables.push({ headers, rows });
-    }
-
-    // Extract paragraphs (text between tags)
-    const stripped = html
-      .replace(/<table[\s\S]*?<\/table>/gi, '') // remove tables
-      .replace(/<blockquote[\s\S]*?<\/blockquote>/gi, '') // remove quotes
-      .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/p>/gi, '\n\n')
-      .replace(/<\/div>/gi, '\n')
-      .replace(/<[^>]+>/g, '')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'")
-      .replace(/&nbsp;/g, ' ')
-      .replace(/CONFIDENTIAL/g, '');
-
-    for (const p of stripped.split(/\n\n+/)) {
-      const trimmed = p.trim();
-      if (trimmed && trimmed.length > 1) paragraphs.push(trimmed);
-    }
-
-    return { paragraphs, tables, ceoQuote };
-  }
+  // ─── PDF ─────────────────────────────────────────────────────────────────
 
   async getLetterPdfWithName(
     tenantId: string,
     letterId: string,
   ): Promise<{ buffer: Buffer; fileName: string }> {
-    const buffer = await this.getLetterPdf(tenantId, letterId);
     const letter = await this.getLetterById(tenantId, letterId);
+    const buffer = await this.renderLetterPdf(tenantId, letter);
     const emp = letter.employee as { firstName?: string; lastName?: string } | null;
-    const name = emp
+    const namePart = emp
       ? `${emp.firstName ?? ''}_${emp.lastName ?? ''}`.trim().replace(/\s+/g, '_')
       : 'letter';
+    const safeName = namePart.replace(/[^A-Za-z0-9_-]/g, '') || 'letter';
     const type = (letter.letterType ?? 'letter').toLowerCase().replace(/_/g, '-');
-    return { buffer, fileName: `${name}_${type}.pdf` };
+    return { buffer, fileName: `${safeName}_${type}.pdf` };
   }
 
+  /** @deprecated Prefer getLetterPdfWithName. Kept for callers that only need bytes. */
   async getLetterPdf(tenantId: string, letterId: string): Promise<Buffer> {
     const letter = await this.getLetterById(tenantId, letterId);
-    const tenant = await this.db.client.tenant.findUnique({
-      where: { id: tenantId },
-      select: { name: true, logoUrl: true },
-    });
-    const companyName = tenant?.name ?? 'Company';
-    const logoHtml = tenant?.logoUrl
-      ? `<img src="${tenant.logoUrl}" alt="${companyName}" style="max-height:48px" />`
-      : `<h1 style="margin:0;font-size:28px;color:#4f46e5;font-weight:bold;font-family:Georgia,serif">${companyName}</h1>`;
+    return this.renderLetterPdf(tenantId, letter);
+  }
 
-    const content = letter.content ?? '';
-    const emp = letter.employee as {
-      firstName?: string;
-      lastName?: string;
-      department?: string;
-    } | null;
-    const empName = `${emp?.firstName ?? ''} ${emp?.lastName ?? ''}`.trim();
-    const empDept = emp?.department ?? '';
-    const dateStr = letter.generatedAt
-      ? new Date(letter.generatedAt).toLocaleDateString('en-US', {
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric',
-        })
-      : new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  private async renderLetterPdf(
+    tenantId: string,
+    letter: {
+      content: string | null;
+      subject: string | null;
+      metadata: Prisma.JsonValue | null;
+      generatedAt: Date | null;
+      letterType: PrismaLetterType;
+      employee?: {
+        firstName?: string | null;
+        lastName?: string | null;
+        department?: string | null;
+      } | null;
+    },
+  ): Promise<Buffer> {
+    const tenant = await this.db.forTenant(tenantId, (tx) =>
+      tx.tenant.findUnique({
+        where: { id: tenantId },
+        select: { name: true, logoUrl: true, settings: true },
+      }),
+    );
 
-    const isHtml = content.includes('<div') || content.includes('<p');
-
-    // Build HTML body for PDF
+    // Re-render from structured JSON when available so the PDF reflects the
+    // latest template, not whatever HTML happened to be stored.
+    const structured = this.extractStructured(letter.metadata);
     let bodyHtml: string;
-    if (isHtml) {
-      bodyHtml = content.replace(/\{\{COMPANY_LOGO\}\}/g, logoHtml);
+    if (structured) {
+      bodyHtml = this.renderLetterHtml({
+        structured,
+        tenant: tenant ?? { name: 'Company', logoUrl: null, settings: {} },
+        firstName: letter.employee?.firstName ?? '',
+      });
     } else {
-      // Convert plain text to styled HTML — strip markdown bold first
-      const cleanContent = content.replace(/\*\*([^*]+)\*\*/g, '$1');
-      const paragraphs = cleanContent
-        .split(/\n\n+/)
-        .map((p: string) => p.trim())
-        .filter(Boolean);
-      const bodyParts = paragraphs
-        .map((p: string) => {
-          if (p.startsWith('"') || p.startsWith('\u201c')) {
-            return `<blockquote style="border-left:4px solid #4f46e5;padding:12px 16px;margin:20px 0;color:#4f46e5;font-style:italic;background:#f8f7ff;border-radius:0 8px 8px 0">${p}</blockquote>`;
-          }
-          if (p.match(/^(Base Salary|Bonus|RSU|Total|Equity|Benefits):/m)) {
-            const lines = p
-              .split('\n')
-              .map((l: string) => l.trim())
-              .filter(Boolean);
-            return `<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin:20px 0">${lines
-              .map((l: string) => {
-                const [label, ...vals] = l.split(':');
-                return `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #f0f0f0"><span style="color:#666">${label}</span><span style="font-weight:600">${vals.join(':').trim()}</span></div>`;
-              })
-              .join('')}</div>`;
-          }
-          return `<p style="margin:0 0 14px;line-height:1.7">${p}</p>`;
-        })
-        .join('');
-
-      bodyHtml = `<div style="max-width:640px;margin:0 auto;font-family:Georgia,serif;color:#1a1a1a">
-        <div style="text-align:center;padding:28px 0;border-bottom:2px solid #4f46e5">${logoHtml}
-          <p style="margin:8px 0 0;color:#4f46e5;font-size:10px;letter-spacing:3px">CONFIDENTIAL</p></div>
-        <div style="padding:28px 0">
-          <p style="color:#999;font-size:12px;margin:0">${dateStr}</p>
-          <h2 style="font-size:17px;margin:14px 0 4px">${letter.subject ?? 'Compensation Letter'}</h2>
-          <p style="color:#888;font-size:13px;margin:0 0 24px">${empName}${empDept ? ' · ' + empDept : ''}</p>
-          ${bodyParts}
-          <div style="margin-top:36px;padding-top:16px;border-top:1px solid #e5e5e5">
-            <p style="margin:0;font-family:cursive;font-size:22px;color:#4f46e5">Sachin Bajaj</p>
-            <p style="margin:4px 0 0;font-weight:bold;font-size:13px">Sachin Bajaj</p>
-            <p style="margin:0;color:#888;font-size:11px">Founder & CEO</p></div>
-        </div>
-        <div style="text-align:center;padding:12px 0;border-top:1px solid #f0f0f0">
-          <p style="margin:0;font-size:8px;color:#ccc">Generated by CompportIQ</p></div>
-      </div>`;
+      // Legacy row without structured metadata — fall back to stored content.
+      bodyHtml = letter.content ?? '';
     }
 
     const fullHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="margin:0;padding:40px;background:#fff">${bodyHtml}</body></html>`;
 
-    // Try Puppeteer first, fall back to pdfkit
-    try {
-      const puppeteer = await import('puppeteer-core');
-      const { existsSync } = await import('fs');
-      const execPath =
-        process.env['PUPPETEER_EXECUTABLE_PATH'] ??
-        ['/usr/bin/chromium-browser', '/usr/bin/chromium', '/usr/bin/google-chrome-stable'].find(
-          (p) => existsSync(p),
+    const chromePath = this.chromePathCache;
+    if (chromePath) {
+      try {
+        return await this.renderWithPuppeteer(fullHtml, chromePath);
+      } catch (err) {
+        this.logger.warn(
+          `Puppeteer render failed (${(err as Error).message}), using pdfkit fallback`,
         );
-      if (!execPath) throw new Error('No Chrome/Chromium found');
+      }
+    }
 
-      const browser = await puppeteer.default.launch({
+    return this.renderWithPdfKit(letter, tenant, structured);
+  }
+
+  private async renderWithPuppeteer(html: string, executablePath: string): Promise<Buffer> {
+    const puppeteer = await import('puppeteer-core');
+    const browser = await withTimeout(
+      puppeteer.default.launch({
         headless: true,
-        executablePath: execPath,
+        executablePath,
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
           '--disable-gpu',
           '--disable-dev-shm-usage',
-          '--single-process',
         ],
-      });
+      }),
+      PDF_TIMEOUT_MS,
+      'puppeteer launch',
+    );
+    try {
       const page = await browser.newPage();
-      await page.setContent(fullHtml, { waitUntil: 'domcontentloaded' });
-      const pdfUint8 = await page.pdf({
-        format: 'A4',
-        printBackground: true,
-        margin: { top: '16px', bottom: '16px', left: '16px', right: '16px' },
-      });
-      await browser.close();
+      await withTimeout(
+        page.setContent(html, { waitUntil: 'domcontentloaded' }),
+        PDF_TIMEOUT_MS,
+        'puppeteer setContent',
+      );
+      const pdfUint8 = await withTimeout(
+        page.pdf({
+          format: 'A4',
+          printBackground: true,
+          margin: { top: '16px', bottom: '16px', left: '16px', right: '16px' },
+        }),
+        PDF_TIMEOUT_MS,
+        'puppeteer pdf',
+      );
       return Buffer.from(pdfUint8);
-    } catch (err) {
-      this.logger.warn(`Puppeteer unavailable (${(err as Error).message}), using pdfkit fallback`);
+    } finally {
+      try {
+        await browser.close();
+      } catch (closeErr) {
+        this.logger.warn(`Failed to close puppeteer browser: ${(closeErr as Error).message}`);
+      }
     }
+  }
 
-    // ─── pdfkit fallback ─────────────────────────
+  private renderWithPdfKit(
+    letter: {
+      content: string | null;
+      subject: string | null;
+      generatedAt: Date | null;
+      employee?: {
+        firstName?: string | null;
+        lastName?: string | null;
+        department?: string | null;
+      } | null;
+    },
+    tenant: { name: string; logoUrl: string | null; settings: Prisma.JsonValue } | null,
+    structured: StructuredLetter | null,
+  ): Promise<Buffer> {
     return new Promise<Buffer>((resolve, reject) => {
       const doc = new PDFDocument({ size: 'A4', margin: 60 });
       const chunks: Buffer[] = [];
@@ -584,13 +701,18 @@ export class LettersService {
       const ACCENT = '#4f46e5';
       const GRAY = '#666666';
       const LIGHT_GRAY = '#e5e5e5';
-      const plainParagraphs = content
-        .replace(/<[^>]+>/g, '')
-        .split(/\n\n+/)
-        .map((p: string) => p.trim())
-        .filter(Boolean);
+      const companyName = tenant?.name ?? 'Company';
+      const sig = resolveSignature(tenant ?? { name: companyName, settings: {} });
+      const dateStr = (letter.generatedAt ?? new Date()).toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      });
+      const empName =
+        `${letter.employee?.firstName ?? ''} ${letter.employee?.lastName ?? ''}`.trim();
+      const empDept = letter.employee?.department ?? '';
 
-      // ─── Header ──────────────────────────────
+      // Header
       doc
         .fontSize(24)
         .font('Helvetica-Bold')
@@ -622,26 +744,61 @@ export class LettersService {
       doc.moveDown(1);
 
       doc.fontSize(11).font('Helvetica').fillColor('#1a1a1a');
-      for (const para of plainParagraphs) {
+      const paragraphs: string[] = structured
+        ? structured.paragraphs
+        : (letter.content ?? '')
+            .replace(/<[^>]+>/g, '')
+            .split(/\n\n+/)
+            .map((p) => p.trim())
+            .filter(Boolean);
+
+      for (const para of paragraphs) {
         doc.text(para, { align: 'left', lineGap: 3 });
         doc.moveDown(0.7);
       }
 
-      // ─── Signature ───────────────────────────
+      if (structured && structured.compensation.length > 0) {
+        doc.moveDown(0.5);
+        doc.fontSize(10).font('Helvetica-Bold').fillColor(GRAY).text('COMPENSATION SUMMARY');
+        doc.moveDown(0.3);
+        for (const c of structured.compensation) {
+          doc.fontSize(10).font('Helvetica').fillColor('#1a1a1a').text(`${c.label}: ${c.value}`);
+        }
+        doc.moveDown(0.5);
+      }
+
+      if (structured?.ceoQuote) {
+        doc.moveDown(0.5);
+        doc
+          .fontSize(10)
+          .font('Helvetica-Oblique')
+          .fillColor(ACCENT)
+          .text(`"${structured.ceoQuote}"`, { align: 'left' });
+        doc.moveDown(0.5);
+      }
+
+      // Signature
       doc.moveDown(2);
       doc.moveTo(60, doc.y).lineTo(535, doc.y).lineWidth(0.5).stroke(LIGHT_GRAY);
       doc.moveDown(0.5);
-      // Stylized signature
-      doc.fontSize(18).font('Helvetica-Oblique').fillColor(ACCENT).text('Sachin Bajaj');
+      doc.fontSize(18).font('Helvetica-Oblique').fillColor(ACCENT).text(sig.initialsForCursive);
       doc.moveDown(0.2);
-      doc.fontSize(10).font('Helvetica-Bold').fillColor('#1a1a1a').text('Sachin Bajaj');
-      doc.fontSize(9).font('Helvetica').fillColor(GRAY).text('Founder & CEO');
+      doc.fontSize(10).font('Helvetica-Bold').fillColor('#1a1a1a').text(sig.name);
+      doc.fontSize(9).font('Helvetica').fillColor(GRAY).text(sig.title);
 
-      // ─── Footer ──────────────────────────────
       doc.moveDown(3);
       doc.fontSize(7).fillColor('#cccccc').text('Generated by CompportIQ', { align: 'center' });
 
       doc.end();
     });
+  }
+
+  private extractStructured(metadata: Prisma.JsonValue | null): StructuredLetter | null {
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
+    const m = metadata as Record<string, unknown>;
+    const s = m['structured'];
+    if (!s || typeof s !== 'object' || Array.isArray(s)) return null;
+    const raw = JSON.stringify(s);
+    return parseStructured(raw);
   }
 }

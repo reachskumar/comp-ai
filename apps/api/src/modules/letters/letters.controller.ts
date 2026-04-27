@@ -14,6 +14,7 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { FastifyReply } from 'fastify';
 import { JwtAuthGuard } from '../../auth';
 import { TenantGuard, PermissionGuard, RequirePermission } from '../../common';
@@ -37,9 +38,14 @@ export class LettersController {
 
   constructor(private readonly lettersService: LettersService) {}
 
+  // ─── Generation ──────────────────────────────────────────────
+  // Each letter is one paid LLM call. Throttle per-user to bound spend.
+
   @Post('generate')
   @ApiOperation({ summary: 'Generate a compensation letter for an employee' })
   @HttpCode(HttpStatus.CREATED)
+  @RequirePermission('Letters', 'insert')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   async generate(@Body() dto: GenerateLetterDto, @Request() req: AuthRequest) {
     const { tenantId, userId } = req.user;
     this.logger.log(
@@ -51,6 +57,8 @@ export class LettersController {
   @Post('generate-batch')
   @ApiOperation({ summary: 'Generate compensation letters for multiple employees' })
   @HttpCode(HttpStatus.CREATED)
+  @RequirePermission('Letters', 'insert')
+  @Throttle({ default: { limit: 3, ttl: 60_000 } })
   async generateBatch(@Body() dto: GenerateBatchLetterDto, @Request() req: AuthRequest) {
     const { tenantId, userId } = req.user;
     this.logger.log(
@@ -58,6 +66,8 @@ export class LettersController {
     );
     return this.lettersService.generateBatch(tenantId, userId, dto);
   }
+
+  // ─── Read ────────────────────────────────────────────────────
 
   @Get()
   @ApiOperation({ summary: 'List generated compensation letters' })
@@ -84,8 +94,11 @@ export class LettersController {
       .send(buffer);
   }
 
+  // ─── Mutate ──────────────────────────────────────────────────
+
   @Put(':id')
   @ApiOperation({ summary: 'Update a compensation letter (edit before sending)' })
+  @RequirePermission('Letters', 'update')
   async update(@Param('id') id: string, @Body() dto: UpdateLetterDto, @Request() req: AuthRequest) {
     const { tenantId } = req.user;
     this.logger.log(`Update letter: id=${id} user=${req.user.userId}`);

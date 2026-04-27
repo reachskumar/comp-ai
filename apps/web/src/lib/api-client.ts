@@ -142,12 +142,46 @@ class ApiClient {
     return res.json() as Promise<T>;
   }
 
+  /**
+   * Download a binary response (e.g. a PDF). Honors token refresh and the same
+   * 401/403 handling as `fetch()`. Returns the blob plus the server-provided
+   * filename if any (parsed from Content-Disposition).
+   */
+  async fetchBlob(path: string): Promise<{ blob: Blob; fileName: string | null }> {
+    const url = `${API_BASE_URL}${path}`;
+    const token = this.getToken();
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    let res = await fetch(url, { headers, credentials: 'include' });
+    if (res.status === 401 && token) {
+      const refreshed = await this.refreshAccessToken();
+      if (refreshed) {
+        const newToken = this.getToken();
+        if (newToken) headers['Authorization'] = `Bearer ${newToken}`;
+        res = await fetch(url, { headers, credentials: 'include' });
+      } else {
+        this.clearTokens();
+        if (typeof window !== 'undefined') window.location.href = '/login';
+        throw new Error('Session expired. Please log in again.');
+      }
+    }
+    if (!res.ok) {
+      const errorData = (await res.json().catch(() => ({}))) as Partial<ApiError>;
+      throw new Error(errorData.message || `Download failed with status ${res.status}`);
+    }
+    const cd = res.headers.get('Content-Disposition') ?? '';
+    const match = cd.match(/filename="?([^"]+)"?/);
+    const fileName = match?.[1] ?? null;
+    return { blob: await res.blob(), fileName };
+  }
+
   // Auth endpoints
   async login(email: string, password: string, tenantSlug?: string) {
     // Detect tenant from subdomain if not provided
-    const slug = tenantSlug ?? (typeof window !== 'undefined'
-      ? window.location.hostname.split('.')[0]
-      : undefined);
+    const slug =
+      tenantSlug ??
+      (typeof window !== 'undefined' ? window.location.hostname.split('.')[0] : undefined);
     // Only send tenantSlug if it looks like a real subdomain (not "compportiq", "localhost", etc.)
     const isSubdomain = slug && !['compportiq', 'localhost', 'www', 'app'].includes(slug);
 
@@ -663,7 +697,13 @@ class ApiClient {
     }>(`/api/v1/platform-admin/config/${category}`);
   }
 
-  async adminSetConfig(category: string, key: string, value: string, isSecret?: boolean, description?: string) {
+  async adminSetConfig(
+    category: string,
+    key: string,
+    value: string,
+    isSecret?: boolean,
+    description?: string,
+  ) {
     return this.fetch<{ updated: boolean }>(`/api/v1/platform-admin/config/${category}/${key}`, {
       method: 'PUT',
       body: JSON.stringify({ value, isSecret, description }),
@@ -689,7 +729,9 @@ class ApiClient {
   }
 
   async adminValidateAI() {
-    return this.fetch<{ valid: boolean; errors: string[] }>('/api/v1/platform-admin/config/validate/ai');
+    return this.fetch<{ valid: boolean; errors: string[] }>(
+      '/api/v1/platform-admin/config/validate/ai',
+    );
   }
 
   // ─── Integration Dashboard ────────────────────────────────
@@ -699,11 +741,15 @@ class ApiClient {
   }
 
   async adminGetConnectionStatus() {
-    return this.fetch<Record<string, unknown>>('/api/v1/platform-admin/integrations/connection-status');
+    return this.fetch<Record<string, unknown>>(
+      '/api/v1/platform-admin/integrations/connection-status',
+    );
   }
 
   async adminGetOnboardingStatus() {
-    return this.fetch<Record<string, unknown>>('/api/v1/platform-admin/integrations/onboarding-status');
+    return this.fetch<Record<string, unknown>>(
+      '/api/v1/platform-admin/integrations/onboarding-status',
+    );
   }
 }
 

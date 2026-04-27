@@ -148,9 +148,8 @@ export {
   type SimulationGraphOutput,
 } from './graphs/simulation-graph.js';
 
-// Letter Generator graph
+// Letter Generator
 export {
-  buildLetterGeneratorGraph,
   invokeLetterGenerator,
   type LetterGeneratorInput,
   type LetterGeneratorOutput,
