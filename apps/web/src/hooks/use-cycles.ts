@@ -403,3 +403,70 @@ export function useNudgeMutation() {
       }),
   });
 }
+
+// ─── Eligibility ─────────────────────────────────────────
+
+export interface EligibilityRules {
+  minTenureDays?: number;
+  minPerformanceRating?: number;
+  departments?: string[];
+  locations?: string[];
+  levels?: string[];
+  excludeTerminated?: boolean;
+  notes?: string;
+}
+
+export interface EligibilitySampleRow {
+  id: string;
+  employeeCode: string;
+  name: string;
+  department: string;
+  level: string;
+  location: string | null;
+  hireDate: string;
+  performanceRating: number | null;
+  baseSalary: number;
+  currency: string;
+}
+
+export interface EligibilityPreview {
+  cycleId: string;
+  rules: Required<Pick<EligibilityRules, 'departments' | 'locations' | 'levels'>> & {
+    minTenureDays?: number;
+    minPerformanceRating?: number;
+    excludeTerminated: boolean;
+    notes?: string;
+  };
+  eligibleCount: number;
+  totalCount: number;
+  coveragePct: number;
+  sample: EligibilitySampleRow[];
+}
+
+export function useEligibilityPreview(cycleId: string | null, enabled = true) {
+  return useQuery<EligibilityPreview>({
+    queryKey: ['cycle-eligibility-preview', cycleId],
+    queryFn: () =>
+      apiClient.fetch<EligibilityPreview>(`/api/v1/cycles/${cycleId}/eligibility-preview`),
+    enabled: !!cycleId && enabled,
+  });
+}
+
+export function useUpdateEligibilityMutation() {
+  const qc = useQueryClient();
+  return useMutation<
+    { cycleId: string; eligibility: EligibilityRules; status: string },
+    Error,
+    { cycleId: string; rules: EligibilityRules }
+  >({
+    mutationFn: ({ cycleId, rules }) =>
+      apiClient.fetch<{ cycleId: string; eligibility: EligibilityRules; status: string }>(
+        `/api/v1/cycles/${cycleId}/eligibility`,
+        { method: 'PUT', body: JSON.stringify(rules) },
+      ),
+    onSuccess: (_data, vars) => {
+      void qc.invalidateQueries({ queryKey: ['cycle-eligibility-preview', vars.cycleId] });
+      void qc.invalidateQueries({ queryKey: ['cycle', vars.cycleId] });
+    },
+  });
+}

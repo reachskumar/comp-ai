@@ -53,11 +53,14 @@ import {
   useTransitionCycleMutation,
   useRunMonitorsMutation,
   useNudgeMutation,
+  useEligibilityPreview,
+  useUpdateEligibilityMutation,
   type Cycle,
   type CycleType,
   type CycleStatus,
   type CycleAlert,
   type DepartmentProgress,
+  type EligibilityRules,
 } from '@/hooks/use-cycles';
 
 // ─── Helpers ──────────────────────────────────────────────
@@ -499,6 +502,11 @@ function CycleDetailView({ cycleId, onBack }: { cycleId: string; onBack: () => v
         />
       </div>
 
+      {/* Eligibility (only meaningful while still configurable) */}
+      {(cycle.status === 'DRAFT' || cycle.status === 'PLANNING') && (
+        <EligibilityCard cycleId={cycleId} />
+      )}
+
       {/* Two-column layout: Alerts + Department Progress */}
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Alert Feed */}
@@ -708,4 +716,245 @@ function getNextStatus(current: CycleStatus): CycleStatus | null {
   const idx = STATUS_ORDER.indexOf(current);
   if (idx === -1 || idx >= STATUS_ORDER.length - 1) return null;
   return STATUS_ORDER[idx + 1] ?? null;
+}
+
+// ─── Eligibility Card ─────────────────────────────────────
+
+function parseList(input: string): string[] {
+  return Array.from(
+    new Set(
+      input
+        .split(/[\n,]+/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0),
+    ),
+  );
+}
+
+function EligibilityCard({ cycleId }: { cycleId: string }) {
+  const { toast } = useToast();
+  const updateMutation = useUpdateEligibilityMutation();
+  const previewQuery = useEligibilityPreview(cycleId, true);
+
+  const persisted = previewQuery.data?.rules;
+  const [tenureDays, setTenureDays] = React.useState<string>('');
+  const [minRating, setMinRating] = React.useState<string>('');
+  const [departments, setDepartments] = React.useState<string>('');
+  const [locations, setLocations] = React.useState<string>('');
+  const [levels, setLevels] = React.useState<string>('');
+  const [excludeTerminated, setExcludeTerminated] = React.useState(true);
+  const [hydrated, setHydrated] = React.useState(false);
+
+  // Hydrate form state once when persisted rules first arrive.
+  React.useEffect(() => {
+    if (!persisted || hydrated) return;
+    setTenureDays(persisted.minTenureDays != null ? String(persisted.minTenureDays) : '');
+    setMinRating(
+      persisted.minPerformanceRating != null ? String(persisted.minPerformanceRating) : '',
+    );
+    setDepartments(persisted.departments?.join(', ') ?? '');
+    setLocations(persisted.locations?.join(', ') ?? '');
+    setLevels(persisted.levels?.join(', ') ?? '');
+    setExcludeTerminated(persisted.excludeTerminated !== false);
+    setHydrated(true);
+  }, [persisted, hydrated]);
+
+  const buildRules = (): EligibilityRules => ({
+    ...(tenureDays ? { minTenureDays: Number(tenureDays) } : {}),
+    ...(minRating ? { minPerformanceRating: Number(minRating) } : {}),
+    departments: parseList(departments),
+    locations: parseList(locations),
+    levels: parseList(levels),
+    excludeTerminated,
+  });
+
+  const handleSave = () => {
+    updateMutation.mutate(
+      { cycleId, rules: buildRules() },
+      {
+        onSuccess: () => {
+          toast({
+            title: 'Eligibility saved',
+            description: 'Preview will refresh with the new rules.',
+          });
+          void previewQuery.refetch();
+        },
+        onError: (err) =>
+          toast({
+            title: "Couldn't save eligibility",
+            description: err.message,
+            variant: 'destructive',
+          }),
+      },
+    );
+  };
+
+  const handlePreview = () => {
+    void previewQuery.refetch();
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <ListChecks className="h-5 w-5" />
+          Eligibility
+        </CardTitle>
+        <CardDescription>
+          Who&rsquo;s in this cycle. Save rules, then preview the eligible employee count and
+          spot-check a sample.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="space-y-1">
+            <Label htmlFor="elig-tenure">Min tenure (days)</Label>
+            <Input
+              id="elig-tenure"
+              type="number"
+              placeholder="e.g. 90"
+              value={tenureDays}
+              onChange={(e) => setTenureDays(e.target.value)}
+              min={0}
+              max={36500}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="elig-rating">Min performance rating</Label>
+            <Input
+              id="elig-rating"
+              type="number"
+              step="0.1"
+              placeholder="e.g. 3.0"
+              value={minRating}
+              onChange={(e) => setMinRating(e.target.value)}
+              min={0}
+              max={5}
+            />
+          </div>
+          <div className="flex items-end gap-2">
+            <input
+              id="elig-term"
+              type="checkbox"
+              className="h-4 w-4 rounded border-input"
+              checked={excludeTerminated}
+              onChange={(e) => setExcludeTerminated(e.target.checked)}
+            />
+            <Label htmlFor="elig-term" className="text-sm font-normal">
+              Exclude employees with a termination date
+            </Label>
+          </div>
+          <div className="space-y-1 sm:col-span-2 lg:col-span-3">
+            <Label htmlFor="elig-depts">Departments (comma-separated, blank = all)</Label>
+            <Input
+              id="elig-depts"
+              placeholder="e.g. Engineering, Product"
+              value={departments}
+              onChange={(e) => setDepartments(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1 sm:col-span-2 lg:col-span-3">
+            <Label htmlFor="elig-locs">Locations</Label>
+            <Input
+              id="elig-locs"
+              placeholder="e.g. US, IN"
+              value={locations}
+              onChange={(e) => setLocations(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1 sm:col-span-2 lg:col-span-3">
+            <Label htmlFor="elig-levels">Levels</Label>
+            <Input
+              id="elig-levels"
+              placeholder="e.g. L4, L5, M1"
+              value={levels}
+              onChange={(e) => setLevels(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handlePreview}
+            disabled={previewQuery.isFetching}
+          >
+            {previewQuery.isFetching ? (
+              <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+            ) : (
+              <RefreshCw className="mr-1 h-3 w-3" />
+            )}
+            Refresh preview
+          </Button>
+          <Button size="sm" onClick={handleSave} disabled={updateMutation.isPending}>
+            {updateMutation.isPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+            Save rules
+          </Button>
+        </div>
+
+        {/* Preview */}
+        <div className="rounded-lg border bg-muted/30 p-4">
+          {previewQuery.isLoading ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading eligibility…
+            </div>
+          ) : previewQuery.data ? (
+            <>
+              <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
+                <div>
+                  <span className="text-3xl font-semibold">{previewQuery.data.eligibleCount}</span>
+                  <span className="ml-2 text-sm text-muted-foreground">
+                    of {previewQuery.data.totalCount} employees ({previewQuery.data.coveragePct}%)
+                  </span>
+                </div>
+              </div>
+              {previewQuery.data.sample.length > 0 ? (
+                <div className="mt-3">
+                  <p className="mb-2 text-xs font-medium text-muted-foreground">
+                    Sample (first {previewQuery.data.sample.length}):
+                  </p>
+                  <div className="max-h-64 overflow-auto rounded border bg-background">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Code</TableHead>
+                          <TableHead>Name</TableHead>
+                          <TableHead>Dept</TableHead>
+                          <TableHead>Level</TableHead>
+                          <TableHead>Loc</TableHead>
+                          <TableHead className="text-right">Salary</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {previewQuery.data.sample.map((row) => (
+                          <TableRow key={row.id}>
+                            <TableCell className="font-mono text-xs">{row.employeeCode}</TableCell>
+                            <TableCell>{row.name}</TableCell>
+                            <TableCell>{row.department}</TableCell>
+                            <TableCell>{row.level}</TableCell>
+                            <TableCell>{row.location ?? '—'}</TableCell>
+                            <TableCell className="text-right font-mono">
+                              {formatCurrency(row.baseSalary)}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
+              ) : (
+                <p className="mt-3 text-sm text-muted-foreground">
+                  No employees match these rules — review your filters.
+                </p>
+              )}
+            </>
+          ) : previewQuery.error ? (
+            <p className="text-sm text-destructive">{previewQuery.error.message}</p>
+          ) : null}
+        </div>
+      </CardContent>
+    </Card>
+  );
 }
