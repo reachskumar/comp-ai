@@ -246,10 +246,21 @@ class ApiClient {
       name: string;
       slug: string;
       plan: string;
+      settings: Record<string, unknown> | null;
       createdAt: string;
       updatedAt: string;
       _count: { users: number; employees: number };
     }>('/api/v1/settings/tenant');
+  }
+
+  async updateLetterSignature(data: { name?: string; title?: string }) {
+    return this.fetch<{ letterSignature: { name: string; title: string } }>(
+      '/api/v1/settings/letter-signature',
+      {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      },
+    );
   }
 
   async listUsers() {

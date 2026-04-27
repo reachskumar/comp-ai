@@ -1,12 +1,49 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@compensation/database';
 import { DatabaseService } from '../../database';
 import type { AuditLogQueryDto } from './dto/audit-log-query.dto';
+import type { UpdateLetterSignatureDto } from './dto/update-letter-signature.dto';
 
 @Injectable()
 export class SettingsService {
   private readonly logger = new Logger(SettingsService.name);
 
   constructor(private readonly db: DatabaseService) {}
+
+  /**
+   * Update the per-tenant letter signature. Merges into tenant.settings JSON
+   * without clobbering other keys.
+   */
+  async updateLetterSignature(tenantId: string, dto: UpdateLetterSignatureDto) {
+    const tenant = await this.db.forTenant(tenantId, (tx) =>
+      tx.tenant.findUnique({ where: { id: tenantId }, select: { settings: true } }),
+    );
+    if (!tenant) throw new NotFoundException('Tenant not found');
+
+    const existing =
+      tenant.settings && typeof tenant.settings === 'object' && !Array.isArray(tenant.settings)
+        ? (tenant.settings as Record<string, unknown>)
+        : {};
+    const existingSig =
+      existing['letterSignature'] && typeof existing['letterSignature'] === 'object'
+        ? (existing['letterSignature'] as Record<string, unknown>)
+        : {};
+
+    const mergedSig: Record<string, unknown> = { ...existingSig };
+    if (dto.name !== undefined) mergedSig['name'] = dto.name.trim();
+    if (dto.title !== undefined) mergedSig['title'] = dto.title.trim();
+
+    const merged: Record<string, unknown> = { ...existing, letterSignature: mergedSig };
+
+    await this.db.forTenant(tenantId, (tx) =>
+      tx.tenant.update({
+        where: { id: tenantId },
+        data: { settings: merged as Prisma.InputJsonValue },
+      }),
+    );
+
+    return { letterSignature: { name: mergedSig['name'] ?? '', title: mergedSig['title'] ?? '' } };
+  }
 
   async getTenantInfo(tenantId: string) {
     const tenant = await this.db.forTenant(tenantId, (tx) =>

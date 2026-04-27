@@ -1,10 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { SettingsService } from './settings.service';
-import {
-  createMockDatabaseService,
-  TEST_TENANT,
-  TEST_TENANT_ID,
-} from '../../test/setup';
+import { createMockDatabaseService, TEST_TENANT, TEST_TENANT_ID } from '../../test/setup';
 
 function createSettingsService() {
   const db = createMockDatabaseService();
@@ -58,8 +54,24 @@ describe('SettingsService — listUsers', () => {
 
   it('should return users list with total count', async () => {
     const mockUsers = [
-      { id: 'u1', email: 'admin@acme.com', name: 'Admin', role: 'ADMIN', avatarUrl: null, createdAt: new Date(), updatedAt: new Date() },
-      { id: 'u2', email: 'hr@acme.com', name: 'HR Manager', role: 'HR_MANAGER', avatarUrl: null, createdAt: new Date(), updatedAt: new Date() },
+      {
+        id: 'u1',
+        email: 'admin@acme.com',
+        name: 'Admin',
+        role: 'ADMIN',
+        avatarUrl: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        id: 'u2',
+        email: 'hr@acme.com',
+        name: 'HR Manager',
+        role: 'HR_MANAGER',
+        avatarUrl: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
     ];
     db.client.user.findMany.mockResolvedValue(mockUsers);
 
@@ -83,6 +95,89 @@ describe('SettingsService — listUsers', () => {
   });
 });
 
+describe('SettingsService — updateLetterSignature', () => {
+  let service: SettingsService;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createSettingsService());
+  });
+
+  it('persists name and title under tenant.settings.letterSignature', async () => {
+    db.client.tenant.findUnique.mockResolvedValue({ settings: {} });
+    db.client.tenant.update.mockResolvedValue({});
+
+    const result = await service.updateLetterSignature(TEST_TENANT_ID, {
+      name: 'Sachin Bajaj',
+      title: 'Founder & CEO',
+    });
+
+    expect(result.letterSignature).toEqual({ name: 'Sachin Bajaj', title: 'Founder & CEO' });
+    expect(db.client.tenant.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: TEST_TENANT_ID },
+        data: {
+          settings: { letterSignature: { name: 'Sachin Bajaj', title: 'Founder & CEO' } },
+        },
+      }),
+    );
+  });
+
+  it('merges into existing settings without clobbering other keys', async () => {
+    db.client.tenant.findUnique.mockResolvedValue({
+      settings: {
+        compportPagePerms: { foo: 'bar' },
+        letterSignature: { name: 'Old', title: 'CEO' },
+      },
+    });
+    db.client.tenant.update.mockResolvedValue({});
+
+    await service.updateLetterSignature(TEST_TENANT_ID, { name: 'New' });
+
+    expect(db.client.tenant.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: {
+          settings: {
+            compportPagePerms: { foo: 'bar' },
+            letterSignature: { name: 'New', title: 'CEO' },
+          },
+        },
+      }),
+    );
+  });
+
+  it('trims whitespace from name and title', async () => {
+    db.client.tenant.findUnique.mockResolvedValue({ settings: {} });
+    db.client.tenant.update.mockResolvedValue({});
+
+    const result = await service.updateLetterSignature(TEST_TENANT_ID, {
+      name: '  Sachin Bajaj  ',
+      title: '  CEO  ',
+    });
+
+    expect(result.letterSignature).toEqual({ name: 'Sachin Bajaj', title: 'CEO' });
+  });
+
+  it('throws NotFoundException when tenant does not exist', async () => {
+    db.client.tenant.findUnique.mockResolvedValue(null);
+
+    await expect(service.updateLetterSignature('missing-tenant', { name: 'X' })).rejects.toThrow();
+    expect(db.client.tenant.update).not.toHaveBeenCalled();
+  });
+
+  it('handles non-object existing settings safely', async () => {
+    db.client.tenant.findUnique.mockResolvedValue({ settings: null });
+    db.client.tenant.update.mockResolvedValue({});
+
+    const result = await service.updateLetterSignature(TEST_TENANT_ID, {
+      name: 'Sachin',
+      title: 'CEO',
+    });
+
+    expect(result.letterSignature).toEqual({ name: 'Sachin', title: 'CEO' });
+  });
+});
+
 describe('SettingsService — listAuditLogs', () => {
   let service: SettingsService;
   let db: ReturnType<typeof createMockDatabaseService>;
@@ -93,7 +188,14 @@ describe('SettingsService — listAuditLogs', () => {
 
   it('should return paginated audit logs', async () => {
     const mockLogs = [
-      { id: 'log1', action: 'LOGIN', userId: 'u1', tenantId: TEST_TENANT_ID, createdAt: new Date(), user: { id: 'u1', name: 'Admin', email: 'admin@acme.com' } },
+      {
+        id: 'log1',
+        action: 'LOGIN',
+        userId: 'u1',
+        tenantId: TEST_TENANT_ID,
+        createdAt: new Date(),
+        user: { id: 'u1', name: 'Admin', email: 'admin@acme.com' },
+      },
     ];
     db.client.auditLog.findMany.mockResolvedValue(mockLogs);
     db.client.auditLog.count.mockResolvedValue(1);
@@ -130,4 +232,3 @@ describe('SettingsService — listAuditLogs', () => {
     expect(result.limit).toBe(20);
   });
 });
-

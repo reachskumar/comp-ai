@@ -1,9 +1,9 @@
-import { Controller, Get, Query, UseGuards, Request } from '@nestjs/common';
+import { Body, Controller, Get, Logger, Put, Query, Request, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth';
 import { TenantGuard, PermissionGuard, RequirePermission } from '../../common';
 import { SettingsService } from './settings.service';
-import { AuditLogQueryDto } from './dto';
+import { AuditLogQueryDto, UpdateLetterSignatureDto } from './dto';
 
 interface AuthRequest {
   user: { userId: string; tenantId: string; email: string; role: string };
@@ -11,15 +11,25 @@ interface AuthRequest {
 
 @ApiTags('settings')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard)
+@UseGuards(JwtAuthGuard, TenantGuard, PermissionGuard)
 @Controller('settings')
 export class SettingsController {
+  private readonly logger = new Logger(SettingsController.name);
+
   constructor(private readonly settingsService: SettingsService) {}
 
   @Get('tenant')
   @ApiOperation({ summary: 'Get current tenant info' })
   async getTenantInfo(@Request() req: AuthRequest) {
     return this.settingsService.getTenantInfo(req.user.tenantId);
+  }
+
+  @Put('letter-signature')
+  @ApiOperation({ summary: 'Update the per-tenant letter signature (name + title)' })
+  @RequirePermission('Settings', 'update')
+  async updateLetterSignature(@Body() dto: UpdateLetterSignatureDto, @Request() req: AuthRequest) {
+    this.logger.log(`Update letter signature: tenant=${req.user.tenantId} user=${req.user.userId}`);
+    return this.settingsService.updateLetterSignature(req.user.tenantId, dto);
   }
 
   @Get('users')
