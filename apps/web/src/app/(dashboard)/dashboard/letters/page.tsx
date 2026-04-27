@@ -36,6 +36,7 @@ import { Separator } from '@/components/ui/separator';
 import {
   useLetters,
   readApproval,
+  readEmailMeta,
   type LetterType,
   type CompensationLetter,
   type GenerateLetterInput,
@@ -103,6 +104,7 @@ export default function LettersPage() {
     submitForApproval,
     approveCurrentStep,
     rejectCurrentStep,
+    sendLetter,
     clearCurrentLetter,
   } = useLetters();
   const { user } = useAuthStore();
@@ -157,6 +159,11 @@ export default function LettersPage() {
     },
     [previewLetter, rejectCurrentStep],
   );
+
+  const handleSend = useCallback(async () => {
+    if (!previewLetter) return;
+    await sendLetter(previewLetter.id);
+  }, [previewLetter, sendLetter]);
 
   const handleFormChange = useCallback((field: string, value: string | number | undefined) => {
     setForm((prev) => ({ ...prev, [field]: value }));
@@ -257,6 +264,7 @@ export default function LettersPage() {
                 onSubmit={handleSubmit}
                 onApprove={handleApproveStep}
                 onReject={handleRejectStep}
+                onSend={handleSend}
               />
             )}
           </TabsContent>
@@ -558,6 +566,7 @@ interface LetterPreviewProps {
   onSubmit: () => Promise<void>;
   onApprove: (comment?: string) => Promise<void>;
   onReject: (reason?: string) => Promise<void>;
+  onSend: () => Promise<void>;
 }
 
 function LetterPreview({
@@ -568,9 +577,11 @@ function LetterPreview({
   onSubmit,
   onApprove,
   onReject,
+  onSend,
 }: LetterPreviewProps) {
   const approval = readApproval(letter);
-  const [busy, setBusy] = useState<'submit' | 'approve' | 'reject' | null>(null);
+  const emailMeta = readEmailMeta(letter);
+  const [busy, setBusy] = useState<'submit' | 'approve' | 'reject' | 'send' | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [showRejectInput, setShowRejectInput] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
@@ -588,7 +599,10 @@ function LetterPreview({
     (currentUserRole === 'PLATFORM_ADMIN' ||
       currentUserRole?.toLowerCase() === currentStep.role.toLowerCase());
 
-  const runAction = async (kind: 'submit' | 'approve' | 'reject', op: () => Promise<void>) => {
+  const runAction = async (
+    kind: 'submit' | 'approve' | 'reject' | 'send',
+    op: () => Promise<void>,
+  ) => {
     setBusy(kind);
     setActionError(null);
     try {
@@ -695,6 +709,20 @@ function LetterPreview({
               </Button>
             </>
           )}
+          {letter.status === 'APPROVED' && !emailMeta && (
+            <Button
+              size="sm"
+              disabled={busy !== null}
+              onClick={() => void runAction('send', () => onSend())}
+            >
+              {busy === 'send' ? (
+                <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+              ) : (
+                <Send className="mr-1 h-4 w-4" />
+              )}
+              Send to employee
+            </Button>
+          )}
         </div>
       </div>
 
@@ -734,6 +762,28 @@ function LetterPreview({
                 Confirm reject
               </Button>
             </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {emailMeta && (
+        <Card>
+          <CardContent className="flex items-center justify-between gap-4 py-4 text-sm">
+            <div className="flex items-center gap-2">
+              <Send className="h-4 w-4 text-primary" />
+              <span>
+                Sent to <span className="font-medium">{emailMeta.to}</span> on{' '}
+                {new Date(emailMeta.sentAt).toLocaleString()}
+              </span>
+            </div>
+            {emailMeta.acknowledgedAt ? (
+              <span className="flex items-center gap-1 text-emerald-600">
+                <CheckCircle2 className="h-4 w-4" />
+                Acknowledged {new Date(emailMeta.acknowledgedAt).toLocaleString()}
+              </span>
+            ) : (
+              <span className="text-muted-foreground">Awaiting acknowledgement</span>
+            )}
           </CardContent>
         </Card>
       )}

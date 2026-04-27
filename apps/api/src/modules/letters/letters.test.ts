@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { LettersService } from './letters.service';
+import { LetterEmailService } from './email.service';
+import { ConfigService } from '@nestjs/config';
 import { createMockDatabaseService, TEST_TENANT_ID, TEST_USER_ID } from '../../test/setup';
 import { LetterTypeDto } from './dto/generate-letter.dto';
 
@@ -22,15 +24,33 @@ function createMockQueue(): MockQueue {
   };
 }
 
+interface MockEmail {
+  isConfigured: ReturnType<typeof vi.fn>;
+  send: ReturnType<typeof vi.fn>;
+  buildAckUrl: ReturnType<typeof vi.fn>;
+  signAckToken: ReturnType<typeof vi.fn>;
+  verifyAckToken: ReturnType<typeof vi.fn>;
+}
+
+function createMockEmail(): MockEmail {
+  return {
+    isConfigured: vi.fn().mockReturnValue(true),
+    send: vi.fn().mockResolvedValue({ messageId: 'msg-1', accepted: ['x@y.z'] }),
+    buildAckUrl: vi.fn().mockReturnValue('https://example.com/ack?token=abc'),
+    signAckToken: vi.fn().mockReturnValue('signed-token'),
+    verifyAckToken: vi.fn(),
+  };
+}
+
 function createService() {
   const db = createMockDatabaseService();
   const queue = createMockQueue();
+  const email = createMockEmail();
   // Bypass NestJS DI for unit tests; LettersService implements OnModuleInit but
-  // we don't trigger init here (no Chrome probe / reaper) — we just test pure
-  // batch coordination.
+  // we don't trigger init here (no Chrome probe / reaper).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const service = new (LettersService as any)(db, queue) as LettersService;
-  return { service, db, queue };
+  const service = new (LettersService as any)(db, queue, email) as LettersService;
+  return { service, db, queue, email };
 }
 
 describe('LettersService — enqueueBatch', () => {
@@ -257,8 +277,9 @@ describe('LettersService — submitForApproval', () => {
       },
     });
     db.client.compensationLetter.findFirst.mockResolvedValue(letterFixture());
-    db.client.compensationLetter.update.mockImplementation(({ data }) =>
-      Promise.resolve({ ...letterFixture(), ...data }),
+    db.client.compensationLetter.update.mockImplementation(
+      (args: { data: Record<string, unknown> }) =>
+        Promise.resolve({ ...letterFixture(), ...args.data }),
     );
 
     await service.submitForApproval(TEST_TENANT_ID, 'user-author', 'letter-1');
@@ -313,8 +334,13 @@ describe('LettersService — approveStep', () => {
 
   beforeEach(() => {
     ({ service, db } = createService());
-    db.client.compensationLetter.update.mockImplementation(({ data }) =>
-      Promise.resolve({ ...letterFixture(), metadata: data.metadata, status: data.status }),
+    db.client.compensationLetter.update.mockImplementation(
+      (args: { data: { metadata?: unknown; status?: unknown } }) =>
+        Promise.resolve({
+          ...letterFixture(),
+          metadata: args.data.metadata as Record<string, unknown>,
+          status: args.data.status as string,
+        }),
     );
   });
 
@@ -468,8 +494,12 @@ describe('LettersService — rejectStep', () => {
         },
       }),
     );
-    db.client.compensationLetter.update.mockImplementation(({ data }) =>
-      Promise.resolve({ ...letterFixture(), metadata: data.metadata }),
+    db.client.compensationLetter.update.mockImplementation(
+      (args: { data: { metadata?: unknown } }) =>
+        Promise.resolve({
+          ...letterFixture(),
+          metadata: args.data.metadata as Record<string, unknown>,
+        }),
     );
 
     await service.rejectStep(TEST_TENANT_ID, HRBP_USER, 'letter-1', {
@@ -513,5 +543,179 @@ describe('LettersService — rejectStep', () => {
     await expect(service.rejectStep(TEST_TENANT_ID, HRBP_USER, 'letter-1', {})).rejects.toThrow(
       /already rejected/,
     );
+  });
+});
+
+// ─── Email delivery + acknowledgement ──────────────────────────────────────
+
+describe('LettersService — sendLetter', () => {
+  let service: LettersService;
+  let db: ReturnType<typeof createMockDatabaseService>;
+  let email: MockEmail;
+
+  beforeEach(() => {
+    ({ service, db, email } = createService());
+  });
+
+  it('refuses to send a letter that is not APPROVED', async () => {
+    db.client.compensationLetter.findFirst.mockResolvedValue({
+      id: 'letter-1',
+      status: 'REVIEW',
+      content: '<p>hi</p>',
+      subject: 's',
+      employee: { firstName: 'A', lastName: 'B', email: 'a@b.com' },
+      metadata: {},
+    });
+    await expect(service.sendLetter(TEST_TENANT_ID, 'letter-1')).rejects.toThrow(/APPROVED/);
+    expect(email.send).not.toHaveBeenCalled();
+  });
+
+  it('refuses when employee has no email address', async () => {
+    db.client.compensationLetter.findFirst.mockResolvedValue({
+      id: 'letter-1',
+      status: 'APPROVED',
+      content: '<p>hi</p>',
+      subject: 's',
+      employee: { firstName: 'A', lastName: 'B', email: null },
+      metadata: {},
+    });
+    await expect(service.sendLetter(TEST_TENANT_ID, 'letter-1')).rejects.toThrow(/email/);
+    expect(email.send).not.toHaveBeenCalled();
+  });
+
+  it('returns 503-mapped error when SMTP is not configured', async () => {
+    email.isConfigured.mockReturnValue(false);
+    db.client.compensationLetter.findFirst.mockResolvedValue({
+      id: 'letter-1',
+      status: 'APPROVED',
+      content: '<p>hi</p>',
+      subject: 's',
+      employee: { firstName: 'A', lastName: 'B', email: 'a@b.com' },
+      metadata: {},
+    });
+    await expect(service.sendLetter(TEST_TENANT_ID, 'letter-1')).rejects.toThrow(/not configured/);
+    expect(email.send).not.toHaveBeenCalled();
+  });
+
+  it('sends, marks SENT, and persists email metadata', async () => {
+    db.client.compensationLetter.findFirst.mockResolvedValue({
+      id: 'letter-1',
+      status: 'APPROVED',
+      subject: 'Your raise',
+      content: '<p>congrats</p>',
+      employee: { firstName: 'A', lastName: 'B', email: 'a@b.com' },
+      metadata: {},
+    });
+    db.client.compensationLetter.update.mockImplementation(
+      (args: { data: { metadata?: unknown; status?: unknown } }) =>
+        Promise.resolve({ id: 'letter-1', ...args.data }),
+    );
+
+    await service.sendLetter(TEST_TENANT_ID, 'letter-1');
+
+    expect(email.send).toHaveBeenCalledTimes(1);
+    const sendArgs = email.send.mock.calls[0]![0];
+    expect(sendArgs.to).toBe('a@b.com');
+    expect(sendArgs.subject).toBe('Your raise');
+    expect(sendArgs.html).toContain('<p>congrats</p>');
+    expect(sendArgs.html).toContain('Acknowledge receipt');
+
+    const updateArgs = db.client.compensationLetter.update.mock.calls[0]![0];
+    expect(updateArgs.data.status).toBe('SENT');
+    expect(updateArgs.data.sentAt).toBeInstanceOf(Date);
+    expect(updateArgs.data.metadata.email).toMatchObject({
+      to: 'a@b.com',
+      messageId: 'msg-1',
+    });
+  });
+});
+
+describe('LettersService — acknowledgeLetter', () => {
+  let service: LettersService;
+  let db: ReturnType<typeof createMockDatabaseService>;
+  let email: MockEmail;
+
+  beforeEach(() => {
+    ({ service, db, email } = createService());
+  });
+
+  it('rejects an invalid token', async () => {
+    email.verifyAckToken.mockReturnValue(null);
+    await expect(service.acknowledgeLetter('garbage')).rejects.toThrow(/Invalid/);
+  });
+
+  it('records acknowledgedAt on first acknowledgement', async () => {
+    email.verifyAckToken.mockReturnValue({ tenantId: TEST_TENANT_ID, letterId: 'letter-1' });
+    db.client.compensationLetter.findFirst.mockResolvedValue({
+      id: 'letter-1',
+      employee: { firstName: 'Alex' },
+      metadata: { email: { to: 'a@b.com', sentAt: '2026-04-27T00:00:00Z', messageId: 'm1' } },
+    });
+    db.client.compensationLetter.update.mockResolvedValue({});
+
+    const result = await service.acknowledgeLetter('signed-token');
+
+    expect(result.alreadyAcknowledged).toBe(false);
+    expect(result.firstName).toBe('Alex');
+    const updateArgs = db.client.compensationLetter.update.mock.calls[0]![0];
+    expect(updateArgs.data.metadata.email.acknowledgedAt).toBeTruthy();
+    expect(updateArgs.data.metadata.email.to).toBe('a@b.com');
+  });
+
+  it('is idempotent — second ack returns existing timestamp without DB write', async () => {
+    email.verifyAckToken.mockReturnValue({ tenantId: TEST_TENANT_ID, letterId: 'letter-1' });
+    db.client.compensationLetter.findFirst.mockResolvedValue({
+      id: 'letter-1',
+      employee: { firstName: 'Alex' },
+      metadata: {
+        email: {
+          to: 'a@b.com',
+          sentAt: '2026-04-27T00:00:00Z',
+          messageId: 'm1',
+          acknowledgedAt: '2026-04-27T01:00:00Z',
+        },
+      },
+    });
+
+    const result = await service.acknowledgeLetter('signed-token');
+
+    expect(result.alreadyAcknowledged).toBe(true);
+    expect(result.acknowledgedAt).toBe('2026-04-27T01:00:00Z');
+    expect(db.client.compensationLetter.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('LetterEmailService — token round trip', () => {
+  it('signs and verifies an HMAC token; tampering fails', async () => {
+    const config = {
+      get: (k: string) =>
+        ({
+          EMAIL_TOKEN_SECRET: 'a'.repeat(32),
+          APP_BASE_URL: 'https://example.com',
+        })[k],
+    } as unknown as ConfigService;
+    const svc = new LetterEmailService(config);
+    const token = svc.signAckToken('letter-1', 'tenant-1');
+    const ok = svc.verifyAckToken(token);
+    expect(ok).toEqual({ tenantId: 'tenant-1', letterId: 'letter-1' });
+    expect(svc.verifyAckToken('not.a.real.token')).toBeNull();
+    expect(svc.verifyAckToken(token + 'x')).toBeNull();
+  });
+
+  it('refuses to operate without a sufficiently long secret', async () => {
+    const config = {
+      get: (k: string) => (k === 'EMAIL_TOKEN_SECRET' ? 'short' : undefined),
+    } as unknown as ConfigService;
+    const svc = new LetterEmailService(config);
+    expect(() => svc.signAckToken('a', 'b')).toThrow(/EMAIL_TOKEN_SECRET/);
+  });
+
+  it('isConfigured is true only when SMTP_HOST is set', async () => {
+    const a = new LetterEmailService({ get: () => undefined } as unknown as ConfigService);
+    expect(a.isConfigured()).toBe(false);
+    const b = new LetterEmailService({
+      get: (k: string) => (k === 'SMTP_HOST' ? 'smtp.local' : undefined),
+    } as unknown as ConfigService);
+    expect(b.isConfigured()).toBe(true);
   });
 });

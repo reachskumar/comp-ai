@@ -154,4 +154,19 @@ export class LettersController {
     const { tenantId, userId, role, name } = req.user;
     return this.lettersService.rejectStep(tenantId, { userId, role, name }, id, dto);
   }
+
+  // ─── Delivery ────────────────────────────────────────────────
+
+  @Post(':id/send')
+  @ApiOperation({
+    summary: 'Email the approved letter to the employee with an acknowledgement link.',
+  })
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('Letters', 'update')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  async send(@Param('id') id: string, @Request() req: AuthRequest) {
+    const { tenantId, userId } = req.user;
+    this.logger.log(`Send letter: id=${id} user=${userId}`);
+    return this.lettersService.sendLetter(tenantId, id);
+  }
 }

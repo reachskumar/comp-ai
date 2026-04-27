@@ -5,6 +5,7 @@ import {
   Logger,
   NotFoundException,
   OnModuleInit,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
@@ -24,6 +25,7 @@ import { GenerateBatchLetterDto } from './dto/generate-batch-letter.dto';
 import { UpdateLetterDto } from './dto/update-letter.dto';
 import { ListLettersDto } from './dto/list-letters.dto';
 import type { ApproveLetterDto, RejectLetterDto } from './dto/approve-letter.dto';
+import { LetterEmailService, EmailNotConfiguredError } from './email.service';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -223,6 +225,85 @@ function readApprovalState(metadata: Prisma.JsonValue): ApprovalState | null {
   };
 }
 
+// ─── Email metadata helpers ─────────────────────────────────────────────────
+
+interface EmailMetadata {
+  to: string;
+  sentAt: string;
+  messageId: string;
+  acknowledgedAt?: string;
+}
+
+function readEmailAck(metadata: Prisma.JsonValue): EmailMetadata | null {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
+  const e = (metadata as Record<string, unknown>)['email'];
+  if (!e || typeof e !== 'object' || Array.isArray(e)) return null;
+  const obj = e as Record<string, unknown>;
+  if (typeof obj['to'] !== 'string' || typeof obj['sentAt'] !== 'string') return null;
+  return {
+    to: obj['to'],
+    sentAt: obj['sentAt'],
+    messageId: typeof obj['messageId'] === 'string' ? obj['messageId'] : '',
+    acknowledgedAt: typeof obj['acknowledgedAt'] === 'string' ? obj['acknowledgedAt'] : undefined,
+  };
+}
+
+function mergeEmailIntoMetadata(
+  existing: Prisma.JsonValue,
+  email: { to: string; sentAt: string; messageId: string },
+): Prisma.InputJsonValue {
+  const base =
+    existing && typeof existing === 'object' && !Array.isArray(existing)
+      ? (existing as Record<string, unknown>)
+      : {};
+  return { ...base, email } as unknown as Prisma.InputJsonValue;
+}
+
+function mergeEmailAckIntoMetadata(
+  existing: Prisma.JsonValue,
+  acknowledgedAt: string,
+): Prisma.InputJsonValue {
+  const base =
+    existing && typeof existing === 'object' && !Array.isArray(existing)
+      ? (existing as Record<string, unknown>)
+      : {};
+  const existingEmail =
+    base['email'] && typeof base['email'] === 'object' && !Array.isArray(base['email'])
+      ? (base['email'] as Record<string, unknown>)
+      : {};
+  return {
+    ...base,
+    email: { ...existingEmail, acknowledgedAt },
+  } as unknown as Prisma.InputJsonValue;
+}
+
+function escEmail(input: unknown): string {
+  if (input === null || input === undefined) return '';
+  return String(input)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Wrap the rendered letter HTML in an email-safe outer container plus an
+ * acknowledgement footer. The letter content is already escaped at render
+ * time; we only escape the URL we inject into the footer.
+ */
+function buildEmailHtml(letterHtml: string, ackUrl: string): string {
+  return `<!DOCTYPE html>
+<html><body style="margin:0;padding:24px;background:#f8fafc;font-family:'Segoe UI',system-ui,-apple-system,sans-serif">
+${letterHtml}
+<div style="max-width:640px;margin:24px auto 0;padding:20px;border-radius:10px;background:#ffffff;border:1px solid #e2e8f0;text-align:center">
+  <p style="margin:0 0 12px;font-size:14px;color:#475569">Please confirm you've reviewed this letter.</p>
+  <a href="${escEmail(ackUrl)}" style="display:inline-block;padding:10px 24px;background:#4f46e5;color:white;text-decoration:none;border-radius:8px;font-weight:600;font-size:14px">Acknowledge receipt</a>
+  <p style="margin:12px 0 0;font-size:11px;color:#94a3b8">If the button doesn't work, copy this link: <span style="word-break:break-all">${escEmail(ackUrl)}</span></p>
+</div>
+</body></html>`;
+}
+
 function mergeApprovalIntoMetadata(
   existing: Prisma.JsonValue,
   state: ApprovalState,
@@ -272,6 +353,7 @@ export class LettersService implements OnModuleInit {
   constructor(
     private readonly db: DatabaseService,
     @InjectQueue('letters-batch') private readonly batchQueue: Queue,
+    private readonly email: LetterEmailService,
   ) {}
 
   onModuleInit() {
@@ -1014,6 +1096,117 @@ export class LettersService implements OnModuleInit {
     throw new ForbiddenException(
       `Your role "${userRole}" cannot approve at this step (requires "${stepRole}")`,
     );
+  }
+
+  // ─── Email delivery ──────────────────────────────────────────────────────
+
+  /**
+   * Send the approved letter to the employee's email address with an embedded
+   * acknowledgement link. Marks the letter SENT on success.
+   *
+   * Refuses if SMTP isn't configured (returns a 503-mapped error) — no silent
+   * failures, no accidental email blasts in dev.
+   */
+  async sendLetter(tenantId: string, letterId: string) {
+    return this.db.forTenant(tenantId, async (tx) => {
+      const letter = await tx.compensationLetter.findFirst({
+        where: { id: letterId, tenantId },
+        include: {
+          employee: { select: { firstName: true, lastName: true, email: true } },
+        },
+      });
+      if (!letter) throw new NotFoundException(`Letter ${letterId} not found`);
+      if (letter.status !== LetterStatus.APPROVED) {
+        throw new BadRequestException(
+          `Letter must be APPROVED to send (current: ${letter.status})`,
+        );
+      }
+      const recipient = letter.employee?.email?.trim();
+      if (!recipient) {
+        throw new BadRequestException('Employee has no email address on file');
+      }
+      if (!this.email.isConfigured()) {
+        throw new ServiceUnavailableException(
+          'Email delivery is not configured on this environment',
+        );
+      }
+
+      const ackUrl = this.email.buildAckUrl(letter.id, tenantId);
+      const html = buildEmailHtml(letter.content ?? '', ackUrl);
+      const subject = letter.subject || 'Your compensation letter';
+
+      try {
+        const result = await this.email.send({ to: recipient, subject, html });
+        const metadata = mergeEmailIntoMetadata(letter.metadata, {
+          to: recipient,
+          sentAt: new Date().toISOString(),
+          messageId: result.messageId,
+        });
+        this.logger.log(`Sent letter=${letterId} to=${recipient} messageId=${result.messageId}`);
+        return tx.compensationLetter.update({
+          where: { id: letterId },
+          data: {
+            status: LetterStatus.SENT,
+            sentAt: new Date(),
+            metadata,
+          },
+          include: {
+            employee: {
+              select: { firstName: true, lastName: true, department: true, email: true },
+            },
+          },
+        });
+      } catch (err) {
+        if (err instanceof EmailNotConfiguredError) {
+          throw new ServiceUnavailableException(err.message);
+        }
+        this.logger.error(`Email send failed for letter=${letterId}`, err);
+        throw new BadRequestException(
+          `Email send failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
+        );
+      }
+    });
+  }
+
+  /**
+   * Public — no JWT required. Verifies the HMAC token, records the
+   * acknowledgement timestamp, and returns enough info for a thank-you page.
+   */
+  async acknowledgeLetter(token: string) {
+    const verified = this.email.verifyAckToken(token);
+    if (!verified) throw new BadRequestException('Invalid or tampered acknowledgement token');
+
+    const { tenantId, letterId } = verified;
+    return this.db.forTenant(tenantId, async (tx) => {
+      const letter = await tx.compensationLetter.findFirst({
+        where: { id: letterId, tenantId },
+        include: { employee: { select: { firstName: true } } },
+      });
+      if (!letter) throw new NotFoundException('Letter not found');
+
+      const existingAck = readEmailAck(letter.metadata)?.acknowledgedAt;
+      if (existingAck) {
+        // Already acknowledged — idempotent, just return.
+        return {
+          alreadyAcknowledged: true,
+          acknowledgedAt: existingAck,
+          firstName: letter.employee?.firstName ?? '',
+        };
+      }
+
+      const acknowledgedAt = new Date().toISOString();
+      const metadata = mergeEmailAckIntoMetadata(letter.metadata, acknowledgedAt);
+      await tx.compensationLetter.update({
+        where: { id: letterId },
+        data: { metadata },
+      });
+      this.logger.log(`Acknowledged letter=${letterId}`);
+      return {
+        alreadyAcknowledged: false,
+        acknowledgedAt,
+        firstName: letter.employee?.firstName ?? '',
+      };
+    });
   }
 
   // ─── PDF ─────────────────────────────────────────────────────────────────

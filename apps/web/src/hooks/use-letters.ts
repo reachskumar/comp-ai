@@ -293,6 +293,17 @@ export function useLetters() {
     return result;
   }, []);
 
+  const sendLetter = useCallback(async (letterId: string) => {
+    setError(null);
+    const result = await apiClient.fetch<CompensationLetter>(`/api/v1/letters/${letterId}/send`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    setCurrentLetter(result);
+    setLetters((prev) => prev.map((l) => (l.id === letterId ? result : l)));
+    return result;
+  }, []);
+
   const clearError = useCallback(() => setError(null), []);
   const clearCurrentLetter = useCallback(() => setCurrentLetter(null), []);
 
@@ -312,7 +323,26 @@ export function useLetters() {
     submitForApproval,
     approveCurrentStep,
     rejectCurrentStep,
+    sendLetter,
     clearError,
     clearCurrentLetter,
+  };
+}
+
+export function readEmailMeta(letter: CompensationLetter): {
+  to: string;
+  sentAt: string;
+  acknowledgedAt?: string;
+} | null {
+  const meta = (letter as { metadata?: unknown }).metadata;
+  if (!meta || typeof meta !== 'object') return null;
+  const e = (meta as Record<string, unknown>)['email'];
+  if (!e || typeof e !== 'object') return null;
+  const obj = e as Record<string, unknown>;
+  if (typeof obj['to'] !== 'string' || typeof obj['sentAt'] !== 'string') return null;
+  return {
+    to: obj['to'],
+    sentAt: obj['sentAt'],
+    acknowledgedAt: typeof obj['acknowledgedAt'] === 'string' ? obj['acknowledgedAt'] : undefined,
   };
 }
