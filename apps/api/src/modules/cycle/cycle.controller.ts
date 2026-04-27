@@ -3,6 +3,7 @@ import {
   Post,
   Get,
   Patch,
+  Put,
   Param,
   Body,
   Query,
@@ -28,6 +29,7 @@ import {
   RecommendationQueryDto,
   BudgetOptimizeDto,
   ApplyBudgetAllocationDto,
+  CycleEligibilityDto,
 } from './dto';
 
 interface AuthRequest {
@@ -90,8 +92,38 @@ export class CycleController {
       id,
       dto.targetStatus,
       req.user.role,
+      req.user.userId,
       dto.reason,
     );
+  }
+
+  // ─── Eligibility ────────────────────────────────────────────────────
+
+  @Put(':id/eligibility')
+  @ApiOperation({
+    summary: 'Set the cycle eligibility rules (DRAFT/PLANNING only).',
+  })
+  @HttpCode(HttpStatus.OK)
+  async setEligibility(
+    @Param('id') id: string,
+    @Body() dto: CycleEligibilityDto,
+    @Request() req: AuthRequest,
+  ) {
+    return this.cycleService.updateEligibility(req.user.tenantId, id, dto);
+  }
+
+  @Get(':id/eligibility-preview')
+  @ApiOperation({
+    summary: 'Count eligible employees and return a sample for spot-checking.',
+  })
+  async previewEligibility(
+    @Param('id') id: string,
+    @Request() req: AuthRequest,
+    @Query('sampleLimit') sampleLimit?: string,
+  ) {
+    return this.cycleService.previewEligibility(req.user.tenantId, id, {
+      sampleLimit: sampleLimit ? parseInt(sampleLimit, 10) : undefined,
+    });
   }
 
   // ─── Budget Allocation ──────────────────────────────────────────────

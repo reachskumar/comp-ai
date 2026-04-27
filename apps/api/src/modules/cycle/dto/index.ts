@@ -21,3 +21,4 @@ export {
   CalibrationQueryDto,
 } from './calibration.dto';
 export { BudgetOptimizeDto, ApplyBudgetAllocationDto } from './budget-optimizer.dto';
+export { CycleEligibilityDto } from './eligibility.dto';

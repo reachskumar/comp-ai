@@ -13,6 +13,68 @@ import type {
   CreateRecommendationDto,
 } from './dto/recommendation.dto';
 import type { CycleQueryDto, RecommendationQueryDto } from './dto/cycle-query.dto';
+import type { CycleEligibilityDto } from './dto/eligibility.dto';
+import { Prisma } from '@compensation/database';
+
+// ─── Eligibility helpers ───────────────────────────────────────────────────
+
+interface EligibilityRules {
+  minTenureDays?: number;
+  minPerformanceRating?: number;
+  departments: string[];
+  locations: string[];
+  levels: string[];
+  excludeTerminated: boolean;
+  notes?: string;
+}
+
+function readEligibilityRules(settings: Prisma.JsonValue): EligibilityRules {
+  const empty: EligibilityRules = {
+    departments: [],
+    locations: [],
+    levels: [],
+    excludeTerminated: true,
+  };
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return empty;
+  const e = (settings as Record<string, unknown>)['eligibility'];
+  if (!e || typeof e !== 'object' || Array.isArray(e)) return empty;
+  const obj = e as Record<string, unknown>;
+  return {
+    minTenureDays: typeof obj['minTenureDays'] === 'number' ? obj['minTenureDays'] : undefined,
+    minPerformanceRating:
+      typeof obj['minPerformanceRating'] === 'number' ? obj['minPerformanceRating'] : undefined,
+    departments: Array.isArray(obj['departments'])
+      ? (obj['departments'] as unknown[]).filter((s): s is string => typeof s === 'string')
+      : [],
+    locations: Array.isArray(obj['locations'])
+      ? (obj['locations'] as unknown[]).filter((s): s is string => typeof s === 'string')
+      : [],
+    levels: Array.isArray(obj['levels'])
+      ? (obj['levels'] as unknown[]).filter((s): s is string => typeof s === 'string')
+      : [],
+    excludeTerminated: obj['excludeTerminated'] !== false,
+    notes: typeof obj['notes'] === 'string' ? obj['notes'] : undefined,
+  };
+}
+
+function buildEligibilityWhere(
+  tenantId: string,
+  rules: EligibilityRules,
+): Prisma.EmployeeWhereInput {
+  const where: Prisma.EmployeeWhereInput = { tenantId };
+  if (rules.minTenureDays !== undefined && rules.minTenureDays > 0) {
+    const cutoff = new Date(Date.now() - rules.minTenureDays * 24 * 60 * 60 * 1000);
+    where.hireDate = { lte: cutoff };
+  }
+  if (rules.minPerformanceRating !== undefined) {
+    where.performanceRating = { gte: rules.minPerformanceRating };
+  }
+  if (rules.departments.length > 0) where.department = { in: rules.departments };
+  if (rules.locations.length > 0) where.location = { in: rules.locations };
+  if (rules.levels.length > 0) where.level = { in: rules.levels };
+  if (rules.excludeTerminated) where.terminationDate = null;
+  return where;
+}
 
 // ─── State Machine ──────────────────────────────────────────────────────────
 
@@ -180,6 +242,7 @@ export class CycleService {
     cycleId: string,
     targetStatus: string,
     userRole: string,
+    userId: string,
     reason?: string,
   ) {
     return this.db.forTenant(tenantId, async (tx) => {
@@ -223,7 +286,14 @@ export class CycleService {
         }
       }
 
-      // 4. Execute transition
+      // 4. Closure side-effects (APPROVAL → COMPLETED only). Runs in the same
+      // transaction as the status flip so a partial close is impossible.
+      let closure: { applied: number; skipped: number; total: number } | undefined;
+      if (currentStatus === 'APPROVAL' && targetStatus === 'COMPLETED') {
+        closure = await this.applyClosureWriteback(tx, tenantId, cycleId, userId);
+      }
+
+      // 5. Execute transition
       const updated = await tx.compCycle.update({
         where: { id: cycleId },
         data: {
@@ -237,13 +307,16 @@ export class CycleService {
               to: targetStatus,
               reason,
               at: new Date().toISOString(),
+              ...(closure ? { closure } : {}),
             },
           } as never,
         },
       });
 
-      this.logger.log(`Cycle ${cycleId} transitioned: ${currentStatus} -> ${targetStatus}`);
-      return updated;
+      this.logger.log(
+        `Cycle ${cycleId} transitioned: ${currentStatus} -> ${targetStatus}${closure ? ` (writeback applied=${closure.applied})` : ''}`,
+      );
+      return closure ? { ...updated, closure } : updated;
     });
   }
 
@@ -633,6 +706,200 @@ export class CycleService {
         calibrationSessions: cycle._count.calibrationSessions,
       };
     });
+  }
+
+  // ─── Eligibility ────────────────────────────────────────────────────────
+
+  /**
+   * Update the cycle's eligibility rules. Only allowed in DRAFT or PLANNING —
+   * once a cycle is ACTIVE the rules are effectively snapshotted on the
+   * recommendations that have been created.
+   */
+  async updateEligibility(tenantId: string, cycleId: string, dto: CycleEligibilityDto) {
+    return this.db.forTenant(tenantId, async (tx) => {
+      const cycle = await tx.compCycle.findFirst({ where: { id: cycleId, tenantId } });
+      if (!cycle) throw new NotFoundException(`Cycle ${cycleId} not found`);
+      if (cycle.status !== 'DRAFT' && cycle.status !== 'PLANNING') {
+        throw new BadRequestException(
+          `Eligibility rules can only be edited in DRAFT or PLANNING (current: ${cycle.status})`,
+        );
+      }
+
+      const existingSettings =
+        typeof cycle.settings === 'object' &&
+        cycle.settings !== null &&
+        !Array.isArray(cycle.settings)
+          ? (cycle.settings as Record<string, unknown>)
+          : {};
+
+      const cleaned: Record<string, unknown> = {};
+      if (dto.minTenureDays !== undefined) cleaned['minTenureDays'] = dto.minTenureDays;
+      if (dto.minPerformanceRating !== undefined)
+        cleaned['minPerformanceRating'] = dto.minPerformanceRating;
+      if (dto.departments !== undefined)
+        cleaned['departments'] = dto.departments.map((s) => s.trim()).filter(Boolean);
+      if (dto.locations !== undefined)
+        cleaned['locations'] = dto.locations.map((s) => s.trim()).filter(Boolean);
+      if (dto.levels !== undefined)
+        cleaned['levels'] = dto.levels.map((s) => s.trim()).filter(Boolean);
+      if (dto.excludeTerminated !== undefined) cleaned['excludeTerminated'] = dto.excludeTerminated;
+      if (dto.notes !== undefined) cleaned['notes'] = dto.notes.trim();
+
+      const merged = {
+        ...existingSettings,
+        eligibility: cleaned,
+      } as unknown as Prisma.InputJsonValue;
+
+      const updated = await tx.compCycle.update({
+        where: { id: cycleId },
+        data: { settings: merged },
+      });
+      this.logger.log(`Cycle ${cycleId} eligibility updated`);
+      return { cycleId, eligibility: cleaned, status: updated.status };
+    });
+  }
+
+  /**
+   * Evaluate eligibility against the current employee population and return a
+   * count + a small sample for spot-checking before launch. Read-only — does
+   * not create recommendations.
+   */
+  async previewEligibility(tenantId: string, cycleId: string, options?: { sampleLimit?: number }) {
+    const limit = Math.max(1, Math.min(50, options?.sampleLimit ?? 10));
+    return this.db.forTenant(tenantId, async (tx) => {
+      const cycle = await tx.compCycle.findFirst({ where: { id: cycleId, tenantId } });
+      if (!cycle) throw new NotFoundException(`Cycle ${cycleId} not found`);
+
+      const rules = readEligibilityRules(cycle.settings);
+      const where = buildEligibilityWhere(tenantId, rules);
+
+      const [eligibleCount, totalCount, sample] = await Promise.all([
+        tx.employee.count({ where }),
+        tx.employee.count({ where: { tenantId } }),
+        tx.employee.findMany({
+          where,
+          take: limit,
+          orderBy: { firstName: 'asc' },
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            employeeCode: true,
+            department: true,
+            level: true,
+            location: true,
+            hireDate: true,
+            performanceRating: true,
+            baseSalary: true,
+            currency: true,
+          },
+        }),
+      ]);
+
+      return {
+        cycleId,
+        rules,
+        eligibleCount,
+        totalCount,
+        coveragePct: totalCount > 0 ? Math.round((eligibleCount / totalCount) * 10000) / 100 : 0,
+        sample: sample.map((e) => ({
+          id: e.id,
+          employeeCode: e.employeeCode,
+          name: `${e.firstName} ${e.lastName}`.trim(),
+          department: e.department,
+          level: e.level,
+          location: e.location,
+          hireDate: e.hireDate,
+          performanceRating: e.performanceRating ? Number(e.performanceRating) : null,
+          baseSalary: Number(e.baseSalary),
+          currency: e.currency,
+        })),
+      };
+    });
+  }
+
+  // ─── Closure ────────────────────────────────────────────────────────────
+
+  /**
+   * Side-effect of the APPROVAL → COMPLETED transition: for every APPROVED
+   * recommendation, write the proposed value back to Employee.baseSalary
+   * (for MERIT_INCREASE / ADJUSTMENT / PROMOTION) and emit an audit log entry
+   * per change. Runs in a single transaction with the status flip so a
+   * partial closure is impossible.
+   *
+   * Returns counts: { applied, skipped, failed }.
+   */
+  private async applyClosureWriteback(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    cycleId: string,
+    userId: string,
+  ) {
+    const approved = await tx.compRecommendation.findMany({
+      where: { cycleId, status: 'APPROVED' },
+      select: {
+        id: true,
+        employeeId: true,
+        recType: true,
+        currentValue: true,
+        proposedValue: true,
+      },
+    });
+
+    let applied = 0;
+    let skipped = 0;
+
+    for (const rec of approved) {
+      // Only salary-affecting types update baseSalary.
+      const updatesSalary =
+        rec.recType === 'MERIT_INCREASE' ||
+        rec.recType === 'ADJUSTMENT' ||
+        rec.recType === 'PROMOTION';
+      if (!updatesSalary) {
+        skipped++;
+        continue;
+      }
+      const proposed = Number(rec.proposedValue);
+      if (!Number.isFinite(proposed) || proposed <= 0) {
+        skipped++;
+        continue;
+      }
+
+      await tx.employee.update({
+        where: { id: rec.employeeId },
+        data: { baseSalary: proposed },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          tenantId,
+          userId,
+          action: 'CYCLE_WRITEBACK',
+          entityType: 'Employee',
+          entityId: rec.employeeId,
+          changes: {
+            cycleId,
+            recommendationId: rec.id,
+            recType: rec.recType,
+            from: Number(rec.currentValue),
+            to: proposed,
+          } as unknown as Prisma.InputJsonValue,
+        },
+      });
+
+      // Mark recommendation as applied (in our internal-writeback flow).
+      await tx.compRecommendation.update({
+        where: { id: rec.id },
+        data: { status: 'APPLIED_TO_COMPPORT' },
+      });
+
+      applied++;
+    }
+
+    this.logger.log(
+      `Cycle ${cycleId} closure: applied=${applied} skipped=${skipped} of ${approved.length} approved recs`,
+    );
+    return { applied, skipped, total: approved.length };
   }
 
   // ─── Private Helpers ──────────────────────────────────────────────────
