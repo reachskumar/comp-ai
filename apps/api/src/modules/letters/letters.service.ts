@@ -1,4 +1,6 @@
 import { Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { existsSync } from 'fs';
 import { DatabaseService } from '../../database';
 import {
@@ -158,7 +160,10 @@ export class LettersService implements OnModuleInit {
   private chromePathCache: string | null | undefined; // undefined = not resolved yet
   private reaperHandle: NodeJS.Timeout | null = null;
 
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    @InjectQueue('letters-batch') private readonly batchQueue: Queue,
+  ) {}
 
   onModuleInit() {
     // Resolve Chrome path once at startup (no per-request fs probing).
@@ -408,13 +413,49 @@ export class LettersService implements OnModuleInit {
 
   // ─── Batch ───────────────────────────────────────────────────────────────
 
-  async generateBatch(tenantId: string, userId: string, dto: GenerateBatchLetterDto) {
-    const batchId = `batch-${Date.now()}`;
+  /**
+   * Enqueue a batch generation job and return immediately. The actual work
+   * runs in a BullMQ worker (LettersBatchProcessor → runBatchJob). Callers
+   * poll getBatchProgress(batchId) to track completion.
+   */
+  async enqueueBatch(tenantId: string, userId: string, dto: GenerateBatchLetterDto) {
+    const batchId = `batch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    const job = await this.batchQueue.add(
+      'generate-letters',
+      { tenantId, userId, batchId, dto },
+      { jobId: batchId },
+    );
+
+    this.logger.log(
+      `Enqueued batch ${batchId} (job=${job.id}) for ${dto.employeeIds.length} employees, tenant=${tenantId}`,
+    );
+
+    return {
+      batchId,
+      jobId: job.id,
+      total: dto.employeeIds.length,
+      status: 'queued' as const,
+    };
+  }
+
+  /**
+   * Worker entry point. Runs the batch with bounded concurrency, calling
+   * onProgress after each letter so BullMQ can stream job.progress.
+   */
+  async runBatchJob(input: {
+    tenantId: string;
+    userId: string;
+    batchId: string;
+    dto: GenerateBatchLetterDto;
+    onProgress?: (done: number, total: number) => void;
+  }): Promise<{ batchId: string; total: number; succeeded: number; failed: number }> {
+    const { tenantId, userId, batchId, dto, onProgress } = input;
     const queue = [...dto.employeeIds];
-    const results: Array<
-      | { employeeId: string; letterId: string; status: 'success' }
-      | { employeeId: string; status: 'failed'; error: string }
-    > = [];
+    const total = dto.employeeIds.length;
+    let done = 0;
+    let succeeded = 0;
+    let failed = 0;
 
     const runOne = async (employeeId: string) => {
       try {
@@ -432,13 +473,17 @@ export class LettersService implements OnModuleInit {
         await this.db.forTenant(tenantId, (tx) =>
           tx.compensationLetter.update({ where: { id: letter.id }, data: { batchId } }),
         );
-        results.push({ employeeId, letterId: letter.id, status: 'success' });
+        succeeded++;
       } catch (error) {
-        results.push({
-          employeeId,
-          status: 'failed',
-          error: error instanceof Error ? error.message : 'Unknown error',
-        });
+        this.logger.warn(
+          `Batch ${batchId}: letter for employee=${employeeId} failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        failed++;
+      } finally {
+        done++;
+        if (onProgress) onProgress(done, total);
       }
     };
 
@@ -450,10 +495,60 @@ export class LettersService implements OnModuleInit {
       }
     };
 
-    const workerCount = Math.min(BATCH_CONCURRENCY, dto.employeeIds.length);
+    const workerCount = Math.max(1, Math.min(BATCH_CONCURRENCY, total));
     await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
-    return { batchId, total: dto.employeeIds.length, results };
+    return { batchId, total, succeeded, failed };
+  }
+
+  /**
+   * Aggregate batch progress from CompensationLetter row counts plus the
+   * BullMQ job state. Safe to poll — read-only and indexed by batchId.
+   */
+  async getBatchProgress(tenantId: string, batchId: string) {
+    const [counts, job] = await Promise.all([
+      this.db.forTenant(tenantId, (tx) =>
+        tx.compensationLetter.groupBy({
+          by: ['status'],
+          where: { tenantId, batchId },
+          _count: { _all: true },
+        }),
+      ),
+      this.batchQueue.getJob(batchId).catch(() => null),
+    ]);
+
+    const byStatus: Record<string, number> = {};
+    let total = 0;
+    for (const row of counts) {
+      const n = row._count._all;
+      byStatus[row.status] = n;
+      total += n;
+    }
+
+    const expected = (job?.data as { dto?: { employeeIds?: string[] } } | undefined)?.dto
+      ?.employeeIds?.length;
+    const jobState = job ? await job.getState().catch(() => 'unknown') : 'not-found';
+    const progress = typeof job?.progress === 'number' ? job.progress : 0;
+
+    const succeeded =
+      (byStatus[LetterStatus.REVIEW] ?? 0) +
+      (byStatus[LetterStatus.APPROVED] ?? 0) +
+      (byStatus[LetterStatus.SENT] ?? 0);
+    const failed = byStatus[LetterStatus.FAILED] ?? 0;
+    const inFlight = byStatus[LetterStatus.GENERATING] ?? 0;
+
+    return {
+      batchId,
+      total: expected ?? total,
+      seen: total,
+      succeeded,
+      failed,
+      inFlight,
+      byStatus,
+      jobState,
+      progress,
+      done: jobState === 'completed' || jobState === 'failed',
+    };
   }
 
   // ─── Read ────────────────────────────────────────────────────────────────

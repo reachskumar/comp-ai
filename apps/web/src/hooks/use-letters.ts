@@ -1,12 +1,12 @@
-"use client";
+'use client';
 
-import { useCallback, useState } from "react";
-import { apiClient } from "@/lib/api-client";
+import { useCallback, useState } from 'react';
+import { apiClient } from '@/lib/api-client';
 
 // ─── Types ───────────────────────────────────────────────
 
-export type LetterType = "offer" | "raise" | "promotion" | "bonus" | "total_comp_summary";
-export type LetterStatus = "DRAFT" | "GENERATING" | "REVIEW" | "APPROVED" | "SENT" | "FAILED";
+export type LetterType = 'offer' | 'raise' | 'promotion' | 'bonus' | 'total_comp_summary';
+export type LetterStatus = 'DRAFT' | 'GENERATING' | 'REVIEW' | 'APPROVED' | 'SENT' | 'FAILED';
 
 export interface GenerateLetterInput {
   employeeId: string;
@@ -74,16 +74,30 @@ export interface LetterListResponse {
   totalPages: number;
 }
 
-export interface BatchResult {
+export interface BatchEnqueueResult {
+  batchId: string;
+  jobId: string | number | null;
+  total: number;
+  status: 'queued';
+}
+
+export interface BatchProgress {
   batchId: string;
   total: number;
-  results: Array<{ employeeId: string; letterId?: string; status: string; error?: string }>;
+  seen: number;
+  succeeded: number;
+  failed: number;
+  inFlight: number;
+  byStatus: Record<string, number>;
+  jobState: string;
+  progress: number;
+  done: boolean;
 }
 
 export interface UpdateLetterInput {
   subject?: string;
   content?: string;
-  status?: "DRAFT" | "REVIEW" | "APPROVED" | "SENT";
+  status?: 'DRAFT' | 'REVIEW' | 'APPROVED' | 'SENT';
 }
 
 // ─── Hook ────────────────────────────────────────────────
@@ -100,14 +114,14 @@ export function useLetters() {
     setIsGenerating(true);
     setError(null);
     try {
-      const result = await apiClient.fetch<CompensationLetter>("/api/v1/letters/generate", {
-        method: "POST",
+      const result = await apiClient.fetch<CompensationLetter>('/api/v1/letters/generate', {
+        method: 'POST',
         body: JSON.stringify(input),
       });
       setCurrentLetter(result);
       return result;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to generate letter";
+      const msg = err instanceof Error ? err.message : 'Failed to generate letter';
       setError(msg);
       throw err;
     } finally {
@@ -115,57 +129,69 @@ export function useLetters() {
     }
   }, []);
 
-  const generateBatch = useCallback(async (input: GenerateBatchInput) => {
-    setIsGenerating(true);
+  const enqueueBatch = useCallback(async (input: GenerateBatchInput) => {
     setError(null);
     try {
-      const result = await apiClient.fetch<BatchResult>("/api/v1/letters/generate-batch", {
-        method: "POST",
+      return await apiClient.fetch<BatchEnqueueResult>('/api/v1/letters/generate-batch', {
+        method: 'POST',
         body: JSON.stringify(input),
       });
-      return result;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to generate batch";
+      const msg = err instanceof Error ? err.message : 'Failed to enqueue batch';
       setError(msg);
       throw err;
-    } finally {
-      setIsGenerating(false);
     }
   }, []);
 
-  const fetchLetters = useCallback(async (params?: {
-    letterType?: LetterType;
-    status?: string;
-    employeeId?: string;
-    batchId?: string;
-    search?: string;
-    page?: number;
-    limit?: number;
-  }) => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      const query = new URLSearchParams();
-      if (params?.letterType) query.set("letterType", params.letterType);
-      if (params?.status) query.set("status", params.status);
-      if (params?.employeeId) query.set("employeeId", params.employeeId);
-      if (params?.batchId) query.set("batchId", params.batchId);
-      if (params?.search) query.set("search", params.search);
-      if (params?.page) query.set("page", String(params.page));
-      if (params?.limit) query.set("limit", String(params.limit));
-      const qs = query.toString();
-      const result = await apiClient.fetch<LetterListResponse>(`/api/v1/letters${qs ? `?${qs}` : ""}`);
-      setLetters(result.items);
-      setPagination({ total: result.total, page: result.page, limit: result.limit, totalPages: result.totalPages });
-      return result;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to fetch letters";
-      setError(msg);
-      throw err;
-    } finally {
-      setIsLoading(false);
-    }
+  const fetchBatchProgress = useCallback(async (batchId: string) => {
+    return apiClient.fetch<BatchProgress>(
+      `/api/v1/letters/batches/${encodeURIComponent(batchId)}/progress`,
+    );
   }, []);
+
+  const fetchLetters = useCallback(
+    async (params?: {
+      letterType?: LetterType;
+      status?: string;
+      employeeId?: string;
+      batchId?: string;
+      search?: string;
+      page?: number;
+      limit?: number;
+    }) => {
+      setIsLoading(true);
+      setError(null);
+      try {
+        const query = new URLSearchParams();
+        if (params?.letterType) query.set('letterType', params.letterType);
+        if (params?.status) query.set('status', params.status);
+        if (params?.employeeId) query.set('employeeId', params.employeeId);
+        if (params?.batchId) query.set('batchId', params.batchId);
+        if (params?.search) query.set('search', params.search);
+        if (params?.page) query.set('page', String(params.page));
+        if (params?.limit) query.set('limit', String(params.limit));
+        const qs = query.toString();
+        const result = await apiClient.fetch<LetterListResponse>(
+          `/api/v1/letters${qs ? `?${qs}` : ''}`,
+        );
+        setLetters(result.items);
+        setPagination({
+          total: result.total,
+          page: result.page,
+          limit: result.limit,
+          totalPages: result.totalPages,
+        });
+        return result;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Failed to fetch letters';
+        setError(msg);
+        throw err;
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [],
+  );
 
   const fetchLetter = useCallback(async (letterId: string) => {
     setIsLoading(true);
@@ -175,7 +201,7 @@ export function useLetters() {
       setCurrentLetter(result);
       return result;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to fetch letter";
+      const msg = err instanceof Error ? err.message : 'Failed to fetch letter';
       setError(msg);
       throw err;
     } finally {
@@ -187,7 +213,7 @@ export function useLetters() {
     setError(null);
     try {
       const result = await apiClient.fetch<CompensationLetter>(`/api/v1/letters/${letterId}`, {
-        method: "PUT",
+        method: 'PUT',
         body: JSON.stringify(input),
       });
       setCurrentLetter(result);
@@ -195,7 +221,7 @@ export function useLetters() {
       setLetters((prev) => prev.map((l) => (l.id === letterId ? result : l)));
       return result;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to update letter";
+      const msg = err instanceof Error ? err.message : 'Failed to update letter';
       setError(msg);
       throw err;
     }
@@ -212,7 +238,8 @@ export function useLetters() {
     error,
     pagination,
     generateLetter,
-    generateBatch,
+    enqueueBatch,
+    fetchBatchProgress,
     fetchLetters,
     fetchLetter,
     updateLetter,
@@ -220,4 +247,3 @@ export function useLetters() {
     clearCurrentLetter,
   };
 }
-

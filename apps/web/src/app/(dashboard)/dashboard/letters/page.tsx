@@ -38,9 +38,11 @@ import {
   type LetterType,
   type CompensationLetter,
   type GenerateLetterInput,
+  type BatchProgress,
 } from '@/hooks/use-letters';
 import { useQuery } from '@tanstack/react-query';
 import { apiClient } from '@/lib/api-client';
+import { Progress } from '@/components/ui/progress';
 
 const LETTER_TYPES: { value: LetterType; label: string }[] = [
   { value: 'offer', label: 'Offer Letter' },
@@ -92,6 +94,8 @@ export default function LettersPage() {
     error,
     pagination,
     generateLetter,
+    enqueueBatch,
+    fetchBatchProgress,
     fetchLetters,
     updateLetter,
     clearCurrentLetter,
@@ -163,6 +167,10 @@ export default function LettersPage() {
               <Plus className="mr-1 h-4 w-4" />
               Generate
             </TabsTrigger>
+            <TabsTrigger value="batch">
+              <Users className="mr-1 h-4 w-4" />
+              Batch
+            </TabsTrigger>
             <TabsTrigger value="history">
               <Clock className="mr-1 h-4 w-4" />
               History
@@ -183,6 +191,18 @@ export default function LettersPage() {
               onGenerate={handleGenerate}
               isGenerating={isGenerating}
               error={error}
+            />
+          </TabsContent>
+
+          {/* Batch Tab */}
+          <TabsContent value="batch" className="flex-1 overflow-auto">
+            <BatchPanel
+              enqueueBatch={enqueueBatch}
+              fetchBatchProgress={fetchBatchProgress}
+              onJumpToHistory={(batchId) => {
+                setActiveTab('history');
+                void fetchLetters({ batchId });
+              }}
             />
           </TabsContent>
 
@@ -613,6 +633,287 @@ function LetterPreview({ letter, onBack, onApprove }: LetterPreviewProps) {
           </div>
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+// ─── Batch Panel ──────────────────────────────────────────────────────────
+
+interface BatchPanelProps {
+  enqueueBatch: (input: {
+    employeeIds: string[];
+    letterType: LetterType;
+    salaryIncreasePercent?: number;
+    bonusAmount?: number;
+    effectiveDate?: string;
+    tone?: string;
+    language?: string;
+    additionalNotes?: string;
+  }) => Promise<{ batchId: string; total: number }>;
+  fetchBatchProgress: (batchId: string) => Promise<BatchProgress>;
+  onJumpToHistory: (batchId: string) => void;
+}
+
+const BATCH_POLL_MS = 2000;
+
+function parseEmployeeIds(text: string): string[] {
+  return Array.from(
+    new Set(
+      text
+        .split(/[\s,]+/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0),
+    ),
+  );
+}
+
+function BatchPanel({ enqueueBatch, fetchBatchProgress, onJumpToHistory }: BatchPanelProps) {
+  const [employeeIdsText, setEmployeeIdsText] = useState('');
+  const [letterType, setLetterType] = useState<LetterType>('raise');
+  const [tone, setTone] = useState('professional');
+  const [percent, setPercent] = useState<string>('');
+  const [bonus, setBonus] = useState<string>('');
+  const [effectiveDate, setEffectiveDate] = useState('');
+  const [notes, setNotes] = useState('');
+
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [batchId, setBatchId] = useState<string | null>(null);
+  const [progress, setProgress] = useState<BatchProgress | null>(null);
+
+  const employeeIds = parseEmployeeIds(employeeIdsText);
+  const canSubmit = employeeIds.length > 0 && employeeIds.length <= 100 && !submitting;
+
+  const startBatch = async () => {
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      const res = await enqueueBatch({
+        employeeIds,
+        letterType,
+        salaryIncreasePercent: percent ? Number(percent) : undefined,
+        bonusAmount: bonus ? Number(bonus) : undefined,
+        effectiveDate: effectiveDate || undefined,
+        tone,
+        additionalNotes: notes || undefined,
+      });
+      setBatchId(res.batchId);
+      setProgress(null);
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : 'Failed to enqueue batch');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Poll progress while a batch is in flight.
+  useEffect(() => {
+    if (!batchId) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const next = await fetchBatchProgress(batchId);
+        if (cancelled) return;
+        setProgress(next);
+        if (!next.done) {
+          setTimeout(() => void tick(), BATCH_POLL_MS);
+        }
+      } catch (err) {
+        if (cancelled) return;
+        setSubmitError(err instanceof Error ? err.message : 'Progress check failed');
+      }
+    };
+    void tick();
+    return () => {
+      cancelled = true;
+    };
+  }, [batchId, fetchBatchProgress]);
+
+  const reset = () => {
+    setBatchId(null);
+    setProgress(null);
+    setSubmitError(null);
+  };
+
+  const pct =
+    progress && progress.total > 0
+      ? Math.min(100, Math.round((progress.seen / progress.total) * 100))
+      : (progress?.progress ?? 0);
+
+  return (
+    <div className="mx-auto max-w-3xl space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Users className="h-5 w-5 text-primary" />
+            Batch Letter Generation
+          </CardTitle>
+          <CardDescription>
+            Generate letters for up to 100 employees at once. The job runs in the background — you
+            can navigate away and come back.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="batch-emp-ids">
+              Employee IDs (one per line, or comma-separated)
+              <span className="ml-2 text-xs text-muted-foreground">
+                {employeeIds.length} parsed
+                {employeeIds.length > 100 && (
+                  <span className="ml-2 text-destructive">— max 100 per batch</span>
+                )}
+              </span>
+            </Label>
+            <Textarea
+              id="batch-emp-ids"
+              rows={5}
+              placeholder="emp-001&#10;emp-002&#10;emp-003"
+              value={employeeIdsText}
+              onChange={(e) => setEmployeeIdsText(e.target.value)}
+              disabled={Boolean(batchId)}
+            />
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="batch-type">Letter type</Label>
+              <Select
+                id="batch-type"
+                value={letterType}
+                onChange={(e) => setLetterType(e.target.value as LetterType)}
+                disabled={Boolean(batchId)}
+                options={LETTER_TYPES.map((t) => ({ value: t.value, label: t.label }))}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="batch-tone">Tone</Label>
+              <Select
+                id="batch-tone"
+                value={tone}
+                onChange={(e) => setTone(e.target.value)}
+                disabled={Boolean(batchId)}
+                options={TONE_OPTIONS}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="batch-pct">Increase %</Label>
+              <Input
+                id="batch-pct"
+                type="number"
+                step="0.1"
+                placeholder="e.g. 5"
+                value={percent}
+                onChange={(e) => setPercent(e.target.value)}
+                disabled={Boolean(batchId)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="batch-bonus">Bonus amount</Label>
+              <Input
+                id="batch-bonus"
+                type="number"
+                placeholder="e.g. 5000"
+                value={bonus}
+                onChange={(e) => setBonus(e.target.value)}
+                disabled={Boolean(batchId)}
+              />
+            </div>
+            <div className="space-y-2 sm:col-span-2">
+              <Label htmlFor="batch-eff">Effective date</Label>
+              <Input
+                id="batch-eff"
+                type="date"
+                value={effectiveDate}
+                onChange={(e) => setEffectiveDate(e.target.value)}
+                disabled={Boolean(batchId)}
+              />
+            </div>
+            <div className="space-y-2 sm:col-span-2">
+              <Label htmlFor="batch-notes">Additional notes (applied to every letter)</Label>
+              <Textarea
+                id="batch-notes"
+                rows={3}
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                disabled={Boolean(batchId)}
+              />
+            </div>
+          </div>
+
+          {submitError && (
+            <div className="rounded-md border border-destructive bg-destructive/10 p-3 text-sm text-destructive">
+              {submitError}
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2">
+            {batchId && (
+              <Button variant="outline" onClick={reset} disabled={progress?.done === false}>
+                Start another
+              </Button>
+            )}
+            <Button onClick={() => void startBatch()} disabled={!canSubmit || Boolean(batchId)}>
+              {submitting ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Enqueuing…
+                </>
+              ) : (
+                <>
+                  <Send className="mr-2 h-4 w-4" />
+                  Enqueue {employeeIds.length || ''} letter{employeeIds.length === 1 ? '' : 's'}
+                </>
+              )}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {batchId && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              {progress?.done ? (
+                <CheckCircle2 className="h-5 w-5 text-emerald-500" />
+              ) : (
+                <Loader2 className="h-5 w-5 animate-spin text-primary" />
+              )}
+              Batch <span className="font-mono text-xs text-muted-foreground">{batchId}</span>
+            </CardTitle>
+            <CardDescription>
+              {progress?.done
+                ? `Done. ${progress.succeeded} succeeded, ${progress.failed} failed.`
+                : `Job state: ${progress?.jobState ?? 'queued'}`}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <Progress value={pct} />
+            <div className="grid grid-cols-3 gap-2 text-sm">
+              <div className="rounded-md border bg-muted/30 p-2">
+                <div className="text-xs text-muted-foreground">Succeeded</div>
+                <div className="text-lg font-semibold text-emerald-600">
+                  {progress?.succeeded ?? 0}
+                </div>
+              </div>
+              <div className="rounded-md border bg-muted/30 p-2">
+                <div className="text-xs text-muted-foreground">In flight</div>
+                <div className="text-lg font-semibold">{progress?.inFlight ?? 0}</div>
+              </div>
+              <div className="rounded-md border bg-muted/30 p-2">
+                <div className="text-xs text-muted-foreground">Failed</div>
+                <div className="text-lg font-semibold text-destructive">
+                  {progress?.failed ?? 0}
+                </div>
+              </div>
+            </div>
+            <div className="flex justify-end">
+              <Button variant="outline" size="sm" onClick={() => onJumpToHistory(batchId)}>
+                View letters
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

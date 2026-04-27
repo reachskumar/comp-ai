@@ -55,16 +55,25 @@ export class LettersController {
   }
 
   @Post('generate-batch')
-  @ApiOperation({ summary: 'Generate compensation letters for multiple employees' })
-  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary: 'Enqueue a batch of compensation letters; returns batchId immediately.',
+  })
+  @HttpCode(HttpStatus.ACCEPTED)
   @RequirePermission('Letters', 'insert')
   @Throttle({ default: { limit: 3, ttl: 60_000 } })
   async generateBatch(@Body() dto: GenerateBatchLetterDto, @Request() req: AuthRequest) {
     const { tenantId, userId } = req.user;
     this.logger.log(
-      `Batch generate: type=${dto.letterType} count=${dto.employeeIds.length} user=${userId}`,
+      `Batch enqueue: type=${dto.letterType} count=${dto.employeeIds.length} user=${userId}`,
     );
-    return this.lettersService.generateBatch(tenantId, userId, dto);
+    return this.lettersService.enqueueBatch(tenantId, userId, dto);
+  }
+
+  @Get('batches/:batchId/progress')
+  @ApiOperation({ summary: 'Get progress for an enqueued batch (poll-friendly).' })
+  async batchProgress(@Param('batchId') batchId: string, @Request() req: AuthRequest) {
+    const { tenantId } = req.user;
+    return this.lettersService.getBatchProgress(tenantId, batchId);
   }
 
   // ─── Read ────────────────────────────────────────────────────
