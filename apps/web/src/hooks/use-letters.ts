@@ -54,6 +54,7 @@ export interface CompensationLetter {
   subject: string;
   content: string;
   compData: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
   tone: string;
   language: string;
   pdfUrl: string | null;
@@ -98,6 +99,38 @@ export interface UpdateLetterInput {
   subject?: string;
   content?: string;
   status?: 'DRAFT' | 'REVIEW' | 'APPROVED' | 'SENT';
+}
+
+export interface ApprovalChainStep {
+  role: string;
+  label: string;
+}
+
+export interface ApprovalDecision {
+  stepIndex: number;
+  role: string;
+  decidedBy: string;
+  decidedByName: string;
+  decision: 'APPROVED' | 'REJECTED';
+  comment?: string;
+  decidedAt: string;
+}
+
+export interface ApprovalState {
+  chain: ApprovalChainStep[];
+  currentStep: number;
+  decisions: ApprovalDecision[];
+  rejected: boolean;
+  submittedBy?: string;
+  submittedAt?: string;
+}
+
+export function readApproval(letter: CompensationLetter): ApprovalState | null {
+  const meta = (letter as { metadata?: unknown }).metadata;
+  if (!meta || typeof meta !== 'object') return null;
+  const approval = (meta as Record<string, unknown>)['approval'];
+  if (!approval || typeof approval !== 'object') return null;
+  return approval as ApprovalState;
 }
 
 // ─── Hook ────────────────────────────────────────────────
@@ -227,6 +260,39 @@ export function useLetters() {
     }
   }, []);
 
+  const submitForApproval = useCallback(async (letterId: string) => {
+    setError(null);
+    const result = await apiClient.fetch<CompensationLetter>(`/api/v1/letters/${letterId}/submit`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    setCurrentLetter(result);
+    setLetters((prev) => prev.map((l) => (l.id === letterId ? result : l)));
+    return result;
+  }, []);
+
+  const approveCurrentStep = useCallback(async (letterId: string, comment?: string) => {
+    setError(null);
+    const result = await apiClient.fetch<CompensationLetter>(
+      `/api/v1/letters/${letterId}/approve`,
+      { method: 'POST', body: JSON.stringify({ comment }) },
+    );
+    setCurrentLetter(result);
+    setLetters((prev) => prev.map((l) => (l.id === letterId ? result : l)));
+    return result;
+  }, []);
+
+  const rejectCurrentStep = useCallback(async (letterId: string, reason?: string) => {
+    setError(null);
+    const result = await apiClient.fetch<CompensationLetter>(`/api/v1/letters/${letterId}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    });
+    setCurrentLetter(result);
+    setLetters((prev) => prev.map((l) => (l.id === letterId ? result : l)));
+    return result;
+  }, []);
+
   const clearError = useCallback(() => setError(null), []);
   const clearCurrentLetter = useCallback(() => setCurrentLetter(null), []);
 
@@ -243,6 +309,9 @@ export function useLetters() {
     fetchLetters,
     fetchLetter,
     updateLetter,
+    submitForApproval,
+    approveCurrentStep,
+    rejectCurrentStep,
     clearError,
     clearCurrentLetter,
   };

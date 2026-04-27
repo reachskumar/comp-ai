@@ -23,9 +23,10 @@ import { GenerateLetterDto } from './dto/generate-letter.dto';
 import { GenerateBatchLetterDto } from './dto/generate-batch-letter.dto';
 import { UpdateLetterDto } from './dto/update-letter.dto';
 import { ListLettersDto } from './dto/list-letters.dto';
+import { ApproveLetterDto, RejectLetterDto } from './dto/approve-letter.dto';
 
 interface AuthRequest {
-  user: { userId: string; tenantId: string; email: string; role: string };
+  user: { userId: string; tenantId: string; email: string; role: string; name?: string };
 }
 
 @ApiTags('letters')
@@ -112,5 +113,45 @@ export class LettersController {
     const { tenantId } = req.user;
     this.logger.log(`Update letter: id=${id} user=${req.user.userId}`);
     return this.lettersService.updateLetter(tenantId, id, dto);
+  }
+
+  // ─── Approval ────────────────────────────────────────────────
+
+  @Post(':id/submit')
+  @ApiOperation({
+    summary: 'Submit a letter for multi-step approval (snapshots tenant chain).',
+  })
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('Letters', 'update')
+  async submitForApproval(@Param('id') id: string, @Request() req: AuthRequest) {
+    const { tenantId, userId } = req.user;
+    this.logger.log(`Submit for approval: letter=${id} user=${userId}`);
+    return this.lettersService.submitForApproval(tenantId, userId, id);
+  }
+
+  @Post(':id/approve')
+  @ApiOperation({ summary: 'Approve the current step of a submitted letter.' })
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('Letters', 'update')
+  async approveStep(
+    @Param('id') id: string,
+    @Body() dto: ApproveLetterDto,
+    @Request() req: AuthRequest,
+  ) {
+    const { tenantId, userId, role, name } = req.user;
+    return this.lettersService.approveStep(tenantId, { userId, role, name }, id, dto);
+  }
+
+  @Post(':id/reject')
+  @ApiOperation({ summary: 'Reject the current step (halts the chain).' })
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('Letters', 'update')
+  async rejectStep(
+    @Param('id') id: string,
+    @Body() dto: RejectLetterDto,
+    @Request() req: AuthRequest,
+  ) {
+    const { tenantId, userId, role, name } = req.user;
+    return this.lettersService.rejectStep(tenantId, { userId, role, name }, id, dto);
   }
 }

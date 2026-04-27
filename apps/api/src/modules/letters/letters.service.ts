@@ -1,4 +1,11 @@
-import { Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  OnModuleInit,
+} from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { existsSync } from 'fs';
@@ -16,6 +23,7 @@ import { GenerateLetterDto, LetterTypeDto } from './dto/generate-letter.dto';
 import { GenerateBatchLetterDto } from './dto/generate-batch-letter.dto';
 import { UpdateLetterDto } from './dto/update-letter.dto';
 import { ListLettersDto } from './dto/list-letters.dto';
+import type { ApproveLetterDto, RejectLetterDto } from './dto/approve-letter.dto';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -134,6 +142,107 @@ function parseStructured(raw: string): StructuredLetter | null {
   } catch {
     return null;
   }
+}
+
+// ─── Approval state helpers ─────────────────────────────────────────────────
+
+interface ApprovalChainStep {
+  role: string;
+  label: string;
+}
+
+interface ApprovalDecision {
+  stepIndex: number;
+  role: string;
+  decidedBy: string;
+  decidedByName: string;
+  decision: 'APPROVED' | 'REJECTED';
+  comment?: string;
+  decidedAt: string;
+}
+
+interface ApprovalState {
+  chain: ApprovalChainStep[];
+  currentStep: number;
+  decisions: ApprovalDecision[];
+  rejected: boolean;
+  submittedBy?: string;
+  submittedAt?: string;
+}
+
+function readApprovalChain(settings: Prisma.JsonValue): ApprovalChainStep[] {
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return [];
+  const raw = (settings as Record<string, unknown>)['letterApprovalChain'];
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(
+      (s): s is { role: string; label: string } =>
+        typeof s === 'object' &&
+        s !== null &&
+        typeof (s as { role?: unknown }).role === 'string' &&
+        typeof (s as { label?: unknown }).label === 'string',
+    )
+    .map((s) => ({ role: s.role, label: s.label }));
+}
+
+function readApprovalState(metadata: Prisma.JsonValue): ApprovalState | null {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
+  const raw = (metadata as Record<string, unknown>)['approval'];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const a = raw as Record<string, unknown>;
+
+  const chain = Array.isArray(a['chain'])
+    ? (a['chain'] as unknown[]).filter(
+        (s): s is ApprovalChainStep =>
+          typeof s === 'object' &&
+          s !== null &&
+          typeof (s as { role?: unknown }).role === 'string' &&
+          typeof (s as { label?: unknown }).label === 'string',
+      )
+    : [];
+
+  const decisions = Array.isArray(a['decisions'])
+    ? (a['decisions'] as unknown[]).filter(
+        (d): d is ApprovalDecision =>
+          typeof d === 'object' &&
+          d !== null &&
+          typeof (d as { stepIndex?: unknown }).stepIndex === 'number' &&
+          typeof (d as { decidedBy?: unknown }).decidedBy === 'string' &&
+          ((d as { decision?: unknown }).decision === 'APPROVED' ||
+            (d as { decision?: unknown }).decision === 'REJECTED'),
+      )
+    : [];
+
+  return {
+    chain,
+    currentStep: typeof a['currentStep'] === 'number' ? a['currentStep'] : 0,
+    decisions,
+    rejected: a['rejected'] === true,
+    submittedBy: typeof a['submittedBy'] === 'string' ? a['submittedBy'] : undefined,
+    submittedAt: typeof a['submittedAt'] === 'string' ? a['submittedAt'] : undefined,
+  };
+}
+
+function mergeApprovalIntoMetadata(
+  existing: Prisma.JsonValue,
+  state: ApprovalState,
+): Prisma.InputJsonValue {
+  const base =
+    existing && typeof existing === 'object' && !Array.isArray(existing)
+      ? (existing as Record<string, unknown>)
+      : {};
+  const merged = {
+    ...base,
+    approval: {
+      chain: state.chain,
+      currentStep: state.currentStep,
+      decisions: state.decisions,
+      rejected: state.rejected,
+      ...(state.submittedBy ? { submittedBy: state.submittedBy } : {}),
+      ...(state.submittedAt ? { submittedAt: state.submittedAt } : {}),
+    },
+  };
+  return merged as unknown as Prisma.InputJsonValue;
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -652,6 +761,259 @@ export class LettersService implements OnModuleInit {
         },
       });
     });
+  }
+
+  // ─── Approval ────────────────────────────────────────────────────────────
+
+  /**
+   * Submit a letter for multi-step approval. Snapshots the tenant's current
+   * approval chain into the letter's metadata so subsequent edits to the
+   * tenant chain don't retroactively rewrite in-flight approvals.
+   *
+   * If the tenant has no chain configured, the letter is approved immediately
+   * (degenerates to single-step approve). If the letter is in REVIEW from a
+   * prior rejected attempt, this resets the approval state.
+   */
+  async submitForApproval(tenantId: string, userId: string, letterId: string) {
+    const tenantChain = await this.readTenantApprovalChain(tenantId);
+    return this.db.forTenant(tenantId, async (tx) => {
+      const letter = await tx.compensationLetter.findFirst({
+        where: { id: letterId, tenantId },
+      });
+      if (!letter) throw new NotFoundException(`Letter ${letterId} not found`);
+      if (letter.status !== LetterStatus.REVIEW) {
+        throw new BadRequestException(
+          `Letter must be in REVIEW to submit for approval (current: ${letter.status})`,
+        );
+      }
+
+      // Empty chain → approve immediately.
+      if (tenantChain.length === 0) {
+        const metadata = mergeApprovalIntoMetadata(letter.metadata, {
+          chain: [],
+          currentStep: 0,
+          decisions: [
+            {
+              stepIndex: -1,
+              role: '*',
+              decidedBy: userId,
+              decidedByName: 'self',
+              decision: 'APPROVED',
+              comment: 'No approval chain configured',
+              decidedAt: new Date().toISOString(),
+            },
+          ],
+          rejected: false,
+          submittedBy: userId,
+          submittedAt: new Date().toISOString(),
+        });
+        return tx.compensationLetter.update({
+          where: { id: letterId },
+          data: {
+            status: LetterStatus.APPROVED,
+            approvedAt: new Date(),
+            metadata,
+          },
+          include: {
+            employee: {
+              select: { firstName: true, lastName: true, department: true, email: true },
+            },
+          },
+        });
+      }
+
+      // Otherwise: snapshot the chain and start at step 0.
+      const metadata = mergeApprovalIntoMetadata(letter.metadata, {
+        chain: tenantChain,
+        currentStep: 0,
+        decisions: [],
+        rejected: false,
+        submittedBy: userId,
+        submittedAt: new Date().toISOString(),
+      });
+      this.logger.log(`Submit for approval: letter=${letterId} chain=${tenantChain.length} steps`);
+      return tx.compensationLetter.update({
+        where: { id: letterId },
+        data: { metadata },
+        include: {
+          employee: {
+            select: { firstName: true, lastName: true, department: true, email: true },
+          },
+        },
+      });
+    });
+  }
+
+  /**
+   * Approve the current step. The user's role must match the step's role
+   * (case-insensitive). PLATFORM_ADMIN bypasses. The letter's author cannot
+   * approve their own letter.
+   */
+  async approveStep(
+    tenantId: string,
+    approver: { userId: string; role: string; name?: string },
+    letterId: string,
+    dto: ApproveLetterDto,
+  ) {
+    return this.db.forTenant(tenantId, async (tx) => {
+      const letter = await tx.compensationLetter.findFirst({
+        where: { id: letterId, tenantId },
+      });
+      if (!letter) throw new NotFoundException(`Letter ${letterId} not found`);
+      if (letter.status !== LetterStatus.REVIEW) {
+        throw new BadRequestException(
+          `Letter must be in REVIEW to approve (current: ${letter.status})`,
+        );
+      }
+      if (letter.userId === approver.userId) {
+        throw new ForbiddenException('You cannot approve your own letter');
+      }
+
+      const state = readApprovalState(letter.metadata);
+      if (!state) {
+        throw new BadRequestException(
+          'Letter has not been submitted for approval — call /submit first',
+        );
+      }
+      if (state.rejected) {
+        throw new BadRequestException(
+          'Letter was rejected — author must resubmit before further approvals',
+        );
+      }
+      if (state.currentStep >= state.chain.length) {
+        throw new BadRequestException('Approval chain is already complete');
+      }
+
+      const step = state.chain[state.currentStep]!;
+      this.assertRoleMatch(approver.role, step.role);
+
+      const decisions = [
+        ...state.decisions,
+        {
+          stepIndex: state.currentStep,
+          role: step.role,
+          decidedBy: approver.userId,
+          decidedByName: approver.name ?? approver.userId,
+          decision: 'APPROVED' as const,
+          comment: dto.comment?.trim() || undefined,
+          decidedAt: new Date().toISOString(),
+        },
+      ];
+      const nextStep = state.currentStep + 1;
+      const finalApproval = nextStep >= state.chain.length;
+
+      const metadata = mergeApprovalIntoMetadata(letter.metadata, {
+        ...state,
+        currentStep: nextStep,
+        decisions,
+      });
+
+      this.logger.log(
+        `Approve step ${state.currentStep + 1}/${state.chain.length}: letter=${letterId} approver=${approver.userId} role=${approver.role}`,
+      );
+
+      return tx.compensationLetter.update({
+        where: { id: letterId },
+        data: {
+          metadata,
+          ...(finalApproval ? { status: LetterStatus.APPROVED, approvedAt: new Date() } : {}),
+        },
+        include: {
+          employee: {
+            select: { firstName: true, lastName: true, department: true, email: true },
+          },
+        },
+      });
+    });
+  }
+
+  /**
+   * Reject at the current step. Letter stays in REVIEW; metadata.approval.rejected
+   * flips to true. The author must resubmit (via /submit) to reset the chain.
+   */
+  async rejectStep(
+    tenantId: string,
+    approver: { userId: string; role: string; name?: string },
+    letterId: string,
+    dto: RejectLetterDto,
+  ) {
+    return this.db.forTenant(tenantId, async (tx) => {
+      const letter = await tx.compensationLetter.findFirst({
+        where: { id: letterId, tenantId },
+      });
+      if (!letter) throw new NotFoundException(`Letter ${letterId} not found`);
+      if (letter.status !== LetterStatus.REVIEW) {
+        throw new BadRequestException(
+          `Letter must be in REVIEW to reject (current: ${letter.status})`,
+        );
+      }
+      if (letter.userId === approver.userId) {
+        throw new ForbiddenException('You cannot reject your own letter');
+      }
+
+      const state = readApprovalState(letter.metadata);
+      if (!state) {
+        throw new BadRequestException('Letter has not been submitted for approval');
+      }
+      if (state.rejected) {
+        throw new BadRequestException('Letter is already rejected');
+      }
+      if (state.currentStep >= state.chain.length) {
+        throw new BadRequestException('Approval chain is already complete');
+      }
+
+      const step = state.chain[state.currentStep]!;
+      this.assertRoleMatch(approver.role, step.role);
+
+      const decisions = [
+        ...state.decisions,
+        {
+          stepIndex: state.currentStep,
+          role: step.role,
+          decidedBy: approver.userId,
+          decidedByName: approver.name ?? approver.userId,
+          decision: 'REJECTED' as const,
+          comment: dto.reason?.trim() || undefined,
+          decidedAt: new Date().toISOString(),
+        },
+      ];
+
+      const metadata = mergeApprovalIntoMetadata(letter.metadata, {
+        ...state,
+        decisions,
+        rejected: true,
+      });
+
+      this.logger.warn(
+        `Reject step ${state.currentStep + 1}/${state.chain.length}: letter=${letterId} approver=${approver.userId} reason=${dto.reason ?? ''}`,
+      );
+
+      return tx.compensationLetter.update({
+        where: { id: letterId },
+        data: { metadata },
+        include: {
+          employee: {
+            select: { firstName: true, lastName: true, department: true, email: true },
+          },
+        },
+      });
+    });
+  }
+
+  private async readTenantApprovalChain(tenantId: string): Promise<ApprovalChainStep[]> {
+    const tenant = await this.db.forTenant(tenantId, (tx) =>
+      tx.tenant.findUnique({ where: { id: tenantId }, select: { settings: true } }),
+    );
+    if (!tenant) throw new NotFoundException('Tenant not found');
+    return readApprovalChain(tenant.settings);
+  }
+
+  private assertRoleMatch(userRole: string, stepRole: string): void {
+    if (userRole === 'PLATFORM_ADMIN') return;
+    if (userRole.toLowerCase() === stepRole.toLowerCase()) return;
+    throw new ForbiddenException(
+      `Your role "${userRole}" cannot approve at this step (requires "${stepRole}")`,
+    );
   }
 
   // ─── PDF ─────────────────────────────────────────────────────────────────

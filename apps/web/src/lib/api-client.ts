@@ -263,6 +263,16 @@ class ApiClient {
     );
   }
 
+  async updateLetterApprovalChain(data: { chain: Array<{ role: string; label: string }> }) {
+    return this.fetch<{ chain: Array<{ role: string; label: string }> }>(
+      '/api/v1/settings/letter-approval-chain',
+      {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      },
+    );
+  }
+
   async listUsers() {
     return this.fetch<{
       data: Array<{

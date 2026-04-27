@@ -3,7 +3,7 @@ import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth';
 import { TenantGuard, PermissionGuard, RequirePermission } from '../../common';
 import { SettingsService } from './settings.service';
-import { AuditLogQueryDto, UpdateLetterSignatureDto } from './dto';
+import { AuditLogQueryDto, UpdateLetterApprovalChainDto, UpdateLetterSignatureDto } from './dto';
 
 interface AuthRequest {
   user: { userId: string; tenantId: string; email: string; role: string };
@@ -30,6 +30,21 @@ export class SettingsController {
   async updateLetterSignature(@Body() dto: UpdateLetterSignatureDto, @Request() req: AuthRequest) {
     this.logger.log(`Update letter signature: tenant=${req.user.tenantId} user=${req.user.userId}`);
     return this.settingsService.updateLetterSignature(req.user.tenantId, dto);
+  }
+
+  @Put('letter-approval-chain')
+  @ApiOperation({
+    summary: 'Replace the per-tenant letter approval chain (ordered list of role/label steps).',
+  })
+  @RequirePermission('Settings', 'update')
+  async updateLetterApprovalChain(
+    @Body() dto: UpdateLetterApprovalChainDto,
+    @Request() req: AuthRequest,
+  ) {
+    this.logger.log(
+      `Update letter approval chain: tenant=${req.user.tenantId} user=${req.user.userId} steps=${dto.chain.length}`,
+    );
+    return this.settingsService.updateLetterApprovalChain(req.user.tenantId, dto);
   }
 
   @Get('users')

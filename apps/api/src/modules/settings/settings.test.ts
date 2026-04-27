@@ -178,6 +178,95 @@ describe('SettingsService — updateLetterSignature', () => {
   });
 });
 
+describe('SettingsService — updateLetterApprovalChain', () => {
+  let service: SettingsService;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createSettingsService());
+  });
+
+  it('persists ordered chain into tenant.settings.letterApprovalChain', async () => {
+    db.client.tenant.findUnique.mockResolvedValue({ settings: {} });
+    db.client.tenant.update.mockResolvedValue({});
+
+    const result = await service.updateLetterApprovalChain(TEST_TENANT_ID, {
+      chain: [
+        { role: 'HRBP', label: 'HR Business Partner' },
+        { role: 'CHRO', label: 'CHRO' },
+      ],
+    });
+
+    expect(result.chain).toEqual([
+      { role: 'HRBP', label: 'HR Business Partner' },
+      { role: 'CHRO', label: 'CHRO' },
+    ]);
+    expect(db.client.tenant.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: {
+          settings: {
+            letterApprovalChain: [
+              { role: 'HRBP', label: 'HR Business Partner' },
+              { role: 'CHRO', label: 'CHRO' },
+            ],
+          },
+        },
+      }),
+    );
+  });
+
+  it('preserves other settings keys (like letterSignature) when updating', async () => {
+    db.client.tenant.findUnique.mockResolvedValue({
+      settings: {
+        letterSignature: { name: 'Sachin', title: 'CEO' },
+        letterApprovalChain: [{ role: 'OLD', label: 'Old' }],
+      },
+    });
+    db.client.tenant.update.mockResolvedValue({});
+
+    await service.updateLetterApprovalChain(TEST_TENANT_ID, {
+      chain: [{ role: 'CHRO', label: 'CHRO' }],
+    });
+
+    expect(db.client.tenant.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: {
+          settings: {
+            letterSignature: { name: 'Sachin', title: 'CEO' },
+            letterApprovalChain: [{ role: 'CHRO', label: 'CHRO' }],
+          },
+        },
+      }),
+    );
+  });
+
+  it('accepts empty chain (clears it)', async () => {
+    db.client.tenant.findUnique.mockResolvedValue({
+      settings: { letterApprovalChain: [{ role: 'OLD', label: 'Old' }] },
+    });
+    db.client.tenant.update.mockResolvedValue({});
+
+    const result = await service.updateLetterApprovalChain(TEST_TENANT_ID, { chain: [] });
+    expect(result.chain).toEqual([]);
+  });
+
+  it('trims whitespace in role and label', async () => {
+    db.client.tenant.findUnique.mockResolvedValue({ settings: {} });
+    db.client.tenant.update.mockResolvedValue({});
+
+    const result = await service.updateLetterApprovalChain(TEST_TENANT_ID, {
+      chain: [{ role: '  HRBP  ', label: '  HR Business Partner  ' }],
+    });
+
+    expect(result.chain).toEqual([{ role: 'HRBP', label: 'HR Business Partner' }]);
+  });
+
+  it('throws NotFoundException when tenant does not exist', async () => {
+    db.client.tenant.findUnique.mockResolvedValue(null);
+    await expect(service.updateLetterApprovalChain('missing', { chain: [] })).rejects.toThrow();
+  });
+});
+
 describe('SettingsService — listAuditLogs', () => {
   let service: SettingsService;
   let db: ReturnType<typeof createMockDatabaseService>;

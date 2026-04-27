@@ -214,3 +214,304 @@ describe('LettersService — getBatchProgress', () => {
     expect(result.done).toBe(false);
   });
 });
+
+// ─── Approval state machine ────────────────────────────────────────────────
+
+interface MockLetter {
+  id: string;
+  userId: string;
+  tenantId: string;
+  status: string;
+  metadata: Record<string, unknown>;
+}
+
+const HRBP_USER = { userId: 'user-hrbp', role: 'HRBP', name: 'Pat HRBP' };
+const CHRO_USER = { userId: 'user-chro', role: 'CHRO', name: 'Sam CHRO' };
+
+function letterFixture(overrides: Partial<MockLetter> = {}): MockLetter {
+  return {
+    id: 'letter-1',
+    userId: 'user-author',
+    tenantId: TEST_TENANT_ID,
+    status: 'REVIEW',
+    metadata: {},
+    ...overrides,
+  };
+}
+
+describe('LettersService — submitForApproval', () => {
+  let service: LettersService;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createService());
+  });
+
+  it('snapshots tenant chain into letter metadata and starts at step 0', async () => {
+    db.client.tenant.findUnique.mockResolvedValue({
+      settings: {
+        letterApprovalChain: [
+          { role: 'HRBP', label: 'HR Business Partner' },
+          { role: 'CHRO', label: 'CHRO' },
+        ],
+      },
+    });
+    db.client.compensationLetter.findFirst.mockResolvedValue(letterFixture());
+    db.client.compensationLetter.update.mockImplementation(({ data }) =>
+      Promise.resolve({ ...letterFixture(), ...data }),
+    );
+
+    await service.submitForApproval(TEST_TENANT_ID, 'user-author', 'letter-1');
+
+    const updateArgs = db.client.compensationLetter.update.mock.calls[0]![0];
+    expect(updateArgs.data.metadata.approval).toMatchObject({
+      chain: [
+        { role: 'HRBP', label: 'HR Business Partner' },
+        { role: 'CHRO', label: 'CHRO' },
+      ],
+      currentStep: 0,
+      decisions: [],
+      rejected: false,
+      submittedBy: 'user-author',
+    });
+  });
+
+  it('approves immediately when no chain is configured', async () => {
+    db.client.tenant.findUnique.mockResolvedValue({ settings: {} });
+    db.client.compensationLetter.findFirst.mockResolvedValue(letterFixture());
+    db.client.compensationLetter.update.mockResolvedValue({});
+
+    await service.submitForApproval(TEST_TENANT_ID, 'user-author', 'letter-1');
+
+    const updateArgs = db.client.compensationLetter.update.mock.calls[0]![0];
+    expect(updateArgs.data.status).toBe('APPROVED');
+    expect(updateArgs.data.approvedAt).toBeInstanceOf(Date);
+  });
+
+  it('rejects letters not in REVIEW status', async () => {
+    db.client.tenant.findUnique.mockResolvedValue({ settings: {} });
+    db.client.compensationLetter.findFirst.mockResolvedValue(letterFixture({ status: 'APPROVED' }));
+
+    await expect(
+      service.submitForApproval(TEST_TENANT_ID, 'user-author', 'letter-1'),
+    ).rejects.toThrow(/REVIEW/);
+  });
+
+  it('throws NotFound for missing letter', async () => {
+    db.client.tenant.findUnique.mockResolvedValue({ settings: {} });
+    db.client.compensationLetter.findFirst.mockResolvedValue(null);
+
+    await expect(
+      service.submitForApproval(TEST_TENANT_ID, 'user-author', 'missing'),
+    ).rejects.toThrow(/not found/);
+  });
+});
+
+describe('LettersService — approveStep', () => {
+  let service: LettersService;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createService());
+    db.client.compensationLetter.update.mockImplementation(({ data }) =>
+      Promise.resolve({ ...letterFixture(), metadata: data.metadata, status: data.status }),
+    );
+  });
+
+  function submittedLetter(overrides: Partial<MockLetter> = {}): MockLetter {
+    return letterFixture({
+      metadata: {
+        approval: {
+          chain: [
+            { role: 'HRBP', label: 'HR Business Partner' },
+            { role: 'CHRO', label: 'CHRO' },
+          ],
+          currentStep: 0,
+          decisions: [],
+          rejected: false,
+          submittedBy: 'user-author',
+          submittedAt: '2026-04-27T00:00:00.000Z',
+        },
+      },
+      ...overrides,
+    });
+  }
+
+  it('advances current step on a non-final approval', async () => {
+    db.client.compensationLetter.findFirst.mockResolvedValue(submittedLetter());
+
+    await service.approveStep(TEST_TENANT_ID, HRBP_USER, 'letter-1', { comment: 'lgtm' });
+
+    const updateArgs = db.client.compensationLetter.update.mock.calls[0]![0];
+    expect(updateArgs.data.metadata.approval.currentStep).toBe(1);
+    expect(updateArgs.data.metadata.approval.decisions).toHaveLength(1);
+    expect(updateArgs.data.metadata.approval.decisions[0]).toMatchObject({
+      stepIndex: 0,
+      role: 'HRBP',
+      decidedBy: HRBP_USER.userId,
+      decision: 'APPROVED',
+      comment: 'lgtm',
+    });
+    expect(updateArgs.data.status).toBeUndefined(); // status unchanged on intermediate step
+  });
+
+  it('marks the letter APPROVED on final-step approval', async () => {
+    db.client.compensationLetter.findFirst.mockResolvedValue(
+      submittedLetter({
+        metadata: {
+          approval: {
+            chain: [{ role: 'CHRO', label: 'CHRO' }],
+            currentStep: 0,
+            decisions: [],
+            rejected: false,
+          },
+        },
+      }),
+    );
+
+    await service.approveStep(TEST_TENANT_ID, CHRO_USER, 'letter-1', {});
+
+    const updateArgs = db.client.compensationLetter.update.mock.calls[0]![0];
+    expect(updateArgs.data.status).toBe('APPROVED');
+    expect(updateArgs.data.approvedAt).toBeInstanceOf(Date);
+    expect(updateArgs.data.metadata.approval.currentStep).toBe(1);
+  });
+
+  it('forbids the author from approving their own letter', async () => {
+    db.client.compensationLetter.findFirst.mockResolvedValue(submittedLetter());
+
+    await expect(
+      service.approveStep(TEST_TENANT_ID, { userId: 'user-author', role: 'HRBP' }, 'letter-1', {}),
+    ).rejects.toThrow(/own letter/);
+  });
+
+  it("rejects when the user role doesn't match the current step", async () => {
+    db.client.compensationLetter.findFirst.mockResolvedValue(submittedLetter());
+
+    await expect(
+      service.approveStep(
+        TEST_TENANT_ID,
+        { userId: 'user-other', role: 'ENGINEER' },
+        'letter-1',
+        {},
+      ),
+    ).rejects.toThrow(/role/);
+  });
+
+  it('PLATFORM_ADMIN can approve any step regardless of role', async () => {
+    db.client.compensationLetter.findFirst.mockResolvedValue(submittedLetter());
+
+    await service.approveStep(
+      TEST_TENANT_ID,
+      { userId: 'user-admin', role: 'PLATFORM_ADMIN' },
+      'letter-1',
+      {},
+    );
+    expect(db.client.compensationLetter.update).toHaveBeenCalled();
+  });
+
+  it('refuses to advance after a rejection', async () => {
+    db.client.compensationLetter.findFirst.mockResolvedValue(
+      submittedLetter({
+        metadata: {
+          approval: {
+            chain: [{ role: 'HRBP', label: 'HRBP' }],
+            currentStep: 0,
+            decisions: [
+              {
+                stepIndex: 0,
+                role: 'HRBP',
+                decidedBy: 'someone',
+                decidedByName: 'Someone',
+                decision: 'REJECTED',
+                decidedAt: '2026-04-27T00:00:00.000Z',
+              },
+            ],
+            rejected: true,
+          },
+        },
+      }),
+    );
+
+    await expect(service.approveStep(TEST_TENANT_ID, HRBP_USER, 'letter-1', {})).rejects.toThrow(
+      /rejected/,
+    );
+  });
+
+  it('refuses if letter has not been submitted', async () => {
+    db.client.compensationLetter.findFirst.mockResolvedValue(letterFixture());
+
+    await expect(service.approveStep(TEST_TENANT_ID, HRBP_USER, 'letter-1', {})).rejects.toThrow(
+      /submit/,
+    );
+  });
+});
+
+describe('LettersService — rejectStep', () => {
+  let service: LettersService;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createService());
+  });
+
+  it('flips rejected=true and records a rejection decision', async () => {
+    db.client.compensationLetter.findFirst.mockResolvedValue(
+      letterFixture({
+        metadata: {
+          approval: {
+            chain: [{ role: 'HRBP', label: 'HRBP' }],
+            currentStep: 0,
+            decisions: [],
+            rejected: false,
+          },
+        },
+      }),
+    );
+    db.client.compensationLetter.update.mockImplementation(({ data }) =>
+      Promise.resolve({ ...letterFixture(), metadata: data.metadata }),
+    );
+
+    await service.rejectStep(TEST_TENANT_ID, HRBP_USER, 'letter-1', {
+      reason: 'Comp band exceeded',
+    });
+
+    const updateArgs = db.client.compensationLetter.update.mock.calls[0]![0];
+    expect(updateArgs.data.metadata.approval.rejected).toBe(true);
+    expect(updateArgs.data.metadata.approval.decisions[0]).toMatchObject({
+      decision: 'REJECTED',
+      role: 'HRBP',
+      comment: 'Comp band exceeded',
+    });
+    // Status stays REVIEW; the author must resubmit.
+    expect(updateArgs.data.status).toBeUndefined();
+  });
+
+  it('refuses to reject twice', async () => {
+    db.client.compensationLetter.findFirst.mockResolvedValue(
+      letterFixture({
+        metadata: {
+          approval: {
+            chain: [{ role: 'HRBP', label: 'HRBP' }],
+            currentStep: 0,
+            decisions: [
+              {
+                stepIndex: 0,
+                role: 'HRBP',
+                decidedBy: 'someone',
+                decidedByName: 'Someone',
+                decision: 'REJECTED',
+                decidedAt: '2026-04-27T00:00:00.000Z',
+              },
+            ],
+            rejected: true,
+          },
+        },
+      }),
+    );
+
+    await expect(service.rejectStep(TEST_TENANT_ID, HRBP_USER, 'letter-1', {})).rejects.toThrow(
+      /already rejected/,
+    );
+  });
+});

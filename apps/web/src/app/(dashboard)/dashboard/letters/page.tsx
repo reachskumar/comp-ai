@@ -35,11 +35,14 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import {
   useLetters,
+  readApproval,
   type LetterType,
   type CompensationLetter,
   type GenerateLetterInput,
   type BatchProgress,
+  type ApprovalState,
 } from '@/hooks/use-letters';
+import { useAuthStore } from '@/stores/auth-store';
 import { useQuery } from '@tanstack/react-query';
 import { apiClient } from '@/lib/api-client';
 import { Progress } from '@/components/ui/progress';
@@ -97,9 +100,12 @@ export default function LettersPage() {
     enqueueBatch,
     fetchBatchProgress,
     fetchLetters,
-    updateLetter,
+    submitForApproval,
+    approveCurrentStep,
+    rejectCurrentStep,
     clearCurrentLetter,
   } = useLetters();
+  const { user } = useAuthStore();
 
   const [activeTab, setActiveTab] = useState('generate');
   const [previewLetter, setPreviewLetter] = useState<CompensationLetter | null>(null);
@@ -131,10 +137,26 @@ export default function LettersPage() {
     await generateLetter(form);
   }, [form, generateLetter]);
 
-  const handleApprove = useCallback(async () => {
+  const handleSubmit = useCallback(async () => {
     if (!previewLetter) return;
-    await updateLetter(previewLetter.id, { status: 'APPROVED' });
-  }, [previewLetter, updateLetter]);
+    await submitForApproval(previewLetter.id);
+  }, [previewLetter, submitForApproval]);
+
+  const handleApproveStep = useCallback(
+    async (comment?: string) => {
+      if (!previewLetter) return;
+      await approveCurrentStep(previewLetter.id, comment);
+    },
+    [previewLetter, approveCurrentStep],
+  );
+
+  const handleRejectStep = useCallback(
+    async (reason?: string) => {
+      if (!previewLetter) return;
+      await rejectCurrentStep(previewLetter.id, reason);
+    },
+    [previewLetter, rejectCurrentStep],
+  );
 
   const handleFormChange = useCallback((field: string, value: string | number | undefined) => {
     setForm((prev) => ({ ...prev, [field]: value }));
@@ -225,12 +247,16 @@ export default function LettersPage() {
             {previewLetter && (
               <LetterPreview
                 letter={previewLetter}
+                currentUserId={user?.id}
+                currentUserRole={user?.role}
                 onBack={() => {
                   setPreviewLetter(null);
                   clearCurrentLetter();
                   setActiveTab('generate');
                 }}
-                onApprove={handleApprove}
+                onSubmit={handleSubmit}
+                onApprove={handleApproveStep}
+                onReject={handleRejectStep}
               />
             )}
           </TabsContent>
@@ -526,11 +552,56 @@ function LetterHistory({
 
 interface LetterPreviewProps {
   letter: CompensationLetter;
+  currentUserId?: string;
+  currentUserRole?: string;
   onBack: () => void;
-  onApprove: () => Promise<void>;
+  onSubmit: () => Promise<void>;
+  onApprove: (comment?: string) => Promise<void>;
+  onReject: (reason?: string) => Promise<void>;
 }
 
-function LetterPreview({ letter, onBack, onApprove }: LetterPreviewProps) {
+function LetterPreview({
+  letter,
+  currentUserId,
+  currentUserRole,
+  onBack,
+  onSubmit,
+  onApprove,
+  onReject,
+}: LetterPreviewProps) {
+  const approval = readApproval(letter);
+  const [busy, setBusy] = useState<'submit' | 'approve' | 'reject' | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [showRejectInput, setShowRejectInput] = useState(false);
+  const [rejectReason, setRejectReason] = useState('');
+
+  const isAuthor = currentUserId === letter.userId;
+  const inApprovalFlow =
+    letter.status === 'REVIEW' &&
+    approval &&
+    !approval.rejected &&
+    approval.currentStep < approval.chain.length;
+  const currentStep = inApprovalFlow ? approval!.chain[approval!.currentStep] : null;
+  const canActOnCurrentStep =
+    !!currentStep &&
+    !isAuthor &&
+    (currentUserRole === 'PLATFORM_ADMIN' ||
+      currentUserRole?.toLowerCase() === currentStep.role.toLowerCase());
+
+  const runAction = async (kind: 'submit' | 'approve' | 'reject', op: () => Promise<void>) => {
+    setBusy(kind);
+    setActionError(null);
+    try {
+      await op();
+      setShowRejectInput(false);
+      setRejectReason('');
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Action failed');
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <div className="mx-auto max-w-3xl space-y-4">
       {/* Preview Header */}
@@ -571,14 +642,105 @@ function LetterPreview({ letter, onBack, onApprove }: LetterPreviewProps) {
             <Download className="mr-1 h-4 w-4" />
             Download PDF
           </Button>
-          {letter.status === 'REVIEW' && (
-            <Button size="sm" onClick={() => void onApprove()}>
-              <CheckCircle2 className="mr-1 h-4 w-4" />
-              Approve
+          {letter.status === 'REVIEW' && !approval && (
+            <Button
+              size="sm"
+              disabled={busy !== null || isAuthor === false}
+              onClick={() => void runAction('submit', () => onSubmit())}
+            >
+              {busy === 'submit' ? (
+                <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+              ) : (
+                <Send className="mr-1 h-4 w-4" />
+              )}
+              Submit for approval
             </Button>
+          )}
+          {letter.status === 'REVIEW' && approval?.rejected && isAuthor && (
+            <Button
+              size="sm"
+              disabled={busy !== null}
+              onClick={() => void runAction('submit', () => onSubmit())}
+            >
+              {busy === 'submit' ? (
+                <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+              ) : (
+                <Send className="mr-1 h-4 w-4" />
+              )}
+              Resubmit
+            </Button>
+          )}
+          {inApprovalFlow && canActOnCurrentStep && (
+            <>
+              <Button
+                size="sm"
+                disabled={busy !== null}
+                onClick={() => void runAction('approve', () => onApprove())}
+              >
+                {busy === 'approve' ? (
+                  <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="mr-1 h-4 w-4" />
+                )}
+                Approve step
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy !== null}
+                onClick={() => setShowRejectInput((v) => !v)}
+              >
+                <AlertCircle className="mr-1 h-4 w-4" />
+                Reject…
+              </Button>
+            </>
           )}
         </div>
       </div>
+
+      {actionError && (
+        <Card className="border-destructive">
+          <CardContent className="py-3 text-sm text-destructive">{actionError}</CardContent>
+        </Card>
+      )}
+
+      {showRejectInput && inApprovalFlow && canActOnCurrentStep && (
+        <Card>
+          <CardContent className="space-y-2 pt-4">
+            <Label htmlFor="reject-reason">Rejection reason</Label>
+            <Textarea
+              id="reject-reason"
+              rows={2}
+              placeholder="Explain why you're rejecting this step (recommended)"
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              maxLength={2000}
+            />
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setShowRejectInput(false)}>
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={busy !== null}
+                onClick={() => void runAction('reject', () => onReject(rejectReason || undefined))}
+              >
+                {busy === 'reject' ? (
+                  <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                ) : (
+                  <AlertCircle className="mr-1 h-4 w-4" />
+                )}
+                Confirm reject
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {approval && approval.chain.length > 0 && (
+        <ApprovalChainCard approval={approval} letterApproved={letter.status === 'APPROVED'} />
+      )}
 
       {/* Letter Card */}
       <Card>
@@ -915,5 +1077,89 @@ function BatchPanel({ enqueueBatch, fetchBatchProgress, onJumpToHistory }: Batch
         </Card>
       )}
     </div>
+  );
+}
+
+// ─── Approval Chain Card ──────────────────────────────────
+
+interface ApprovalChainCardProps {
+  approval: ApprovalState;
+  letterApproved: boolean;
+}
+
+function ApprovalChainCard({ approval, letterApproved }: ApprovalChainCardProps) {
+  const decisionByStep = new Map(approval.decisions.map((d) => [d.stepIndex, d]));
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Approval chain</CardTitle>
+        <CardDescription>
+          {approval.rejected
+            ? 'Rejected — author must resubmit to restart the chain.'
+            : letterApproved
+              ? 'All steps approved.'
+              : `Step ${Math.min(approval.currentStep + 1, approval.chain.length)} of ${approval.chain.length}.`}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {approval.chain.map((step, idx) => {
+          const decision = decisionByStep.get(idx);
+          const isCurrent = !approval.rejected && !letterApproved && idx === approval.currentStep;
+          const isDone = !!decision || (letterApproved && idx < approval.chain.length);
+          const isRejected = decision?.decision === 'REJECTED';
+          return (
+            <div
+              key={idx}
+              className={
+                'flex items-start gap-3 rounded-md border p-3 ' +
+                (isCurrent ? 'border-primary bg-primary/5' : '')
+              }
+            >
+              <div
+                className={
+                  'flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-semibold ' +
+                  (isRejected
+                    ? 'bg-destructive/10 text-destructive'
+                    : isDone
+                      ? 'bg-emerald-100 text-emerald-700'
+                      : isCurrent
+                        ? 'bg-primary/10 text-primary'
+                        : 'bg-muted text-muted-foreground')
+                }
+              >
+                {isRejected ? (
+                  <AlertCircle className="h-4 w-4" />
+                ) : isDone ? (
+                  <CheckCircle2 className="h-4 w-4" />
+                ) : (
+                  idx + 1
+                )}
+              </div>
+              <div className="flex-1 space-y-0.5">
+                <div className="text-sm font-medium">{step.label}</div>
+                <div className="text-xs text-muted-foreground">Role: {step.role}</div>
+                {decision && (
+                  <div className="mt-1 text-xs">
+                    <span
+                      className={
+                        decision.decision === 'APPROVED' ? 'text-emerald-600' : 'text-destructive'
+                      }
+                    >
+                      {decision.decision === 'APPROVED' ? 'Approved' : 'Rejected'}
+                    </span>{' '}
+                    by {decision.decidedByName} · {new Date(decision.decidedAt).toLocaleString()}
+                    {decision.comment && (
+                      <div className="mt-1 italic text-muted-foreground">
+                        &ldquo;{decision.comment}&rdquo;
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </CardContent>
+    </Card>
   );
 }

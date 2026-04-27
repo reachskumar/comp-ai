@@ -1,7 +1,19 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Building2, Users, Briefcase, Calendar, Crown, FileSignature, Loader2 } from 'lucide-react';
+import {
+  Building2,
+  Users,
+  Briefcase,
+  Calendar,
+  Crown,
+  FileSignature,
+  Loader2,
+  GitBranch,
+  Plus,
+  Trash2,
+  ArrowDown,
+} from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -40,6 +52,31 @@ function readLetterSignature(settings: Record<string, unknown> | null): LetterSi
   };
 }
 
+interface ApprovalChainStep {
+  role: string;
+  label: string;
+}
+
+function readApprovalChain(settings: Record<string, unknown> | null): ApprovalChainStep[] {
+  if (!settings || typeof settings !== 'object') return [];
+  const raw = (settings as Record<string, unknown>)['letterApprovalChain'];
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(
+      (s): s is { role: string; label: string } =>
+        typeof s === 'object' &&
+        s !== null &&
+        typeof (s as { role?: unknown }).role === 'string' &&
+        typeof (s as { label?: unknown }).label === 'string',
+    )
+    .map((s) => ({ role: s.role, label: s.label }));
+}
+
+function chainsEqual(a: ApprovalChainStep[], b: ApprovalChainStep[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((s, i) => s.role === b[i]!.role && s.label === b[i]!.label);
+}
+
 export default function TenantSettingsPage() {
   const [tenant, setTenant] = useState<TenantInfo | null>(null);
   const [loading, setLoading] = useState(true);
@@ -51,6 +88,9 @@ export default function TenantSettingsPage() {
   const [sigTitle, setSigTitle] = useState('');
   const [sigSaving, setSigSaving] = useState(false);
 
+  const [chain, setChain] = useState<ApprovalChainStep[]>([]);
+  const [chainSaving, setChainSaving] = useState(false);
+
   const fetchTenant = useCallback(async () => {
     try {
       setLoading(true);
@@ -59,6 +99,7 @@ export default function TenantSettingsPage() {
       const sig = readLetterSignature(data?.settings ?? null);
       setSigName(sig.name);
       setSigTitle(sig.title);
+      setChain(readApprovalChain(data?.settings ?? null));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load tenant info');
     } finally {
@@ -94,6 +135,46 @@ export default function TenantSettingsPage() {
       });
     } finally {
       setSigSaving(false);
+    }
+  };
+
+  const persistedChain = readApprovalChain(tenant?.settings ?? null);
+  const chainDirty = !chainsEqual(chain, persistedChain);
+  const chainHasEmptyRow = chain.some((s) => !s.role.trim() || !s.label.trim());
+
+  const updateChainStep = (idx: number, patch: Partial<ApprovalChainStep>) =>
+    setChain((prev) => prev.map((s, i) => (i === idx ? { ...s, ...patch } : s)));
+  const addChainStep = () => setChain((prev) => [...prev, { role: '', label: '' }]);
+  const removeChainStep = (idx: number) => setChain((prev) => prev.filter((_, i) => i !== idx));
+  const moveChainStep = (idx: number, dir: -1 | 1) =>
+    setChain((prev) => {
+      const next = [...prev];
+      const j = idx + dir;
+      if (j < 0 || j >= next.length) return prev;
+      [next[idx], next[j]] = [next[j]!, next[idx]!];
+      return next;
+    });
+
+  const saveChain = async () => {
+    setChainSaving(true);
+    try {
+      await apiClient.updateLetterApprovalChain({ chain });
+      toast({
+        title: chain.length === 0 ? 'Approval chain cleared' : 'Approval chain saved',
+        description:
+          chain.length === 0
+            ? 'New letters will be approved in a single step.'
+            : `Letters will route through ${chain.length} step${chain.length === 1 ? '' : 's'}.`,
+      });
+      await fetchTenant();
+    } catch (err) {
+      toast({
+        title: "Couldn't save chain",
+        description: err instanceof Error ? err.message : 'Unknown error',
+        variant: 'destructive',
+      });
+    } finally {
+      setChainSaving(false);
     }
   };
 
@@ -278,6 +359,130 @@ export default function TenantSettingsPage() {
                     'Save signature'
                   )}
                 </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Letter Approval Chain */}
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
+                  <GitBranch className="h-5 w-5 text-primary" />
+                </div>
+                <div>
+                  <CardTitle>Letter Approval Chain</CardTitle>
+                  <CardDescription>
+                    Ordered list of approval steps. Each letter is routed sequentially through these
+                    roles. Leave empty for single-step approval.
+                  </CardDescription>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {chain.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No chain configured — letters approve in a single step.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {chain.map((step, idx) => (
+                    <div
+                      key={idx}
+                      className="grid grid-cols-[auto_1fr_1fr_auto] items-end gap-2 rounded-md border p-3"
+                    >
+                      <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
+                        {idx + 1}
+                      </div>
+                      <div className="space-y-1">
+                        <Label htmlFor={`chain-role-${idx}`} className="text-xs">
+                          Role (matches user.role)
+                        </Label>
+                        <Input
+                          id={`chain-role-${idx}`}
+                          placeholder="e.g. HRBP, CHRO"
+                          value={step.role}
+                          maxLength={64}
+                          onChange={(e) => updateChainStep(idx, { role: e.target.value })}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label htmlFor={`chain-label-${idx}`} className="text-xs">
+                          Display label
+                        </Label>
+                        <Input
+                          id={`chain-label-${idx}`}
+                          placeholder="e.g. HR Business Partner"
+                          value={step.label}
+                          maxLength={120}
+                          onChange={(e) => updateChainStep(idx, { label: e.target.value })}
+                        />
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => moveChainStep(idx, -1)}
+                          disabled={idx === 0}
+                          aria-label="Move up"
+                        >
+                          <ArrowDown className="h-4 w-4 rotate-180" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => moveChainStep(idx, 1)}
+                          disabled={idx === chain.length - 1}
+                          aria-label="Move down"
+                        >
+                          <ArrowDown className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => removeChainStep(idx)}
+                          aria-label="Remove step"
+                        >
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex items-center justify-between gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={addChainStep}
+                  disabled={chain.length >= 10}
+                >
+                  <Plus className="mr-1 h-4 w-4" />
+                  Add step
+                </Button>
+                <div className="flex items-center gap-2">
+                  {chainDirty && !chainSaving && (
+                    <span className="text-xs text-muted-foreground">Unsaved changes</span>
+                  )}
+                  {chainHasEmptyRow && (
+                    <span className="text-xs text-destructive">Fill all fields to save</span>
+                  )}
+                  <Button
+                    onClick={() => void saveChain()}
+                    disabled={!chainDirty || chainSaving || chainHasEmptyRow}
+                    size="sm"
+                  >
+                    {chainSaving ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Saving…
+                      </>
+                    ) : (
+                      'Save chain'
+                    )}
+                  </Button>
+                </div>
               </div>
             </CardContent>
           </Card>

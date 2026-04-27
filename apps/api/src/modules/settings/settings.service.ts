@@ -3,6 +3,7 @@ import { Prisma } from '@compensation/database';
 import { DatabaseService } from '../../database';
 import type { AuditLogQueryDto } from './dto/audit-log-query.dto';
 import type { UpdateLetterSignatureDto } from './dto/update-letter-signature.dto';
+import type { UpdateLetterApprovalChainDto } from './dto/update-letter-approval-chain.dto';
 
 @Injectable()
 export class SettingsService {
@@ -43,6 +44,44 @@ export class SettingsService {
     );
 
     return { letterSignature: { name: mergedSig['name'] ?? '', title: mergedSig['title'] ?? '' } };
+  }
+
+  /**
+   * Replace the per-tenant letter approval chain. The chain is an ordered list
+   * of { role, label } steps. Empty array clears the chain — letters then go
+   * straight to APPROVED on a single click. Stored as a snapshot on each
+   * letter when submitted, so changing the chain doesn't retroactively rewrite
+   * in-flight approvals.
+   */
+  async updateLetterApprovalChain(tenantId: string, dto: UpdateLetterApprovalChainDto) {
+    const tenant = await this.db.forTenant(tenantId, (tx) =>
+      tx.tenant.findUnique({ where: { id: tenantId }, select: { settings: true } }),
+    );
+    if (!tenant) throw new NotFoundException('Tenant not found');
+
+    const existing =
+      tenant.settings && typeof tenant.settings === 'object' && !Array.isArray(tenant.settings)
+        ? (tenant.settings as Record<string, unknown>)
+        : {};
+
+    const cleanedChain = dto.chain.map((s) => ({
+      role: s.role.trim(),
+      label: s.label.trim(),
+    }));
+
+    const merged: Record<string, unknown> = {
+      ...existing,
+      letterApprovalChain: cleanedChain,
+    };
+
+    await this.db.forTenant(tenantId, (tx) =>
+      tx.tenant.update({
+        where: { id: tenantId },
+        data: { settings: merged as Prisma.InputJsonValue },
+      }),
+    );
+
+    return { chain: cleanedChain };
   }
 
   async getTenantInfo(tenantId: string) {
