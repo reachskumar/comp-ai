@@ -20,7 +20,6 @@ import {
   Play,
   AlertCircle,
   TrendingUp,
-  TrendingDown,
   Users,
   ShieldAlert,
   Loader2,
@@ -48,8 +47,12 @@ import {
   usePayEquityCohorts,
   usePayEquityCohortDetail,
   usePayEquityOutliers,
+  useAnalyzeCohortRootCauseMutation,
+  useExplainOutlierMutation,
   type PayEquityOverviewData,
   type CohortCell,
+  type CohortRootCauseEnvelope,
+  type OutlierExplainEnvelope,
 } from '@/hooks/use-pay-equity';
 
 const ALL_DIMENSIONS = [
@@ -502,7 +505,7 @@ function DiagnosePanel({ latestRunId }: { latestRunId: string | null }) {
           onClose={() => setSelected(null)}
         />
       )}
-      <OutliersCard outliers={outliers.data} loading={outliers.isLoading} />
+      <OutliersCard runId={latestRunId} outliers={outliers.data} loading={outliers.isLoading} />
     </>
   );
 }
@@ -704,6 +707,9 @@ function CohortDetailCard({
   onClose: () => void;
 }) {
   const detail = usePayEquityCohortDetail(runId, dimension, group);
+  const rootCauseMutation = useAnalyzeCohortRootCauseMutation();
+  const { toast } = useToast();
+  const [rootCause, setRootCause] = React.useState<CohortRootCauseEnvelope | null>(null);
 
   if (detail.isLoading) return <Skeleton className="h-56 w-full" />;
   if (!detail.data) return null;
@@ -728,6 +734,27 @@ function CohortDetailCard({
     );
   }
 
+  const handleAnalyze = () => {
+    rootCauseMutation.mutate(
+      { runId, dimension, group },
+      {
+        onSuccess: (data) => {
+          setRootCause(data.envelope);
+          toast({
+            title: 'Root-cause analysis complete',
+            description: `${data.envelope.output.rootCauses.length} factor(s) identified · confidence ${data.envelope.confidence}`,
+          });
+        },
+        onError: (err) =>
+          toast({
+            title: "Couldn't analyze root cause",
+            description: err.message,
+            variant: 'destructive',
+          }),
+      },
+    );
+  };
+
   const t = detail.data.statisticalTest;
   return (
     <Card>
@@ -737,9 +764,24 @@ function CohortDetailCard({
             {dimension} / {group} — {detail.data.rows.length} employees
             {detail.data.truncated && ' (truncated to 50)'}
           </CardTitle>
-          <Button variant="ghost" size="sm" onClick={onClose}>
-            Close
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleAnalyze}
+              disabled={rootCauseMutation.isPending}
+            >
+              {rootCauseMutation.isPending ? (
+                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+              ) : (
+                <Search className="mr-1 h-3 w-3" />
+              )}
+              {rootCause ? 'Re-analyze' : 'Analyze root cause'}
+            </Button>
+            <Button variant="ghost" size="sm" onClick={onClose}>
+              Close
+            </Button>
+          </div>
         </div>
         <CardDescription>
           β={t.coefficient.toFixed(3)} · SE={t.standardError.toFixed(3)} · p={t.pValue.toFixed(4)}
@@ -758,7 +800,49 @@ function CohortDetailCard({
           </span>
         </CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-4">
+        {rootCause && (
+          <div className="space-y-3 rounded-md border border-primary/30 bg-primary/5 p-4">
+            <div className="flex items-baseline justify-between">
+              <h4 className="text-sm font-semibold">Root-cause analysis</h4>
+              <Badge variant="outline" className="text-xs">
+                confidence {rootCause.confidence} · {rootCause.methodology.name}@
+                {rootCause.methodology.version}
+              </Badge>
+            </div>
+            {rootCause.warnings.length > 0 && (
+              <div className="space-y-1">
+                {rootCause.warnings.map((w, i) => (
+                  <p key={i} className="text-xs text-amber-700">
+                    ⚠ {w.message}
+                  </p>
+                ))}
+              </div>
+            )}
+            <ol className="space-y-2">
+              {rootCause.output.rootCauses.map((rc, i) => (
+                <li key={i} className="rounded-md border bg-background p-3 text-sm">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="font-medium">{rc.factor}</span>
+                    <span className="text-xs text-muted-foreground">
+                      contribution {(rc.contribution * 100).toFixed(0)}%
+                    </span>
+                  </div>
+                  <p className="mt-1 text-muted-foreground">{rc.explanation}</p>
+                </li>
+              ))}
+            </ol>
+            {rootCause.output.recommendedNextStep && (
+              <div className="rounded-md border-l-4 border-primary bg-background p-3 text-sm">
+                <span className="font-medium">Next step: </span>
+                {rootCause.output.recommendedNextStep}
+              </div>
+            )}
+            <p className="text-[10px] text-muted-foreground">
+              {rootCause.citations.length} citation(s) · run {rootCause.runId.slice(-8)}
+            </p>
+          </div>
+        )}
         <div className="max-h-72 overflow-auto rounded-md border">
           <table className="w-full text-sm">
             <thead className="sticky top-0 bg-muted text-xs">
@@ -803,14 +887,45 @@ function CohortDetailCard({
 }
 
 function OutliersCard({
+  runId,
   outliers,
   loading,
 }: {
+  runId: string;
   outliers?: ReturnType<typeof usePayEquityOutliers>['data'];
   loading: boolean;
 }) {
+  const explainMutation = useExplainOutlierMutation();
+  const { toast } = useToast();
+  const [explanations, setExplanations] = React.useState<Record<string, OutlierExplainEnvelope>>(
+    {},
+  );
+  const [pendingId, setPendingId] = React.useState<string | null>(null);
+
   if (loading) return <Skeleton className="h-32 w-full" />;
   if (!outliers) return null;
+
+  const handleExplain = (employeeId: string) => {
+    setPendingId(employeeId);
+    explainMutation.mutate(
+      { runId, employeeId },
+      {
+        onSuccess: (data) => {
+          setExplanations((prev) => ({ ...prev, [employeeId]: data.envelope }));
+          setPendingId(null);
+        },
+        onError: (err) => {
+          setPendingId(null);
+          toast({
+            title: "Couldn't explain outlier",
+            description: err.message,
+            variant: 'destructive',
+          });
+        },
+      },
+    );
+  };
+
   return (
     <Card>
       <CardHeader>
@@ -818,42 +933,88 @@ function OutliersCard({
         <CardDescription>
           {outliers.outliers.length === 0
             ? (outliers.reason ?? 'No outliers detected.')
-            : `Lowest compa-ratios within statistically-significant cohorts. AI explainer in Phase 1.5.`}
+            : 'Lowest compa-ratios within statistically-significant cohorts. Click Explain for an AI-narrated take + recommended action.'}
         </CardDescription>
       </CardHeader>
       {outliers.outliers.length > 0 && (
         <CardContent>
           <div className="space-y-2">
-            {outliers.outliers.map((o) => (
-              <div
-                key={o.employeeId}
-                className="flex items-center justify-between rounded-md border p-3 text-sm"
-              >
-                <div className="flex items-center gap-3">
-                  <Badge variant="outline" className="text-xs">
-                    CR {o.compaRatio.toFixed(2)}
-                  </Badge>
-                  <div>
-                    <div className="font-medium">{o.name}</div>
-                    <div className="text-xs text-muted-foreground">
-                      {o.employeeCode} · {o.level} · {o.department}
+            {outliers.outliers.map((o) => {
+              const expl = explanations[o.employeeId];
+              const isPending = pendingId === o.employeeId;
+              return (
+                <div key={o.employeeId} className="rounded-md border p-3 text-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <Badge variant="outline" className="text-xs">
+                        CR {o.compaRatio.toFixed(2)}
+                      </Badge>
+                      <div>
+                        <div className="font-medium">{o.name}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {o.employeeCode} · {o.level} · {o.department}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <div className="text-right">
+                        <div className="font-mono text-xs">
+                          {Intl.NumberFormat('en-US', {
+                            style: 'currency',
+                            currency: o.currency,
+                            maximumFractionDigits: 0,
+                          }).format(o.baseSalary)}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {o.cohort.dimension}/{o.cohort.group} · {o.gapPercent}%
+                        </div>
+                      </div>
+                      {!expl && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleExplain(o.employeeId)}
+                          disabled={isPending}
+                        >
+                          {isPending ? (
+                            <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                          ) : (
+                            <Search className="mr-1 h-3 w-3" />
+                          )}
+                          Explain
+                        </Button>
+                      )}
                     </div>
                   </div>
+                  {expl && (
+                    <div className="mt-3 rounded-md border-l-4 border-primary bg-primary/5 p-3">
+                      <div className="mb-2 flex items-center gap-2 text-xs">
+                        <Badge
+                          variant={
+                            expl.output.severity === 'high'
+                              ? 'destructive'
+                              : expl.output.severity === 'medium'
+                                ? 'default'
+                                : 'outline'
+                          }
+                          className="text-xs"
+                        >
+                          {expl.output.severity}
+                        </Badge>
+                        <span className="text-muted-foreground">
+                          confidence {expl.confidence} · {expl.citations.length} citation(s)
+                        </span>
+                      </div>
+                      <p className="text-xs leading-relaxed">{expl.output.paragraph}</p>
+                      <div className="mt-2 rounded border-l-2 border-primary/40 pl-2 text-xs">
+                        <span className="font-medium">Recommended: </span>
+                        {expl.output.recommendedAction}
+                      </div>
+                    </div>
+                  )}
                 </div>
-                <div className="text-right">
-                  <div className="font-mono text-xs">
-                    {Intl.NumberFormat('en-US', {
-                      style: 'currency',
-                      currency: o.currency,
-                      maximumFractionDigits: 0,
-                    }).format(o.baseSalary)}
-                  </div>
-                  <div className="text-xs text-muted-foreground">
-                    {o.cohort.dimension}/{o.cohort.group} · {o.gapPercent}%
-                  </div>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </CardContent>
       )}

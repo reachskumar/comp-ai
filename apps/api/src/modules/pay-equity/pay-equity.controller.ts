@@ -2,6 +2,8 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   Logger,
   Param,
   Post,
@@ -129,5 +131,48 @@ export class PayEquityController {
       dimension: dimension || undefined,
       limit: limitStr ? parseInt(limitStr, 10) : undefined,
     });
+  }
+
+  // ─── Phase 1.5 — AI agents ──────────────────────────────────────────
+
+  @Post('runs/:id/cohorts/:dimension/:group/root-cause')
+  @ApiOperation({
+    summary:
+      'Run the cohort root-cause AI agent on a cohort cell. Persists a child PayEquityRun row.',
+  })
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('Pay Equity', 'insert')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  async analyzeCohortRootCause(
+    @Param('id') runId: string,
+    @Param('dimension') dimension: string,
+    @Param('group') group: string,
+    @Request() req: AuthRequest,
+  ) {
+    const { tenantId, userId } = req.user;
+    return this.service.analyzeCohortRootCause(
+      tenantId,
+      runId,
+      dimension,
+      decodeURIComponent(group),
+      userId,
+    );
+  }
+
+  @Post('runs/:id/outliers/:employeeId/explain')
+  @ApiOperation({
+    summary:
+      'Run the outlier explainer AI agent for a single employee. Persists a child PayEquityRun row.',
+  })
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('Pay Equity', 'insert')
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  async explainOutlier(
+    @Param('id') runId: string,
+    @Param('employeeId') employeeId: string,
+    @Request() req: AuthRequest,
+  ) {
+    const { tenantId, userId } = req.user;
+    return this.service.explainOutlier(tenantId, runId, employeeId, userId);
   }
 }

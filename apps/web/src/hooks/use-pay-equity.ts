@@ -262,6 +262,76 @@ export function usePayEquityOutliers(runId: string | null, dimension?: string, l
   });
 }
 
+// ─── Phase 1.5: AI agents ───────────────────────────────────────────
+
+export interface CohortRootCauseEnvelope {
+  output: {
+    cohort: { dimension: string; group: string };
+    rootCauses: Array<{ factor: string; contribution: number; explanation: string }>;
+    driverEmployees: string[];
+    recommendedNextStep: string;
+  };
+  citations: PayEquityCitation[];
+  methodology: PayEquityMethodology;
+  confidence: 'high' | 'medium' | 'low';
+  warnings: PayEquityWarning[];
+  runId: string;
+  generatedAt: string;
+}
+
+export interface OutlierExplainEnvelope {
+  output: {
+    employeeId: string;
+    paragraph: string;
+    recommendedAction: string;
+    severity: 'low' | 'medium' | 'high';
+  };
+  citations: PayEquityCitation[];
+  methodology: PayEquityMethodology;
+  confidence: 'high' | 'medium' | 'low';
+  warnings: PayEquityWarning[];
+  runId: string;
+  generatedAt: string;
+}
+
+export function useAnalyzeCohortRootCauseMutation() {
+  const qc = useQueryClient();
+  return useMutation<
+    { runId: string; envelope: CohortRootCauseEnvelope },
+    Error,
+    { runId: string; dimension: string; group: string }
+  >({
+    mutationFn: ({ runId, dimension, group }) =>
+      apiClient.fetch(
+        `/api/v1/pay-equity/runs/${runId}/cohorts/${encodeURIComponent(dimension)}/${encodeURIComponent(
+          group,
+        )}/root-cause`,
+        { method: 'POST', body: JSON.stringify({}) },
+      ),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['pay-equity-runs'] });
+    },
+  });
+}
+
+export function useExplainOutlierMutation() {
+  const qc = useQueryClient();
+  return useMutation<
+    { runId: string; envelope: OutlierExplainEnvelope },
+    Error,
+    { runId: string; employeeId: string }
+  >({
+    mutationFn: ({ runId, employeeId }) =>
+      apiClient.fetch(
+        `/api/v1/pay-equity/runs/${runId}/outliers/${encodeURIComponent(employeeId)}/explain`,
+        { method: 'POST', body: JSON.stringify({}) },
+      ),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['pay-equity-runs'] });
+    },
+  });
+}
+
 export function useRunPayEquityAnalysisMutation() {
   const qc = useQueryClient();
   return useMutation<RunAnalysisResult, Error, RunAnalysisInput>({

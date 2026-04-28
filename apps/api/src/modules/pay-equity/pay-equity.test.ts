@@ -1,5 +1,19 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+// Mock the LLM-invoking functions BEFORE importing the service so the service
+// picks up the stubs. The agents themselves live in @compensation/ai; we stub
+// only the invokers so unit tests don't make network calls.
+vi.mock('@compensation/ai', async () => {
+  const actual = await vi.importActual<typeof import('@compensation/ai')>('@compensation/ai');
+  return {
+    ...actual,
+    invokeCohortRootCauseGraph: vi.fn(),
+    invokeOutlierExplainerGraph: vi.fn(),
+  };
+});
+
 import { PayEquityV2Service } from './pay-equity.service';
+import { invokeCohortRootCauseGraph, invokeOutlierExplainerGraph } from '@compensation/ai';
 import type { PayEquityService as LegacyAnalyzer } from '../analytics/pay-equity.service';
 import { createMockDatabaseService, TEST_TENANT_ID, TEST_USER_ID } from '../../test/setup';
 
@@ -644,5 +658,364 @@ describe('PayEquityV2Service.getOutliers', () => {
     expect(result.outliers[0]!.name).toBe('Alex D');
     expect(result.outliers[0]!.cohort.dimension).toBe('gender');
     expect(result.outliers[0]!.explanation).toMatch(/0\.85/);
+  });
+});
+
+// ─── Phase 1.5: AI agents (LLM mocked) ─────────────────────────────────
+
+const mockedCohortAgent = vi.mocked(invokeCohortRootCauseGraph);
+const mockedOutlierAgent = vi.mocked(invokeOutlierExplainerGraph);
+
+describe('PayEquityV2Service.analyzeCohortRootCause', () => {
+  let service: PayEquityV2Service;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createService());
+    mockedCohortAgent.mockReset();
+  });
+
+  function parentRunFixture() {
+    return {
+      id: 'parent-run',
+      tenantId: TEST_TENANT_ID,
+      status: 'COMPLETE',
+      methodologyName: 'edge-multivariate',
+      methodologyVersion: '2026.04',
+      controls: ['job_level', 'tenure'],
+      result: buildEnvelope(
+        [
+          {
+            dimension: 'gender',
+            group: 'F',
+            referenceGroup: 'M',
+            gapPercent: -3.2,
+            pValue: 0.04,
+            sampleSize: 100,
+            coefficient: -0.032,
+            significance: 'significant',
+          },
+          {
+            dimension: 'gender',
+            group: 'NB',
+            referenceGroup: 'M',
+            gapPercent: -1,
+            pValue: 0.5,
+            sampleSize: 8,
+            coefficient: -0.01,
+            significance: 'not_significant',
+          },
+        ],
+        500,
+      ),
+    };
+  }
+
+  function stubAgentResponse() {
+    mockedCohortAgent.mockResolvedValue({
+      output: {
+        cohort: { dimension: 'gender', group: 'F' },
+        rootCauses: [
+          { factor: 'level concentration', contribution: 0.6, explanation: 'over-indexed at IC2' },
+          { factor: 'tenure imbalance', contribution: 0.4, explanation: 'newer on average' },
+        ],
+        driverEmployees: ['emp-1'],
+        recommendedNextStep: 'Run a level-controlled analysis on IC2 cohort',
+      },
+      citations: [{ type: 'regression_coefficient', ref: 'gender.F.vs.M', excerpt: 'β=-0.032' }],
+      methodology: {
+        name: 'edge-multivariate',
+        version: '2026.04',
+        controls: ['job_level', 'tenure'],
+        dependentVariable: 'log_salary',
+        sampleSize: 500,
+        confidenceInterval: 0.95,
+      },
+      confidence: 'high',
+      warnings: [],
+      runId: '',
+      generatedAt: new Date().toISOString(),
+    });
+  }
+
+  it('persists a child PayEquityRun (PENDING→COMPLETE) with agentType=cohort_root_cause', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue(parentRunFixture());
+    db.client.employee.findMany.mockResolvedValue([
+      {
+        id: 'emp-1',
+        employeeCode: 'E1',
+        firstName: 'A',
+        lastName: 'D',
+        level: 'IC2',
+        department: 'Eng',
+        location: 'US',
+        hireDate: new Date('2024-01-01'),
+        baseSalary: 100000,
+        currency: 'USD',
+        compaRatio: 0.9,
+      },
+    ]);
+    db.client.payEquityRun.create.mockResolvedValue({ id: 'child-1' });
+    db.client.payEquityRun.update.mockResolvedValue({ id: 'child-1' });
+    db.client.auditLog.create.mockResolvedValue({});
+    stubAgentResponse();
+
+    const result = await service.analyzeCohortRootCause(
+      TEST_TENANT_ID,
+      'parent-run',
+      'gender',
+      'F',
+      TEST_USER_ID,
+    );
+
+    expect(mockedCohortAgent).toHaveBeenCalledTimes(1);
+    const agentArgs = mockedCohortAgent.mock.calls[0]![0];
+    // Service computed the deterministic context for the agent.
+    expect(agentArgs.cohort.dimension).toBe('gender');
+    expect(agentArgs.cohort.group).toBe('F');
+    expect(agentArgs.distributions.byLevel.length).toBeGreaterThan(0);
+    expect(agentArgs.siblingCohorts.map((s) => s.group)).toEqual(['NB']);
+
+    // Child run was created PENDING and updated to COMPLETE.
+    const createArgs = db.client.payEquityRun.create.mock.calls[0]![0];
+    expect(createArgs.data.agentType).toBe('cohort_root_cause');
+    expect(createArgs.data.status).toBe('PENDING');
+    const updateArgs = db.client.payEquityRun.update.mock.calls[0]![0];
+    expect(updateArgs.data.status).toBe('COMPLETE');
+
+    // Envelope returned with runId stamped onto it.
+    expect(result.runId).toBe('child-1');
+    expect(result.envelope.runId).toBe('child-1');
+    expect(result.envelope.output.rootCauses).toHaveLength(2);
+
+    // AuditLog row written with the right action.
+    const auditArgs = db.client.auditLog.create.mock.calls[0]![0];
+    expect(auditArgs.data.action).toBe('PAY_EQUITY_COHORT_ROOT_CAUSE');
+  });
+
+  it('refuses cohorts with n<5 (k-anonymity gate)', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue({
+      ...parentRunFixture(),
+      result: buildEnvelope(
+        [
+          {
+            dimension: 'gender',
+            group: 'NB',
+            referenceGroup: 'M',
+            gapPercent: 0,
+            pValue: 1,
+            sampleSize: 3,
+            coefficient: 0,
+            significance: 'not_significant',
+          },
+        ],
+        100,
+      ),
+    });
+
+    await expect(
+      service.analyzeCohortRootCause(TEST_TENANT_ID, 'parent-run', 'gender', 'NB', TEST_USER_ID),
+    ).rejects.toThrow(/k=5/);
+    expect(mockedCohortAgent).not.toHaveBeenCalled();
+  });
+
+  it('marks the child run FAILED when the agent throws', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue(parentRunFixture());
+    db.client.employee.findMany.mockResolvedValue([]);
+    db.client.payEquityRun.create.mockResolvedValue({ id: 'child-2' });
+    db.client.payEquityRun.update.mockResolvedValue({ id: 'child-2' });
+    mockedCohortAgent.mockRejectedValue(new Error('LLM down'));
+
+    await expect(
+      service.analyzeCohortRootCause(TEST_TENANT_ID, 'parent-run', 'gender', 'F', TEST_USER_ID),
+    ).rejects.toThrow(/LLM down/);
+
+    const failArgs = db.client.payEquityRun.update.mock.calls[0]![0];
+    expect(failArgs.data.status).toBe('FAILED');
+    expect(failArgs.data.errorMsg).toMatch(/LLM down/);
+  });
+
+  it('throws NotFound when the cohort cell is not in the parent run', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue(parentRunFixture());
+    await expect(
+      service.analyzeCohortRootCause(
+        TEST_TENANT_ID,
+        'parent-run',
+        'gender',
+        'NotInRun',
+        TEST_USER_ID,
+      ),
+    ).rejects.toThrow(/not in run/);
+  });
+});
+
+describe('PayEquityV2Service.explainOutlier', () => {
+  let service: PayEquityV2Service;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createService());
+    mockedOutlierAgent.mockReset();
+  });
+
+  function parentRun() {
+    return {
+      id: 'parent-run',
+      tenantId: TEST_TENANT_ID,
+      status: 'COMPLETE',
+      methodologyName: 'edge-multivariate',
+      methodologyVersion: '2026.04',
+      controls: ['job_level'],
+      result: buildEnvelope(
+        [
+          {
+            dimension: 'gender',
+            group: 'F',
+            referenceGroup: 'M',
+            gapPercent: -5,
+            pValue: 0.01,
+            sampleSize: 100,
+            significance: 'significant',
+          },
+        ],
+        500,
+      ),
+    };
+  }
+
+  function stubExplainer(severity: 'low' | 'medium' | 'high' = 'medium') {
+    mockedOutlierAgent.mockResolvedValue({
+      output: {
+        employeeId: 'emp-1',
+        paragraph: 'This person sits below their cohort median.',
+        recommendedAction: 'Adjust salary by 5%.',
+        severity,
+      },
+      citations: [{ type: 'employee_row', ref: 'emp-1' }],
+      methodology: {
+        name: 'edge-multivariate',
+        version: '2026.04',
+        controls: ['job_level'],
+        dependentVariable: 'log_salary',
+        sampleSize: 500,
+        confidenceInterval: 0.95,
+      },
+      confidence: 'high',
+      warnings: [],
+      runId: '',
+      generatedAt: new Date().toISOString(),
+    });
+  }
+
+  it('persists an explainer run with agentType=outlier_explainer + audit log', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue(parentRun());
+    db.client.employee.findFirst.mockResolvedValue({
+      id: 'emp-1',
+      employeeCode: 'E1',
+      firstName: 'A',
+      lastName: 'D',
+      level: 'IC2',
+      department: 'Eng',
+      location: 'US',
+      hireDate: new Date('2024-01-01'),
+      baseSalary: 90000,
+      currency: 'USD',
+      compaRatio: 0.85,
+      performanceRating: 4,
+      gender: 'F',
+    });
+    db.client.employee.findMany.mockResolvedValue([
+      { baseSalary: 100000, compaRatio: 0.95 },
+      { baseSalary: 105000, compaRatio: 1 },
+    ]);
+    db.client.payEquityRun.create.mockResolvedValue({ id: 'child-3' });
+    db.client.payEquityRun.update.mockResolvedValue({ id: 'child-3' });
+    db.client.auditLog.create.mockResolvedValue({});
+    stubExplainer('high');
+
+    const result = await service.explainOutlier(
+      TEST_TENANT_ID,
+      'parent-run',
+      'emp-1',
+      TEST_USER_ID,
+    );
+
+    expect(mockedOutlierAgent).toHaveBeenCalledTimes(1);
+    const agentArgs = mockedOutlierAgent.mock.calls[0]![0];
+    expect(agentArgs.employee.id).toBe('emp-1');
+    expect(agentArgs.cohort.dimension).toBe('gender');
+    expect(agentArgs.peerContext.peerCount).toBe(2);
+    expect(agentArgs.peerContext.peerMeanSalary).toBe(102500);
+
+    const createArgs = db.client.payEquityRun.create.mock.calls[0]![0];
+    expect(createArgs.data.agentType).toBe('outlier_explainer');
+
+    const auditArgs = db.client.auditLog.create.mock.calls[0]![0];
+    expect(auditArgs.data.action).toBe('PAY_EQUITY_OUTLIER_EXPLAIN');
+    expect(auditArgs.data.changes.severity).toBe('high');
+
+    expect(result.envelope.output.severity).toBe('high');
+  });
+
+  it('refuses when the employee is not in any significant cohort in the run', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue({
+      ...parentRun(),
+      result: buildEnvelope(
+        [
+          {
+            dimension: 'gender',
+            group: 'F',
+            gapPercent: -1,
+            pValue: 0.5,
+            sampleSize: 100,
+            significance: 'not_significant',
+          },
+        ],
+        500,
+      ),
+    });
+    db.client.employee.findFirst.mockResolvedValue({
+      id: 'emp-1',
+      employeeCode: 'E1',
+      firstName: 'A',
+      lastName: 'D',
+      level: 'IC2',
+      department: 'Eng',
+      location: 'US',
+      hireDate: new Date(),
+      baseSalary: 90000,
+      currency: 'USD',
+      compaRatio: 0.85,
+      performanceRating: 3,
+      gender: 'F',
+    });
+
+    await expect(
+      service.explainOutlier(TEST_TENANT_ID, 'parent-run', 'emp-1', TEST_USER_ID),
+    ).rejects.toThrow(/not in any statistically-significant cohort/);
+    expect(mockedOutlierAgent).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the employee has no compa-ratio', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue(parentRun());
+    db.client.employee.findFirst.mockResolvedValue({
+      id: 'emp-1',
+      employeeCode: 'E1',
+      firstName: 'A',
+      lastName: 'D',
+      level: 'IC2',
+      department: 'Eng',
+      location: 'US',
+      hireDate: new Date(),
+      baseSalary: 90000,
+      currency: 'USD',
+      compaRatio: null,
+      performanceRating: 3,
+      gender: 'F',
+    });
+
+    await expect(
+      service.explainOutlier(TEST_TENANT_ID, 'parent-run', 'emp-1', TEST_USER_ID),
+    ).rejects.toThrow(/compa-ratio/);
   });
 });

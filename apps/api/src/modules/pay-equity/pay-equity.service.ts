@@ -4,6 +4,8 @@ import {
   buildResult,
   checkKAnonymity,
   checkSampleSize,
+  invokeCohortRootCauseGraph,
+  invokeOutlierExplainerGraph,
   type AgentWarning,
   type PayEquityAgentResult,
   type PayEquityMethodology,
@@ -12,6 +14,24 @@ import { DatabaseService } from '../../database';
 import { PayEquityService as LegacyAnalyzer } from '../analytics/pay-equity.service';
 import type { RunPayEquityAnalysisDto } from './dto/run-analysis.dto';
 import type { ListPayEquityRunsDto } from './dto/list-runs.dto';
+
+/**
+ * Phase 1: cohort drill-down row shape. Module-scope so the suppressed
+ * branch can use the same row type instead of collapsing to unknown[].
+ */
+interface CohortDetailRow {
+  id: string;
+  employeeCode: string;
+  name: string;
+  department: string;
+  level: string;
+  location: string | null;
+  hireDate: Date;
+  baseSalary: number;
+  currency: string;
+  performanceRating: number | null;
+  compaRatio: number | null;
+}
 
 /**
  * Phase 1: outlier row shape returned by getOutliers.
@@ -525,6 +545,7 @@ export class PayEquityV2Service {
 
     // k-anonymity gate: refuse to return individuals if cohort < 5.
     if (stat.sampleSize < 5) {
+      const empty: CohortDetailRow[] = [];
       return {
         runId,
         dimension,
@@ -532,7 +553,7 @@ export class PayEquityV2Service {
         suppressed: true,
         suppressionReason: `Cohort has n=${stat.sampleSize}; below k=5 threshold`,
         statisticalTest: stat,
-        rows: [] as Array<unknown>,
+        rows: empty,
         truncated: false,
       };
     }
@@ -565,7 +586,7 @@ export class PayEquityV2Service {
       group,
       suppressed: false,
       statisticalTest: stat,
-      rows: rows.map((r) => ({
+      rows: rows.map<CohortDetailRow>((r) => ({
         id: r.id,
         employeeCode: r.employeeCode,
         name: `${r.firstName} ${r.lastName}`.trim(),
@@ -714,4 +735,482 @@ export class PayEquityV2Service {
       total: allOutliers.length,
     };
   }
+
+  // ─── Phase 1.5: Cohort root-cause AI ───────────────────────────────────
+
+  /**
+   * Invoke the cohort root-cause LLM agent for a single cohort cell. The
+   * service is responsible for computing the deterministic context the agent
+   * needs (within-cohort distributions by level/tenure/department, sibling
+   * cohorts, top driver candidates) so the agent never has to query the DB
+   * itself and never fabricates numbers.
+   *
+   * Persists as a separate PayEquityRun row with agentType='cohort_root_cause'
+   * so each invocation is auditable + the eval harness has a stable target.
+   */
+  async analyzeCohortRootCause(
+    tenantId: string,
+    parentRunId: string,
+    dimension: string,
+    group: string,
+    userId: string,
+  ) {
+    const parentRun = await this.getRun(tenantId, parentRunId);
+    if (parentRun.status !== 'COMPLETE') {
+      throw new BadRequestException(`Parent run ${parentRunId} is ${parentRun.status}`);
+    }
+
+    const env = parentRun.result as unknown as PayEquityAgentResult<{
+      regressionResults: Array<{
+        dimension: string;
+        group: string;
+        referenceGroup: string;
+        gapPercent: number;
+        pValue: number;
+        sampleSize: number;
+        coefficient: number;
+        significance: string;
+      }>;
+    }>;
+
+    const cell = env.output.regressionResults.find(
+      (r) => r.dimension === dimension && r.group === group,
+    );
+    if (!cell) {
+      throw new NotFoundException(`Cohort ${dimension}/${group} not in run ${parentRunId}`);
+    }
+    if (cell.sampleSize < 5) {
+      throw new BadRequestException(
+        `Cohort ${dimension}/${group} has n=${cell.sampleSize}; below k=5 threshold`,
+      );
+    }
+
+    const siblingCohorts = env.output.regressionResults
+      .filter((r) => r.dimension === dimension && r.group !== group)
+      .map((r) => ({
+        group: r.group,
+        gapPercent: r.gapPercent,
+        pValue: r.pValue,
+        sampleSize: r.sampleSize,
+      }));
+
+    // Pre-create the child run row so we have a runId even if the LLM fails.
+    const childRun = await this.db.forTenant(tenantId, (tx) =>
+      tx.payEquityRun.create({
+        data: {
+          tenantId,
+          userId,
+          agentType: 'cohort_root_cause',
+          methodologyName: parentRun.methodologyName,
+          methodologyVersion: parentRun.methodologyVersion,
+          controls: parentRun.controls,
+          status: 'PENDING',
+          summary: `Root-cause analysis for ${dimension}/${group} (parent run ${parentRunId})`,
+          sampleSize: cell.sampleSize,
+        },
+      }),
+    );
+
+    try {
+      // ─── Compute deterministic distributions for the agent ──
+      const cohortWhere = this.buildCohortWhere(tenantId, dimension, group);
+      const employees = await this.db.forTenant(tenantId, (tx) =>
+        tx.employee.findMany({
+          where: cohortWhere,
+          select: {
+            id: true,
+            employeeCode: true,
+            firstName: true,
+            lastName: true,
+            level: true,
+            department: true,
+            location: true,
+            hireDate: true,
+            baseSalary: true,
+            currency: true,
+            compaRatio: true,
+          },
+        }),
+      );
+
+      const distributions = computeDistributions(employees);
+      const driverCandidates = employees
+        .filter((e) => e.compaRatio !== null && Number(e.compaRatio) < 0.95)
+        .sort((a, b) => Number(a.compaRatio) - Number(b.compaRatio))
+        .slice(0, 8)
+        .map((e) => ({
+          id: e.id,
+          employeeCode: e.employeeCode,
+          name: `${e.firstName} ${e.lastName}`.trim(),
+          level: e.level,
+          department: e.department,
+          baseSalary: Number(e.baseSalary),
+          compaRatio: e.compaRatio !== null ? Number(e.compaRatio) : null,
+        }));
+
+      const envelope = await invokeCohortRootCauseGraph({
+        tenantId,
+        userId,
+        cohort: {
+          dimension,
+          group,
+          referenceGroup: cell.referenceGroup,
+          gapPercent: cell.gapPercent,
+          pValue: cell.pValue,
+          sampleSize: cell.sampleSize,
+          coefficient: cell.coefficient,
+        },
+        distributions,
+        siblingCohorts,
+        driverCandidates,
+        methodology: {
+          name: parentRun.methodologyName,
+          version: parentRun.methodologyVersion,
+          controls: parentRun.controls,
+          sampleSize: env.methodology.sampleSize,
+        },
+      });
+
+      // Stamp the child runId into the envelope before persisting.
+      const finalEnvelope = { ...envelope, runId: childRun.id };
+
+      await this.db.forTenant(tenantId, async (tx) => {
+        await tx.payEquityRun.update({
+          where: { id: childRun.id },
+          data: {
+            status: 'COMPLETE',
+            result: finalEnvelope as unknown as Prisma.InputJsonValue,
+            summary: `${finalEnvelope.output.rootCauses.length} root cause(s) for ${dimension}/${group}`,
+          },
+        });
+        await tx.auditLog.create({
+          data: {
+            tenantId,
+            userId,
+            action: 'PAY_EQUITY_COHORT_ROOT_CAUSE',
+            entityType: 'PayEquityRun',
+            entityId: childRun.id,
+            changes: {
+              parentRunId,
+              dimension,
+              group,
+              rootCauseCount: finalEnvelope.output.rootCauses.length,
+              methodologyVersion: parentRun.methodologyVersion,
+            } as unknown as Prisma.InputJsonValue,
+          },
+        });
+      });
+
+      this.logger.log(
+        `Cohort root-cause: parent=${parentRunId} child=${childRun.id} ${dimension}/${group}`,
+      );
+      return { runId: childRun.id, envelope: finalEnvelope };
+    } catch (err) {
+      this.logger.error(`Cohort root-cause failed for ${childRun.id}`, err);
+      await this.db.forTenant(tenantId, (tx) =>
+        tx.payEquityRun.update({
+          where: { id: childRun.id },
+          data: {
+            status: 'FAILED',
+            errorMsg: err instanceof Error ? err.message : 'Unknown error',
+          },
+        }),
+      );
+      throw err;
+    }
+  }
+
+  // ─── Phase 1.5: Outlier AI explainer ───────────────────────────────────
+
+  /**
+   * Generate a one-paragraph "why is this person here" explanation for a
+   * single outlier employee in a cohort. Idempotent — re-invoking creates a
+   * new PayEquityRun row but doesn't change anything else.
+   */
+  async explainOutlier(tenantId: string, parentRunId: string, employeeId: string, userId: string) {
+    const parentRun = await this.getRun(tenantId, parentRunId);
+    if (parentRun.status !== 'COMPLETE') {
+      throw new BadRequestException(`Parent run ${parentRunId} is ${parentRun.status}`);
+    }
+
+    const env = parentRun.result as unknown as PayEquityAgentResult<{
+      regressionResults: Array<{
+        dimension: string;
+        group: string;
+        referenceGroup: string;
+        gapPercent: number;
+        pValue: number;
+        sampleSize: number;
+        significance: string;
+      }>;
+    }>;
+
+    const employee = await this.db.forTenant(tenantId, (tx) =>
+      tx.employee.findFirst({
+        where: { id: employeeId, tenantId },
+        select: {
+          id: true,
+          employeeCode: true,
+          firstName: true,
+          lastName: true,
+          level: true,
+          department: true,
+          location: true,
+          hireDate: true,
+          baseSalary: true,
+          currency: true,
+          compaRatio: true,
+          performanceRating: true,
+          gender: true,
+        },
+      }),
+    );
+    if (!employee) {
+      throw new NotFoundException(`Employee ${employeeId} not found`);
+    }
+    if (employee.compaRatio === null) {
+      throw new BadRequestException(
+        `Employee ${employeeId} has no compa-ratio — cannot identify as an outlier`,
+      );
+    }
+
+    // Find a significant cohort this employee belongs to.
+    const cohort = env.output.regressionResults.find(
+      (r) =>
+        r.significance === 'significant' &&
+        this.employeeMatchesCohort(employee, r.dimension, r.group),
+    );
+    if (!cohort) {
+      throw new BadRequestException(
+        `Employee ${employeeId} is not in any statistically-significant cohort in run ${parentRunId}`,
+      );
+    }
+
+    // Peer context: same level + department.
+    const peers = await this.db.forTenant(tenantId, (tx) =>
+      tx.employee.findMany({
+        where: {
+          tenantId,
+          level: employee.level,
+          department: employee.department,
+          baseSalary: { gt: 0 },
+        },
+        select: { baseSalary: true, compaRatio: true },
+      }),
+    );
+    const peerMeanSalary =
+      peers.length > 0 ? peers.reduce((s, p) => s + Number(p.baseSalary), 0) / peers.length : 0;
+    const peerCRs = peers
+      .map((p) => p.compaRatio)
+      .filter((c): c is NonNullable<typeof c> => c !== null);
+    const peerMeanCompaRatio =
+      peerCRs.length > 0 ? peerCRs.reduce((s, c) => s + Number(c), 0) / peerCRs.length : null;
+
+    const childRun = await this.db.forTenant(tenantId, (tx) =>
+      tx.payEquityRun.create({
+        data: {
+          tenantId,
+          userId,
+          agentType: 'outlier_explainer',
+          methodologyName: parentRun.methodologyName,
+          methodologyVersion: parentRun.methodologyVersion,
+          controls: parentRun.controls,
+          status: 'PENDING',
+          summary: `Outlier explainer for ${employee.employeeCode}`,
+          sampleSize: 1,
+        },
+      }),
+    );
+
+    try {
+      const envelope = await invokeOutlierExplainerGraph({
+        tenantId,
+        userId,
+        employee: {
+          id: employee.id,
+          employeeCode: employee.employeeCode,
+          name: `${employee.firstName} ${employee.lastName}`.trim(),
+          level: employee.level,
+          department: employee.department,
+          location: employee.location,
+          hireDate: employee.hireDate.toISOString(),
+          baseSalary: Number(employee.baseSalary),
+          currency: employee.currency,
+          compaRatio: Number(employee.compaRatio),
+          performanceRating:
+            employee.performanceRating !== null ? Number(employee.performanceRating) : null,
+        },
+        cohort: {
+          dimension: cohort.dimension,
+          group: cohort.group,
+          referenceGroup: cohort.referenceGroup,
+          gapPercent: cohort.gapPercent,
+          pValue: cohort.pValue,
+          sampleSize: cohort.sampleSize,
+        },
+        peerContext: {
+          peerCount: peers.length,
+          peerMeanSalary,
+          peerMeanCompaRatio,
+        },
+        methodology: {
+          name: parentRun.methodologyName,
+          version: parentRun.methodologyVersion,
+          controls: parentRun.controls,
+          sampleSize: env.methodology.sampleSize,
+        },
+      });
+
+      const finalEnvelope = { ...envelope, runId: childRun.id };
+
+      await this.db.forTenant(tenantId, async (tx) => {
+        await tx.payEquityRun.update({
+          where: { id: childRun.id },
+          data: {
+            status: 'COMPLETE',
+            result: finalEnvelope as unknown as Prisma.InputJsonValue,
+            summary: `${employee.employeeCode}: ${finalEnvelope.output.severity} severity`,
+          },
+        });
+        await tx.auditLog.create({
+          data: {
+            tenantId,
+            userId,
+            action: 'PAY_EQUITY_OUTLIER_EXPLAIN',
+            entityType: 'PayEquityRun',
+            entityId: childRun.id,
+            changes: {
+              parentRunId,
+              employeeId,
+              cohort: { dimension: cohort.dimension, group: cohort.group },
+              severity: finalEnvelope.output.severity,
+            } as unknown as Prisma.InputJsonValue,
+          },
+        });
+      });
+
+      this.logger.log(
+        `Outlier explainer: parent=${parentRunId} child=${childRun.id} emp=${employee.employeeCode}`,
+      );
+      return { runId: childRun.id, envelope: finalEnvelope };
+    } catch (err) {
+      this.logger.error(`Outlier explainer failed for ${childRun.id}`, err);
+      await this.db.forTenant(tenantId, (tx) =>
+        tx.payEquityRun.update({
+          where: { id: childRun.id },
+          data: {
+            status: 'FAILED',
+            errorMsg: err instanceof Error ? err.message : 'Unknown error',
+          },
+        }),
+      );
+      throw err;
+    }
+  }
+
+  /**
+   * Lightweight membership check used by explainOutlier to find which
+   * significant cohort an employee belongs to.
+   */
+  private employeeMatchesCohort(
+    employee: {
+      level: string;
+      department: string;
+      location: string | null;
+      gender: string | null;
+    },
+    dimension: string,
+    group: string,
+  ): boolean {
+    switch (dimension.toLowerCase()) {
+      case 'gender':
+        return employee.gender === group;
+      case 'level':
+        return employee.level === group;
+      case 'department':
+        return employee.department === group;
+      case 'location':
+        return employee.location === group;
+      default:
+        return false;
+    }
+  }
+}
+
+// ─── Phase 1.5 helper: deterministic distribution computation ──────────
+
+/**
+ * Compute by-level / by-tenure / by-department distributions for a list
+ * of employees. The cohort root-cause agent receives these instead of raw
+ * rows so the LLM has structured context to reason from.
+ */
+function computeDistributions(
+  employees: Array<{
+    level: string;
+    department: string;
+    hireDate: Date;
+    baseSalary: number | { toString(): string };
+    compaRatio: number | { toString(): string } | null;
+  }>,
+) {
+  const TENURE_BUCKETS = ['0-1y', '1-3y', '3-5y', '5-10y', '10+y'] as const;
+  const tenureOf = (hireDate: Date) => {
+    const years = (Date.now() - hireDate.getTime()) / (365.25 * 24 * 60 * 60 * 1000);
+    if (years < 1) return TENURE_BUCKETS[0];
+    if (years < 3) return TENURE_BUCKETS[1];
+    if (years < 5) return TENURE_BUCKETS[2];
+    if (years < 10) return TENURE_BUCKETS[3];
+    return TENURE_BUCKETS[4];
+  };
+
+  const groupBy = <K extends string | number>(
+    rows: typeof employees,
+    keyFn: (e: (typeof employees)[number]) => K,
+  ) => {
+    const buckets = new Map<K, typeof employees>();
+    for (const e of rows) {
+      const k = keyFn(e);
+      const arr = buckets.get(k) ?? [];
+      arr.push(e);
+      buckets.set(k, arr);
+    }
+    return buckets;
+  };
+
+  const meanSalary = (rows: typeof employees) =>
+    rows.length === 0 ? 0 : rows.reduce((s, e) => s + Number(e.baseSalary), 0) / rows.length;
+  const meanCR = (rows: typeof employees): number | null => {
+    const crs: number[] = rows
+      .map((e) => (e.compaRatio === null ? null : Number(e.compaRatio)))
+      .filter((n): n is number => n !== null);
+    if (crs.length === 0) return null;
+    return crs.reduce((s: number, n: number) => s + n, 0) / crs.length;
+  };
+
+  const byLevel = [...groupBy(employees, (e) => e.level).entries()]
+    .map(([level, rows]) => ({
+      level,
+      n: rows.length,
+      meanSalary: meanSalary(rows),
+      meanCompaRatio: meanCR(rows),
+    }))
+    .sort((a, b) => b.n - a.n);
+
+  const byTenureBucket = [...groupBy(employees, (e) => tenureOf(e.hireDate)).entries()]
+    .map(([bucket, rows]) => ({
+      bucket: bucket as string,
+      n: rows.length,
+      meanSalary: meanSalary(rows),
+    }))
+    .sort((a, b) => a.bucket.localeCompare(b.bucket));
+
+  const byDepartment = [...groupBy(employees, (e) => e.department).entries()]
+    .map(([department, rows]) => ({
+      department,
+      n: rows.length,
+      meanSalary: meanSalary(rows),
+    }))
+    .sort((a, b) => b.n - a.n);
+
+  return { byLevel, byTenureBucket, byDepartment };
 }

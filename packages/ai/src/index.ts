@@ -176,13 +176,24 @@ export {
   type LetterCompData,
 } from './graphs/letter-generator-graph.js';
 
-// Pay Equity graph
+// Pay Equity graphs
 export {
   buildPayEquityGraph,
   invokePayEquityGraph,
   type PayEquityAnalysisInput,
   type PayEquityAnalysisOutput,
 } from './graphs/pay-equity-graph.js';
+export {
+  buildCohortRootCauseGraph,
+  invokeCohortRootCauseGraph,
+  type CohortAnalysisInput,
+} from './graphs/pay-equity-cohort-graph.js';
+export {
+  buildOutlierExplainerGraph,
+  invokeOutlierExplainerGraph,
+  type OutlierExplainInput,
+  type OutlierExplainOutput,
+} from './graphs/pay-equity-outlier-graph.js';
 
 // Attrition Predictor tools
 export { createAttritionTools, type AttritionDbAdapter } from './tools/attrition-tools.js';
