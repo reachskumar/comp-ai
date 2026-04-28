@@ -1,0 +1,99 @@
+{
+  "name": "narrative-001-typical",
+  "description": "500-employee tenant with a 3.2% adjusted gender gap (statistically significant, within EDGE threshold)",
+  "input": {
+    "tenantId": "tenant-eval-001",
+    "userId": "user-eval-001",
+    "analysisData": {
+      "dimensions": ["gender"],
+      "regressionResults": [
+        {
+          "dimension": "gender",
+          "group": "Female",
+          "coefficient": -0.032,
+          "standardError": 0.011,
+          "tStatistic": -2.91,
+          "pValue": 0.004,
+          "confidenceInterval": [-0.054, -0.01],
+          "sampleSize": 500
+        }
+      ],
+      "compaRatios": [
+        {
+          "dimension": "gender",
+          "group": "Female",
+          "avgCompaRatio": 0.94,
+          "medianCompaRatio": 0.95,
+          "count": 230
+        },
+        {
+          "dimension": "gender",
+          "group": "Male",
+          "avgCompaRatio": 0.97,
+          "medianCompaRatio": 0.98,
+          "count": 270
+        }
+      ],
+      "overallStats": {
+        "totalEmployees": 500,
+        "rSquared": 0.81,
+        "adjustedRSquared": 0.8,
+        "fStatistic": 142.3,
+        "controlVariables": ["job_level", "tenure", "performance", "location", "department"]
+      },
+      "remediationEstimate": {
+        "totalCost": 487000,
+        "affectedEmployees": 47,
+        "avgAdjustment": 10362
+      }
+    }
+  },
+  "expectedOutputShape": {
+    "executiveSummary": { "minLength": 200, "shouldContain": ["3.2", "gender"] },
+    "edgeComplianceStatus": "pass",
+    "keyFindings": { "minCount": 3 },
+    "riskAssessment": { "minCount": 1 },
+    "remediationRecommendations": { "minCount": 1 }
+  },
+  "expectedCitationCount": { "min": 1 },
+  "expectedMethodology": {
+    "name": "edge-multivariate",
+    "version": "2026.04",
+    "dependentVariable": "log_salary"
+  },
+  "expectedConfidence": "high",
+  "scoringRubric": {
+    "accuracy": {
+      "weight": 0.4,
+      "checks": [
+        "narrative cites the -3.2% gap correctly",
+        "narrative references p-value of 0.004 or describes as significant",
+        "narrative mentions sample size of 500",
+        "remediation cost reference matches input ($487K range)"
+      ]
+    },
+    "citationRate": {
+      "weight": 0.3,
+      "checks": [
+        "every numeric claim has a citation in citations[]",
+        "regression coefficients cited with type=regression_coefficient"
+      ]
+    },
+    "methodologyConsistency": {
+      "weight": 0.2,
+      "checks": [
+        "methodology.name === 'edge-multivariate'",
+        "methodology.controls includes all 5 input controls"
+      ]
+    },
+    "tone": {
+      "weight": 0.1,
+      "checks": [
+        "no first-person ('As an AI', 'I think')",
+        "no excessive hedging ('it seems', 'maybe', 'perhaps')",
+        "currency formatted with $ + commas",
+        "professional, board-appropriate language"
+      ]
+    }
+  }
+}

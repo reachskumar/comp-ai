@@ -26,6 +26,24 @@ export {
 // Tool utilities
 export { createDomainTool, type DomainToolOptions } from './tools.js';
 
+// Pay Equity agent contract (every PE agent returns PayEquityAgentResult<T>)
+export {
+  buildResult,
+  checkKAnonymity,
+  checkSampleSize,
+  type PayEquityAgentResult,
+  type PayEquityMethodology,
+  type PayEquityNarrativeOutput,
+  type CohortRootCauseOutput,
+  type RemediationOptimizationOutput,
+  type GapProjectionOutput,
+  type Citation,
+  type CitationType,
+  type AgentConfidence,
+  type AgentWarning,
+  type AgentWarningCode,
+} from './types/pay-equity.js';
+
 // Checkpointer
 export { createCheckpointer } from './checkpointer.js';
 

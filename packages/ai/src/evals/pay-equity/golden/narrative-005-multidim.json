@@ -1,0 +1,114 @@
+{
+  "name": "narrative-005-multidim",
+  "description": "Multi-dim: gender + ethnicity. Gender gap acceptable but ethnicity gap on Black cohort exceeds threshold.",
+  "input": {
+    "tenantId": "tenant-eval-005",
+    "userId": "user-eval-005",
+    "analysisData": {
+      "dimensions": ["gender", "ethnicity"],
+      "regressionResults": [
+        {
+          "dimension": "gender",
+          "group": "Female",
+          "coefficient": -0.018,
+          "standardError": 0.011,
+          "tStatistic": -1.64,
+          "pValue": 0.1,
+          "confidenceInterval": [-0.04, 0.004],
+          "sampleSize": 1200
+        },
+        {
+          "dimension": "ethnicity",
+          "group": "Black",
+          "coefficient": -0.063,
+          "standardError": 0.018,
+          "tStatistic": -3.5,
+          "pValue": 0.0005,
+          "confidenceInterval": [-0.098, -0.028],
+          "sampleSize": 320
+        },
+        {
+          "dimension": "ethnicity",
+          "group": "Hispanic",
+          "coefficient": -0.029,
+          "standardError": 0.017,
+          "tStatistic": -1.71,
+          "pValue": 0.088,
+          "confidenceInterval": [-0.062, 0.004],
+          "sampleSize": 240
+        }
+      ],
+      "compaRatios": [
+        {
+          "dimension": "gender",
+          "group": "Female",
+          "avgCompaRatio": 0.97,
+          "medianCompaRatio": 0.98,
+          "count": 530
+        },
+        {
+          "dimension": "gender",
+          "group": "Male",
+          "avgCompaRatio": 0.99,
+          "medianCompaRatio": 1.0,
+          "count": 670
+        },
+        {
+          "dimension": "ethnicity",
+          "group": "Black",
+          "avgCompaRatio": 0.93,
+          "medianCompaRatio": 0.94,
+          "count": 110
+        },
+        {
+          "dimension": "ethnicity",
+          "group": "Hispanic",
+          "avgCompaRatio": 0.96,
+          "medianCompaRatio": 0.97,
+          "count": 90
+        },
+        {
+          "dimension": "ethnicity",
+          "group": "White",
+          "avgCompaRatio": 0.99,
+          "medianCompaRatio": 1.0,
+          "count": 700
+        }
+      ],
+      "overallStats": {
+        "totalEmployees": 1200,
+        "rSquared": 0.83,
+        "adjustedRSquared": 0.82,
+        "fStatistic": 215,
+        "controlVariables": ["job_level", "tenure", "performance", "location", "department"]
+      },
+      "remediationEstimate": {
+        "totalCost": 638000,
+        "affectedEmployees": 73,
+        "avgAdjustment": 8740
+      }
+    }
+  },
+  "expectedOutputShape": {
+    "executiveSummary": { "minLength": 250, "shouldContain": ["ethnicity", "Black"] },
+    "edgeComplianceStatus": "mixed",
+    "keyFindings": { "minCount": 4 },
+    "riskAssessment": { "minCount": 2 },
+    "remediationRecommendations": { "minCount": 2 }
+  },
+  "expectedCitationCount": { "min": 3 },
+  "scoringRubric": {
+    "accuracy": {
+      "weight": 0.5,
+      "checks": [
+        "narrative distinguishes between gender (marginal/acceptable) and ethnicity (Black, significant) findings",
+        "narrative correctly flags Black ethnicity cohort as the priority remediation target",
+        "narrative does not over-state the gender finding given p=0.10",
+        "narrative correctly classifies Hispanic as marginally significant"
+      ]
+    },
+    "tone": { "weight": 0.2 },
+    "citationRate": { "weight": 0.2 },
+    "methodologyConsistency": { "weight": 0.1 }
+  }
+}

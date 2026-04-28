@@ -19,6 +19,7 @@ import { CycleModule } from './modules/cycle';
 import { CompportBridgeModule } from './modules/compport-bridge';
 import { IntegrationModule } from './modules/integrations';
 import { AnalyticsModule } from './modules/analytics';
+import { PayEquityModule } from './modules/pay-equity/pay-equity.module';
 import { BenefitsModule } from './modules/benefits';
 import { CopilotModule } from './modules/copilot';
 import { LettersModule } from './modules/letters';
@@ -106,6 +107,7 @@ const isProduction = process.env['NODE_ENV'] === 'production';
     CompportBridgeModule.register(),
     IntegrationModule,
     AnalyticsModule,
+    PayEquityModule,
     BenefitsModule,
     CopilotModule,
     LettersModule,

@@ -1,0 +1,70 @@
+{
+  "name": "narrative-002-no-gap",
+  "description": "Null result — 800-employee tenant with no statistically significant gender gap (p=0.31)",
+  "input": {
+    "tenantId": "tenant-eval-002",
+    "userId": "user-eval-002",
+    "analysisData": {
+      "dimensions": ["gender"],
+      "regressionResults": [
+        {
+          "dimension": "gender",
+          "group": "Female",
+          "coefficient": -0.008,
+          "standardError": 0.011,
+          "tStatistic": -0.73,
+          "pValue": 0.31,
+          "confidenceInterval": [-0.029, 0.013],
+          "sampleSize": 800
+        }
+      ],
+      "compaRatios": [
+        {
+          "dimension": "gender",
+          "group": "Female",
+          "avgCompaRatio": 0.99,
+          "medianCompaRatio": 1.0,
+          "count": 380
+        },
+        {
+          "dimension": "gender",
+          "group": "Male",
+          "avgCompaRatio": 1.0,
+          "medianCompaRatio": 1.0,
+          "count": 420
+        }
+      ],
+      "overallStats": {
+        "totalEmployees": 800,
+        "rSquared": 0.84,
+        "adjustedRSquared": 0.83,
+        "fStatistic": 198.1,
+        "controlVariables": ["job_level", "tenure", "performance", "location", "department"]
+      }
+    }
+  },
+  "expectedOutputShape": {
+    "executiveSummary": { "minLength": 150, "shouldContain": ["no significant", "p=0.31"] },
+    "edgeComplianceStatus": "pass",
+    "keyFindings": { "minCount": 2 },
+    "remediationRecommendations": { "maxCount": 1 }
+  },
+  "expectedCitationCount": { "min": 1 },
+  "expectedConfidence": "high",
+  "scoringRubric": {
+    "accuracy": {
+      "weight": 0.5,
+      "checks": [
+        "narrative does NOT claim a significant gap",
+        "narrative correctly classifies as not significant (p > 0.10)",
+        "narrative recommends ongoing monitoring rather than remediation"
+      ]
+    },
+    "tone": {
+      "weight": 0.2,
+      "checks": ["narrative does not over-celebrate the lack of a gap", "neutral, factual tone"]
+    },
+    "citationRate": { "weight": 0.2 },
+    "methodologyConsistency": { "weight": 0.1 }
+  }
+}

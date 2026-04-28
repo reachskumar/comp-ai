@@ -1,0 +1,75 @@
+{
+  "name": "narrative-003-edge-fail",
+  "description": "Out-of-compliance: 7.2% adjusted gender gap exceeds EDGE Standard ±5% threshold",
+  "input": {
+    "tenantId": "tenant-eval-003",
+    "userId": "user-eval-003",
+    "analysisData": {
+      "dimensions": ["gender"],
+      "regressionResults": [
+        {
+          "dimension": "gender",
+          "group": "Female",
+          "coefficient": -0.072,
+          "standardError": 0.014,
+          "tStatistic": -5.14,
+          "pValue": 0.0001,
+          "confidenceInterval": [-0.099, -0.045],
+          "sampleSize": 1200
+        }
+      ],
+      "compaRatios": [
+        {
+          "dimension": "gender",
+          "group": "Female",
+          "avgCompaRatio": 0.91,
+          "medianCompaRatio": 0.92,
+          "count": 540
+        },
+        {
+          "dimension": "gender",
+          "group": "Male",
+          "avgCompaRatio": 0.99,
+          "medianCompaRatio": 1.0,
+          "count": 660
+        }
+      ],
+      "overallStats": {
+        "totalEmployees": 1200,
+        "rSquared": 0.82,
+        "adjustedRSquared": 0.81,
+        "fStatistic": 211.5,
+        "controlVariables": ["job_level", "tenure", "performance", "location", "department"]
+      },
+      "remediationEstimate": {
+        "totalCost": 1240000,
+        "affectedEmployees": 156,
+        "avgAdjustment": 7948
+      }
+    }
+  },
+  "expectedOutputShape": {
+    "executiveSummary": { "minLength": 250, "shouldContain": ["7.2", "exceed", "EDGE"] },
+    "edgeComplianceStatus": "fail",
+    "keyFindings": { "minCount": 4 },
+    "remediationRecommendations": { "minCount": 2 }
+  },
+  "expectedCitationCount": { "min": 1 },
+  "expectedConfidence": "high",
+  "scoringRubric": {
+    "accuracy": {
+      "weight": 0.5,
+      "checks": [
+        "narrative correctly flags the gap as out of EDGE Standard ±5% range",
+        "narrative recommends specific remediation (not just monitoring)",
+        "narrative cites $1.24M remediation cost or matches the affected count"
+      ]
+    },
+    "tone": {
+      "weight": 0.2,
+      "checks": ["urgency conveyed without alarm", "remediation framed constructively"]
+    },
+    "citationRate": { "weight": 0.2 },
+    "methodologyConsistency": { "weight": 0.1 }
+  }
+}

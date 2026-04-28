@@ -1,0 +1,67 @@
+{
+  "name": "narrative-004-small-sample",
+  "description": "Small sample (n=24) — should trigger sample-size warning, NOT report a gap",
+  "input": {
+    "tenantId": "tenant-eval-004",
+    "userId": "user-eval-004",
+    "analysisData": {
+      "dimensions": ["gender"],
+      "regressionResults": [
+        {
+          "dimension": "gender",
+          "group": "Female",
+          "coefficient": -0.04,
+          "standardError": 0.045,
+          "tStatistic": -0.89,
+          "pValue": 0.38,
+          "confidenceInterval": [-0.13, 0.05],
+          "sampleSize": 24
+        }
+      ],
+      "compaRatios": [
+        {
+          "dimension": "gender",
+          "group": "Female",
+          "avgCompaRatio": 0.95,
+          "medianCompaRatio": 0.96,
+          "count": 9
+        },
+        {
+          "dimension": "gender",
+          "group": "Male",
+          "avgCompaRatio": 0.99,
+          "medianCompaRatio": 1.0,
+          "count": 15
+        }
+      ],
+      "overallStats": {
+        "totalEmployees": 24,
+        "rSquared": 0.6,
+        "adjustedRSquared": 0.55,
+        "fStatistic": 8.2,
+        "controlVariables": ["job_level", "tenure", "performance"]
+      }
+    }
+  },
+  "expectedOutputShape": {
+    "executiveSummary": { "minLength": 150, "shouldContain": ["sample", "insufficient"] },
+    "edgeComplianceStatus": "not_applicable",
+    "keyFindings": { "minCount": 1 },
+    "remediationRecommendations": { "maxCount": 1 }
+  },
+  "expectedWarnings": ["sample_size_low"],
+  "expectedConfidence": "low",
+  "scoringRubric": {
+    "accuracy": {
+      "weight": 0.6,
+      "checks": [
+        "narrative does NOT claim a meaningful gap",
+        "narrative explicitly notes sample size is too small for reliable inference",
+        "narrative recommends gathering more data, not remediation"
+      ]
+    },
+    "tone": { "weight": 0.2 },
+    "citationRate": { "weight": 0.1 },
+    "methodologyConsistency": { "weight": 0.1 }
+  }
+}

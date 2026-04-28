@@ -226,6 +226,8 @@ model Tenant {
   payrollRuns         PayrollRun[]
   auditLogs           AuditLog[]
   notifications       Notification[]
+  payEquityRuns       PayEquityRun[]
+  payEquityRemediations PayEquityRemediation[]
   integrationConnectors IntegrationConnector[]
   benefitPlans        BenefitPlan[]
   benefitEnrollments  BenefitEnrollment[]
@@ -282,6 +284,7 @@ model User {
   approvedRecs        CompRecommendation[]
   auditLogs           AuditLog[]
   notifications       Notification[]
+  payEquityRuns       PayEquityRun[]
   adHocRequested      AdHocIncrease[]    @relation("AdHocRequestedBy")
   adHocApproved       AdHocIncrease[]    @relation("AdHocApprover")
   writeBackBatches    WriteBackBatch[]
@@ -2206,4 +2209,79 @@ model TenantDataMirrorState {
   @@unique([tenantId, sourceTable])
   @@index([tenantId, status])
   @@map("tenant_data_mirror_states")
+}
+
+// ─── Pay Equity ─────────────────────────────────────────────────────────────
+//
+// Each invocation of a pay-equity agent (narrative report, cohort root-cause,
+// remediation solver, projection) writes one PayEquityRun row. The `result`
+// JSON contains the full PayEquityAgentResult<T> shape including citations[],
+// methodology, confidence, and warnings — the auditor-defensible payload.
+//
+// Methodology versioning lives on the row, not in code, so an upgrade can't
+// silently retroactively change historical interpretation: every report
+// renders with the methodology that was current at the time it was run.
+//
+// PayEquityRemediation tracks proposed and applied compensation adjustments
+// produced by the remediation solver. Status flows
+// PROPOSED → APPROVED → APPLIED, with appliedCycleId pointing at the
+// CompCycle that wrote it back.
+
+model PayEquityRun {
+  id               String   @id @default(cuid())
+  tenantId         String
+  userId           String?
+  // Which agent produced this row.
+  agentType        String   // 'narrative' | 'cohort_root_cause' | 'remediation' | 'projection'
+  // Methodology used (snapshotted from PayEquityAgentResult.methodology).
+  methodologyName    String  // e.g. 'edge-multivariate-v2'
+  methodologyVersion String
+  controls           String[] // predictors used
+  llmModel           String? // 'gpt-4o' | 'claude-sonnet-4-6' | etc
+  llmModelVersion    String?
+  sampleSize         Int     @default(0)
+  // The full PayEquityAgentResult<T> envelope as JSON — output, citations,
+  // warnings, confidence, etc.
+  result             Json    @default("{}")
+  // Optional human-readable summary for list views, derived from result.
+  summary            String?
+  status             String  @default("COMPLETE") // PENDING | COMPLETE | FAILED
+  errorMsg           String?
+  createdAt          DateTime @default(now())
+
+  tenant       Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user         User?                   @relation(fields: [userId], references: [id], onDelete: SetNull)
+  remediations PayEquityRemediation[]
+
+  @@index([tenantId])
+  @@index([tenantId, agentType])
+  @@index([tenantId, createdAt])
+  @@map("pay_equity_runs")
+}
+
+model PayEquityRemediation {
+  id              String   @id @default(cuid())
+  tenantId        String
+  runId           String
+  employeeId      String
+  fromValue       Decimal  @db.Decimal(12, 2)
+  toValue         Decimal  @db.Decimal(12, 2)
+  justification   String?
+  status          String   @default("PROPOSED") // PROPOSED | APPROVED | APPLIED | DECLINED
+  // When applied, this points at the comp cycle that wrote it back.
+  appliedCycleId  String?
+  appliedAt       DateTime?
+  decidedByUserId String?
+  decidedAt       DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant   Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  run      PayEquityRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([runId])
+  @@index([employeeId])
+  @@map("pay_equity_remediations")
 }

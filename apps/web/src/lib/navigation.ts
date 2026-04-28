@@ -87,6 +87,7 @@ export const navGroups: NavGroup[] = [
       { title: 'Test Cases', href: '/dashboard/rules/test-cases', icon: TestTubeDiagonal },
       { title: 'Pay Equity', href: '/dashboard/analytics/pay-equity', icon: Scale },
       { title: 'EDGE Pay Equity', href: '/dashboard/analytics/pay-equity/edge', icon: ShieldCheck },
+      { title: 'Pay Equity Workspace', href: '/dashboard/pay-equity', icon: Scale },
       { title: 'HR Dashboards', href: '/dashboard/analytics/hr-dashboards', icon: LayoutGrid },
       { title: 'Report Builder', href: '/dashboard/reports', icon: FileBarChart },
       { title: 'Letters', href: '/dashboard/letters', icon: FileText },

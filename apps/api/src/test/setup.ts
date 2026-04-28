@@ -72,6 +72,8 @@ export function createMockPrismaClient() {
     tenantRolePermission: createModelMock(),
     importJob: createModelMock(),
     compensationLetter: createModelMock(),
+    payEquityRun: createModelMock(),
+    payEquityRemediation: createModelMock(),
     $connect: vi.fn(),
     $disconnect: vi.fn(),
     $queryRawUnsafe: vi.fn().mockResolvedValue([{ '?column?': 1 }]),
