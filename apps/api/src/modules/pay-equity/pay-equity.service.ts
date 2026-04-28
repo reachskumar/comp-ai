@@ -13,8 +13,10 @@ import {
   checkSampleSize,
   invokeCohortRootCauseGraph,
   invokeOutlierExplainerGraph,
+  invokeProjectionGraph,
   invokeRemediationGraph,
   type AgentWarning,
+  type GapProjectionOutput,
   type PayEquityAgentResult,
   type PayEquityMethodology,
 } from '@compensation/ai';
@@ -1753,6 +1755,330 @@ export class PayEquityV2Service implements OnModuleInit {
       }
     }
   }
+
+  // ─── Phase 4 — Predict ──────────────────────────────────────────
+
+  /**
+   * Forward-looking gap projection.
+   *
+   * - Loads the most recent N narrative runs as historical anchor (oldest→newest)
+   * - Computes the deterministic projected series via linear extrapolation
+   *   of the worst-cohort gap, optionally adjusted by scenario inputs
+   *   (hiring plan widens or closes gap based on group balance at level;
+   *   promotion plan moves cohort employees to new level)
+   * - Invokes the projection LLM agent for narrative + drivers + actions
+   *   (numbers come from the deterministic series, not the LLM)
+   * - Persists a child PayEquityRun row (agentType=projection)
+   * - Writes an AuditLog row per invocation
+   */
+  async forecastProjection(
+    tenantId: string,
+    userId: string,
+    scenario: {
+      scenarioLabel?: string;
+      horizonMonths?: number;
+      hiringPlan?: Array<{
+        level: string;
+        dimension: string;
+        group: string;
+        count: number;
+        meanSalary: number;
+      }>;
+      promotionPlan?: Array<{
+        cohort: { dimension: string; group: string };
+        employees: number;
+        toLevel: string;
+      }>;
+    },
+  ): Promise<{ runId: string; envelope: PayEquityAgentResult<GapProjectionOutput> }> {
+    const horizonMonths = scenario.horizonMonths ?? 12;
+    const hiringPlan = scenario.hiringPlan ?? [];
+    const promotionPlan = scenario.promotionPlan ?? [];
+    const scenarioLabel =
+      scenario.scenarioLabel ??
+      (hiringPlan.length === 0 && promotionPlan.length === 0
+        ? 'Status quo (no scenario adjustments)'
+        : 'Custom hiring + promotion scenario');
+
+    // ── Historical anchor — last 6 narrative runs ────────────────
+    const recentRunsRows = await this.db.forTenant(tenantId, (tx) =>
+      tx.payEquityRun.findMany({
+        where: { tenantId, agentType: 'narrative', status: 'COMPLETE' },
+        orderBy: { createdAt: 'desc' },
+        take: 6,
+        select: {
+          id: true,
+          createdAt: true,
+          sampleSize: true,
+          methodologyVersion: true,
+          result: true,
+        },
+      }),
+    );
+
+    const recentRuns = recentRunsRows
+      .map((r) => {
+        const env = r.result as unknown as PayEquityAgentResult<{
+          regressionResults: Array<{ gapPercent: number; significance: string }>;
+        }>;
+        const regs = env.output.regressionResults;
+        if (!regs || regs.length === 0) return null;
+        const worst = regs.reduce(
+          (a, b) => (Math.abs(a.gapPercent) > Math.abs(b.gapPercent) ? a : b),
+          regs[0]!,
+        );
+        return {
+          runAt: r.createdAt.toISOString(),
+          gapPercent: Math.abs(worst.gapPercent),
+          significantCount: regs.filter((x) => x.significance === 'significant').length,
+          sampleSize: r.sampleSize ?? 0,
+          methodologyVersion: r.methodologyVersion,
+        };
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null)
+      .reverse(); // oldest → newest
+
+    if (recentRuns.length === 0) {
+      throw new BadRequestException(
+        'No completed narrative runs available — run an analysis from the Overview tab first.',
+      );
+    }
+
+    // ── Deterministic forecast (linear extrapolation + scenario adjustment) ──
+    const baselineGap = recentRuns[recentRuns.length - 1]!.gapPercent;
+    const slopePerMonth = computeMonthlySlope(recentRuns);
+    const scenarioAdjustment = computeScenarioGapDelta(hiringPlan, promotionPlan);
+
+    const checkpoints = uniqueSorted([1, 3, 6, horizonMonths]);
+    const projectedSeries = checkpoints.map((m) => {
+      const trend = baselineGap + slopePerMonth * m;
+      const scenarioFraction = horizonMonths > 0 ? m / horizonMonths : 0;
+      return {
+        monthsFromNow: m,
+        projectedGapPercent: round2(trend + scenarioAdjustment * scenarioFraction),
+      };
+    });
+    const projectedGap = projectedSeries[projectedSeries.length - 1]!.projectedGapPercent;
+    // 95% CI from observed run-to-run variance (fallback ±1pp).
+    const sigma = recentRuns.length >= 3 ? observedSigma(recentRuns) : 1;
+    const confidenceLow = round2(projectedGap - 1.96 * sigma);
+    const confidenceHigh = round2(projectedGap + 1.96 * sigma);
+
+    // Pre-create a child PayEquityRun so we have a runId even if the agent fails.
+    const parentMethodology = recentRunsRows[0]!.methodologyVersion;
+    const pendingRun = await this.db.forTenant(tenantId, (tx) =>
+      tx.payEquityRun.create({
+        data: {
+          tenantId,
+          userId,
+          agentType: 'projection',
+          methodologyName: PayEquityV2Service.METHODOLOGY_NAME,
+          methodologyVersion: parentMethodology,
+          controls: [],
+          status: 'PENDING',
+          summary: scenarioLabel,
+        },
+      }),
+    );
+
+    try {
+      const envelope = await invokeProjectionGraph({
+        tenantId,
+        userId,
+        scenarioLabel,
+        recentRuns,
+        projectedSeries,
+        baselineGap: round2(baselineGap),
+        projectedGap,
+        confidenceLow,
+        confidenceHigh,
+        scenario: { horizonMonths, hiringPlan, promotionPlan },
+        methodology: {
+          name: PayEquityV2Service.METHODOLOGY_NAME,
+          version: parentMethodology,
+          controls: [],
+          sampleSize: recentRuns[recentRuns.length - 1]!.sampleSize,
+        },
+      });
+      envelope.runId = pendingRun.id;
+
+      await this.db.forTenant(tenantId, async (tx) => {
+        await tx.payEquityRun.update({
+          where: { id: pendingRun.id },
+          data: {
+            status: 'COMPLETE',
+            sampleSize: recentRuns[recentRuns.length - 1]!.sampleSize,
+            result: envelope as unknown as Prisma.InputJsonValue,
+            summary: `${scenarioLabel}: ${baselineGap.toFixed(1)}% → ${projectedGap.toFixed(1)}% over ${horizonMonths}mo`,
+          },
+        });
+        await tx.auditLog.create({
+          data: {
+            tenantId,
+            userId,
+            action: 'PAY_EQUITY_PROJECTION',
+            entityType: 'PayEquityRun',
+            entityId: pendingRun.id,
+            changes: {
+              scenarioLabel,
+              horizonMonths,
+              baselineGap: round2(baselineGap),
+              projectedGap,
+              hiringPlanCount: hiringPlan.length,
+              promotionPlanCount: promotionPlan.length,
+            } as unknown as Prisma.InputJsonValue,
+          },
+        });
+      });
+
+      this.logger.log(
+        `Projection: child=${pendingRun.id} baseline=${baselineGap.toFixed(2)} projected=${projectedGap.toFixed(2)} horizon=${horizonMonths}mo`,
+      );
+      return { runId: pendingRun.id, envelope };
+    } catch (err) {
+      this.logger.error(`Projection failed for ${pendingRun.id}`, err);
+      await this.db.forTenant(tenantId, (tx) =>
+        tx.payEquityRun.update({
+          where: { id: pendingRun.id },
+          data: {
+            status: 'FAILED',
+            errorMsg: err instanceof Error ? err.message : 'Unknown error',
+          },
+        }),
+      );
+      throw err;
+    }
+  }
+
+  /**
+   * AIR (Adverse Impact Ratio / 80% rule) — read-only computation on a run.
+   *
+   * Per cohort: AIR = (selection rate of subgroup) / (selection rate of
+   * majority/reference group). The 80% rule flags AIR < 0.8 as adverse
+   * impact. We model "selection rate" as the share of the cohort that is
+   * paid above the reference-group median (proxied by sign of regression
+   * coefficient on the protected class indicator).
+   *
+   * No persistence — like trend / cohort matrix. Called inline by the UI.
+   */
+  async getAirAnalysis(tenantId: string, runId: string) {
+    const run = await this.getRun(tenantId, runId);
+    if (run.status !== 'COMPLETE') {
+      throw new BadRequestException(`Run ${runId} is ${run.status}, AIR unavailable`);
+    }
+    const env = run.result as unknown as PayEquityAgentResult<{
+      regressionResults: Array<{
+        dimension: string;
+        group: string;
+        referenceGroup: string;
+        coefficient: number;
+        sampleSize: number;
+        gapPercent: number;
+        significance: string;
+      }>;
+    }>;
+
+    const cohorts = env.output.regressionResults.map((r) => {
+      // Map regression coefficient β to a relative selection rate.
+      // β=0 → AIR=1; negative β (lower pay than reference) → AIR<1.
+      const air = round2(Math.exp(r.coefficient));
+      const pass = air >= 0.8;
+      return {
+        dimension: r.dimension,
+        group: r.group,
+        referenceGroup: r.referenceGroup,
+        sampleSize: r.sampleSize,
+        gapPercent: round2(r.gapPercent),
+        adverseImpactRatio: air,
+        passesEightyPercentRule: pass,
+        severity: !pass && r.significance === 'significant' ? 'high' : pass ? 'low' : 'medium',
+      };
+    });
+
+    const failingCount = cohorts.filter((c) => !c.passesEightyPercentRule).length;
+
+    return {
+      runId,
+      runAt: run.createdAt,
+      methodology: `${run.methodologyName}@${run.methodologyVersion}`,
+      threshold: 0.8,
+      cohorts,
+      summary: {
+        total: cohorts.length,
+        passing: cohorts.length - failingCount,
+        failing: failingCount,
+      },
+    };
+  }
+}
+
+// ─── Phase 4 helpers: deterministic projection math ─────────────────────
+
+function uniqueSorted(arr: number[]): number[] {
+  return [...new Set(arr)].sort((a, b) => a - b);
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+/**
+ * Estimate monthly slope of the gap (in percentage points per month) from
+ * recent runs. With <2 runs the slope is 0 (flat extrapolation).
+ */
+function computeMonthlySlope(runs: Array<{ runAt: string; gapPercent: number }>): number {
+  if (runs.length < 2) return 0;
+  const first = runs[0]!;
+  const last = runs[runs.length - 1]!;
+  const months =
+    (new Date(last.runAt).getTime() - new Date(first.runAt).getTime()) / (30 * 24 * 60 * 60 * 1000);
+  if (months <= 0) return 0;
+  return (last.gapPercent - first.gapPercent) / months;
+}
+
+/**
+ * Total gap delta (percentage points) the scenario applies over the full
+ * horizon. Positive = widens gap, negative = closes it.
+ *
+ * Phase 4 first-cut model:
+ *   - Each hire of the reference (majority) group at any level adds
+ *     +0.05pp to the projected gap (concentration effect).
+ *   - Each hire of the minority group reduces it by 0.05pp.
+ *   - Each promotion of the minority group reduces it by 0.10pp; reverse
+ *     for the reference group.
+ *
+ * The model is intentionally conservative + interpretable so the UI can
+ * explain "if you hire 50 male engineers, projected gap widens by 2.5pp".
+ * Comp consultant review (bible §7 Q1) will refine the coefficients.
+ */
+function computeScenarioGapDelta(
+  hiringPlan: Array<{ dimension: string; group: string; count: number }>,
+  promotionPlan: Array<{ cohort: { dimension: string; group: string }; employees: number }>,
+): number {
+  const HIRING_COEF = 0.05;
+  const PROMO_COEF = 0.1;
+
+  // Reference groups widen the gap; minority groups close it. Without
+  // knowing the actual reference, treat /M and /Male as the reference
+  // (matches the legacy analyzer's first-group ordering).
+  const isReferenceGroup = (g: string) =>
+    /^m$|^male$|^men$/i.test(g.trim()) || /^white$|^non.?hispanic$/i.test(g.trim());
+
+  let delta = 0;
+  for (const h of hiringPlan) {
+    delta += (isReferenceGroup(h.group) ? +1 : -1) * HIRING_COEF * h.count;
+  }
+  for (const p of promotionPlan) {
+    delta += (isReferenceGroup(p.cohort.group) ? +1 : -1) * PROMO_COEF * p.employees;
+  }
+  return round2(delta);
+}
+
+function observedSigma(runs: Array<{ gapPercent: number }>): number {
+  if (runs.length < 2) return 1;
+  const mean = runs.reduce((s, r) => s + r.gapPercent, 0) / runs.length;
+  const variance = runs.reduce((s, r) => s + (r.gapPercent - mean) ** 2, 0) / (runs.length - 1);
+  return Math.sqrt(variance);
 }
 
 // ─── Phase 1.5 helper: deterministic distribution computation ──────────

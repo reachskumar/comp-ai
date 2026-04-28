@@ -10,6 +10,7 @@ vi.mock('@compensation/ai', async () => {
     invokeCohortRootCauseGraph: vi.fn(),
     invokeOutlierExplainerGraph: vi.fn(),
     invokeRemediationGraph: vi.fn(),
+    invokeProjectionGraph: vi.fn(),
   };
 });
 
@@ -18,6 +19,7 @@ import { renderReport } from './report-renderers';
 import {
   invokeCohortRootCauseGraph,
   invokeOutlierExplainerGraph,
+  invokeProjectionGraph,
   invokeRemediationGraph,
 } from '@compensation/ai';
 import type { PayEquityService as LegacyAnalyzer } from '../analytics/pay-equity.service';
@@ -1648,5 +1650,280 @@ describe('PayEquityV2Service.generateReport', () => {
     await expect(
       service.generateReport(TEST_TENANT_ID, 'rep-run-1', 'board', TEST_USER_ID),
     ).rejects.toThrow(/only narrative runs are exportable/);
+  });
+});
+
+// ─── Phase 4 — Predict ───────────────────────────────────────────────
+
+const mockedProjectionAgent = vi.mocked(invokeProjectionGraph);
+
+function stubProjectionAgent() {
+  mockedProjectionAgent.mockImplementation((input) =>
+    Promise.resolve({
+      output: {
+        horizonMonths: input.scenario.horizonMonths,
+        baselineGap: input.baselineGap,
+        projectedGap: input.projectedGap,
+        confidenceLow: input.confidenceLow,
+        confidenceHigh: input.confidenceHigh,
+        monthlySeries: input.projectedSeries,
+        drivers: [
+          {
+            factor: 'hiring_concentration',
+            expectedDelta: 1.2,
+            explanation: 'Reference-group hires concentrate at L4',
+          },
+        ],
+        recommendedActions: [
+          {
+            action: 'Diversify L4 hiring slate',
+            priority: 'high' as const,
+            rationale: 'Concentrating reference-group hires widens the gap',
+          },
+        ],
+        narrative: 'Projected gap widens because of hiring plan',
+        riskLevel: 'medium' as const,
+        scenarioLabel: input.scenarioLabel,
+      },
+      citations: [],
+      methodology: {
+        name: input.methodology.name,
+        version: input.methodology.version,
+        controls: input.methodology.controls,
+        dependentVariable: 'log_salary' as const,
+        sampleSize: input.methodology.sampleSize,
+        confidenceInterval: 0.95,
+      },
+      confidence: 'high' as const,
+      warnings: [],
+      runId: '',
+      generatedAt: new Date().toISOString(),
+    }),
+  );
+}
+
+describe('PayEquityV2Service.forecastProjection', () => {
+  let service: PayEquityV2Service;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createService());
+    mockedProjectionAgent.mockReset();
+  });
+
+  function priorRunsRows() {
+    // Two runs, ~30 days apart, gap moving 4 → 5
+    return [
+      {
+        id: 'parent-run-2',
+        createdAt: new Date('2026-04-15T00:00:00Z'),
+        sampleSize: 500,
+        methodologyVersion: '2026.04',
+        result: buildEnvelope(
+          [
+            {
+              dimension: 'gender',
+              group: 'F',
+              referenceGroup: 'M',
+              gapPercent: -5,
+              pValue: 0.01,
+              sampleSize: 200,
+              significance: 'significant',
+            },
+          ],
+          500,
+        ),
+      },
+      {
+        id: 'parent-run-1',
+        createdAt: new Date('2026-03-15T00:00:00Z'),
+        sampleSize: 500,
+        methodologyVersion: '2026.04',
+        result: buildEnvelope(
+          [
+            {
+              dimension: 'gender',
+              group: 'F',
+              referenceGroup: 'M',
+              gapPercent: -4,
+              pValue: 0.01,
+              sampleSize: 200,
+              significance: 'significant',
+            },
+          ],
+          500,
+        ),
+      },
+    ];
+  }
+
+  it('extrapolates baseline + invokes projection agent + persists child run + audit log', async () => {
+    db.client.payEquityRun.findMany.mockResolvedValue(priorRunsRows());
+    db.client.payEquityRun.create.mockResolvedValue({ id: 'proj-run-1' });
+    db.client.payEquityRun.update.mockResolvedValue({ id: 'proj-run-1' });
+    db.client.auditLog.create.mockResolvedValue({});
+    stubProjectionAgent();
+
+    const result = await service.forecastProjection(TEST_TENANT_ID, TEST_USER_ID, {
+      horizonMonths: 12,
+      hiringPlan: [
+        { level: 'L4', dimension: 'gender', group: 'Male', count: 50, meanSalary: 120000 },
+      ],
+    });
+
+    // Agent called once with deterministic projected series
+    expect(mockedProjectionAgent).toHaveBeenCalledTimes(1);
+    const agentArgs = mockedProjectionAgent.mock.calls[0]![0];
+    expect(agentArgs.scenario.horizonMonths).toBe(12);
+    expect(agentArgs.scenario.hiringPlan).toHaveLength(1);
+    expect(agentArgs.recentRuns.length).toBeGreaterThanOrEqual(1);
+    // Series has the four checkpoints (1, 3, 6, 12)
+    expect(agentArgs.projectedSeries.map((p) => p.monthsFromNow)).toEqual([1, 3, 6, 12]);
+    // Hiring 50 reference-group employees should widen the projected gap vs baseline
+    expect(agentArgs.projectedGap).toBeGreaterThan(agentArgs.baselineGap);
+
+    // Child PayEquityRun created with agentType=projection
+    const createCall = db.client.payEquityRun.create.mock.calls[0]![0];
+    expect(createCall.data.agentType).toBe('projection');
+    expect(createCall.data.status).toBe('PENDING');
+
+    // Run completed + audit log written
+    const updateCall = db.client.payEquityRun.update.mock.calls[0]![0];
+    expect(updateCall.data.status).toBe('COMPLETE');
+    const auditCall = db.client.auditLog.create.mock.calls[0]![0];
+    expect(auditCall.data.action).toBe('PAY_EQUITY_PROJECTION');
+    expect(auditCall.data.changes.horizonMonths).toBe(12);
+    expect(result.runId).toBe('proj-run-1');
+  });
+
+  it('scenario sign: minority hires close the gap relative to the same plan with reference-group hires', async () => {
+    db.client.payEquityRun.findMany.mockResolvedValue(priorRunsRows());
+    db.client.payEquityRun.create.mockResolvedValue({ id: 'proj-run-2' });
+    db.client.payEquityRun.update.mockResolvedValue({ id: 'proj-run-2' });
+    db.client.auditLog.create.mockResolvedValue({});
+    stubProjectionAgent();
+
+    // Run 1: hire reference (Male) group
+    await service.forecastProjection(TEST_TENANT_ID, TEST_USER_ID, {
+      horizonMonths: 12,
+      hiringPlan: [
+        { level: 'L4', dimension: 'gender', group: 'Male', count: 50, meanSalary: 120000 },
+      ],
+    });
+    const refArgs = mockedProjectionAgent.mock.calls[0]![0];
+
+    // Run 2: hire minority (Female) group with the same baseline runs
+    await service.forecastProjection(TEST_TENANT_ID, TEST_USER_ID, {
+      horizonMonths: 12,
+      hiringPlan: [
+        { level: 'L4', dimension: 'gender', group: 'Female', count: 50, meanSalary: 120000 },
+      ],
+    });
+    const minorityArgs = mockedProjectionAgent.mock.calls[1]![0];
+
+    // Same historical extrapolation but minority scenario should have a
+    // strictly smaller projected gap than the reference-group scenario.
+    expect(minorityArgs.projectedGap).toBeLessThan(refArgs.projectedGap);
+  });
+
+  it('refuses when there are no completed narrative runs', async () => {
+    db.client.payEquityRun.findMany.mockResolvedValue([]);
+    await expect(
+      service.forecastProjection(TEST_TENANT_ID, TEST_USER_ID, { horizonMonths: 12 }),
+    ).rejects.toThrow(/No completed narrative runs/);
+    expect(mockedProjectionAgent).not.toHaveBeenCalled();
+  });
+
+  it('marks the child run FAILED when the projection agent throws', async () => {
+    db.client.payEquityRun.findMany.mockResolvedValue(priorRunsRows());
+    db.client.payEquityRun.create.mockResolvedValue({ id: 'proj-run-3' });
+    db.client.payEquityRun.update.mockResolvedValue({ id: 'proj-run-3' });
+    mockedProjectionAgent.mockRejectedValue(new Error('LLM down'));
+
+    await expect(
+      service.forecastProjection(TEST_TENANT_ID, TEST_USER_ID, { horizonMonths: 12 }),
+    ).rejects.toThrow(/LLM down/);
+
+    // Status flipped to FAILED with the error message
+    const updateCalls = db.client.payEquityRun.update.mock.calls;
+    const lastUpdate = updateCalls[updateCalls.length - 1]![0];
+    expect(lastUpdate.data.status).toBe('FAILED');
+    expect(lastUpdate.data.errorMsg).toMatch(/LLM down/);
+  });
+});
+
+describe('PayEquityV2Service.getAirAnalysis', () => {
+  let service: PayEquityV2Service;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createService());
+  });
+
+  it('computes AIR per cohort and flags those failing the 80% rule', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue({
+      id: 'air-run-1',
+      tenantId: TEST_TENANT_ID,
+      status: 'COMPLETE',
+      methodologyName: 'edge-multivariate',
+      methodologyVersion: '2026.04',
+      createdAt: new Date('2026-04-28'),
+      result: buildEnvelope(
+        [
+          {
+            // Strong negative coefficient → AIR < 0.8 → fails the rule
+            dimension: 'gender',
+            group: 'F',
+            referenceGroup: 'M',
+            coefficient: -0.3,
+            sampleSize: 200,
+            gapPercent: -25.9,
+            significance: 'significant',
+          },
+          {
+            // Small coefficient → AIR ≈ 1 → passes
+            dimension: 'department',
+            group: 'Sales',
+            referenceGroup: 'Eng',
+            coefficient: -0.05,
+            sampleSize: 150,
+            gapPercent: -4.9,
+            significance: 'not_significant',
+          },
+        ],
+        500,
+      ),
+    });
+
+    const result = await service.getAirAnalysis(TEST_TENANT_ID, 'air-run-1');
+    expect(result.threshold).toBe(0.8);
+    expect(result.cohorts).toHaveLength(2);
+
+    const gender = result.cohorts.find((c) => c.dimension === 'gender')!;
+    expect(gender.adverseImpactRatio).toBeLessThan(0.8);
+    expect(gender.passesEightyPercentRule).toBe(false);
+    expect(gender.severity).toBe('high'); // significant + failing → high
+
+    const dept = result.cohorts.find((c) => c.dimension === 'department')!;
+    expect(dept.adverseImpactRatio).toBeGreaterThan(0.8);
+    expect(dept.passesEightyPercentRule).toBe(true);
+    expect(dept.severity).toBe('low');
+
+    expect(result.summary).toEqual({ total: 2, passing: 1, failing: 1 });
+  });
+
+  it('refuses non-COMPLETE runs', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue({
+      id: 'air-run-2',
+      tenantId: TEST_TENANT_ID,
+      status: 'FAILED',
+      methodologyName: 'edge-multivariate',
+      methodologyVersion: '2026.04',
+      createdAt: new Date(),
+      result: buildEnvelope([], 0),
+    });
+    await expect(service.getAirAnalysis(TEST_TENANT_ID, 'air-run-2')).rejects.toThrow(
+      /AIR unavailable/,
+    );
   });
 });

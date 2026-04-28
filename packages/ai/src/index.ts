@@ -199,6 +199,11 @@ export {
   invokeRemediationGraph,
   type RemediationAgentInput,
 } from './graphs/pay-equity-remediation-graph.js';
+export {
+  buildProjectionGraph,
+  invokeProjectionGraph,
+  type ProjectionAgentInput,
+} from './graphs/pay-equity-projection-graph.js';
 
 // Attrition Predictor tools
 export { createAttritionTools, type AttritionDbAdapter } from './tools/attrition-tools.js';

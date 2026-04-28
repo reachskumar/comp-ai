@@ -24,6 +24,7 @@ import { REPORT_TYPES, type ReportType } from './report-renderers';
 import {
   CalculateRemediationDto,
   DecideRemediationDto,
+  ForecastProjectionDto,
   ListPayEquityRunsDto,
   RunPayEquityAnalysisDto,
 } from './dto';
@@ -275,5 +276,34 @@ export class PayEquityController {
       .header('Content-Disposition', `attachment; filename="${filename}"`)
       .header('Content-Length', buffer.length)
       .send(buffer);
+  }
+
+  // ─── Phase 4 — Predict ──────────────────────────────────────────────
+
+  @Post('projections/forecast')
+  @ApiOperation({
+    summary:
+      'Forecast the worst-cohort gap forward N months. Optional hiring + promotion scenario adjusts the deterministic projection. AI agent narrates drivers + recommended actions. Persists a child PayEquityRun.',
+  })
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('Pay Equity', 'insert')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  async forecastProjection(@Body() dto: ForecastProjectionDto, @Request() req: AuthRequest) {
+    const { tenantId, userId } = req.user;
+    return this.service.forecastProjection(tenantId, userId, {
+      scenarioLabel: dto.scenarioLabel,
+      horizonMonths: dto.horizonMonths,
+      hiringPlan: dto.hiringPlan,
+      promotionPlan: dto.promotionPlan,
+    });
+  }
+
+  @Get('runs/:id/air')
+  @ApiOperation({
+    summary:
+      'Adverse Impact Ratio (80% rule) per cohort for a given run. Read-only; no persistence. AIR < 0.8 flags adverse impact.',
+  })
+  async getAir(@Param('id') runId: string, @Request() req: AuthRequest) {
+    return this.service.getAirAnalysis(req.user.tenantId, runId);
   }
 }

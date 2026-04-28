@@ -55,11 +55,15 @@ import {
   useRemediations,
   useDecideRemediationMutation,
   useApplyRemediationsMutation,
+  useForecastProjectionMutation,
+  usePayEquityAir,
   type PayEquityOverviewData,
   type CohortCell,
   type CohortRootCauseEnvelope,
   type OutlierExplainEnvelope,
   type RemediationRow,
+  type ProjectionEnvelope,
+  type AirCohort,
 } from '@/hooks/use-pay-equity';
 
 const ALL_DIMENSIONS = [
@@ -312,11 +316,11 @@ export default function PayEquityWorkspacePage() {
             }
           />
         </TabsContent>
-        <TabsContent value="prevent">
-          <PhasePlaceholder
-            phase="Phase 4"
-            title="Predict & Prevent"
-            description="Forward-looking gap projection, hiring impact modeler, in-cycle warnings, manager equity dashboard."
+        <TabsContent value="prevent" className="space-y-4">
+          <PreventPanel
+            latestRunId={
+              overview.data?.hasData ? (overview.data as PayEquityOverviewData).latestRunId : null
+            }
           />
         </TabsContent>
       </Tabs>
@@ -1521,5 +1525,382 @@ function ReportsPanel({ latestRunId }: { latestRunId: string | null }) {
         ))}
       </CardContent>
     </Card>
+  );
+}
+
+// ─── Phase 4 — Prevent panel ──────────────────────────────────────
+
+function PreventPanel({ latestRunId }: { latestRunId: string | null }) {
+  const air = usePayEquityAir(latestRunId);
+  const forecastMutation = useForecastProjectionMutation();
+  const { toast } = useToast();
+
+  const [horizonMonths, setHorizonMonths] = React.useState(12);
+  const [hires, setHires] = React.useState<
+    Array<{ level: string; dimension: string; group: string; count: number; meanSalary: number }>
+  >([]);
+  const [draft, setDraft] = React.useState({
+    level: 'L4',
+    dimension: 'gender',
+    group: 'Male',
+    count: 10,
+    meanSalary: 120000,
+  });
+
+  const [forecast, setForecast] = React.useState<ProjectionEnvelope | null>(null);
+
+  const handleAddHire = () => {
+    if (!draft.level || !draft.group || draft.count <= 0) return;
+    setHires((prev) => [...prev, { ...draft }]);
+  };
+
+  const handleRunForecast = () => {
+    forecastMutation.mutate(
+      {
+        horizonMonths,
+        hiringPlan: hires,
+        scenarioLabel: hires.length === 0 ? 'Status quo' : undefined,
+      },
+      {
+        onSuccess: (res) => {
+          setForecast(res.envelope);
+          toast({
+            title: 'Forecast computed',
+            description: `Projected gap at t+${res.envelope.output.horizonMonths}mo: ${res.envelope.output.projectedGap.toFixed(1)}% (baseline ${res.envelope.output.baselineGap.toFixed(1)}%)`,
+          });
+        },
+        onError: (err) =>
+          toast({ title: 'Forecast failed', description: err.message, variant: 'destructive' }),
+      },
+    );
+  };
+
+  if (!latestRunId) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Predict & Prevent</CardTitle>
+          <CardDescription>
+            Run a Pay Equity analysis from the Overview tab first; projections + AIR are computed
+            from the latest run.
+          </CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* AIR — 80% rule */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Adverse Impact Ratio (80% rule)</CardTitle>
+          <CardDescription>
+            AIR = exp(β) per cohort. AIR &lt; 0.8 indicates adverse impact under the OFCCP
+            four-fifths rule. Read-only; computed from the latest run&apos;s regression
+            coefficients.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {air.isLoading ? (
+            <Skeleton className="h-32 w-full" />
+          ) : !air.data || air.data.cohorts.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No cohorts to evaluate.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left text-xs uppercase text-muted-foreground">
+                    <th className="py-2">Cohort</th>
+                    <th className="py-2">vs reference</th>
+                    <th className="py-2">n</th>
+                    <th className="py-2">Gap</th>
+                    <th className="py-2">AIR</th>
+                    <th className="py-2">80% rule</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {air.data.cohorts.map((c: AirCohort) => (
+                    <tr key={`${c.dimension}/${c.group}`} className="border-b last:border-0">
+                      <td className="py-2 font-medium">
+                        {c.dimension}/{c.group}
+                      </td>
+                      <td className="py-2 text-muted-foreground">{c.referenceGroup}</td>
+                      <td className="py-2">{c.sampleSize}</td>
+                      <td className="py-2">{c.gapPercent.toFixed(2)}%</td>
+                      <td className="py-2 font-mono">{c.adverseImpactRatio.toFixed(2)}</td>
+                      <td className="py-2">
+                        {c.passesEightyPercentRule ? (
+                          <Badge variant="outline" className="bg-emerald-50 text-emerald-700">
+                            Pass
+                          </Badge>
+                        ) : (
+                          <Badge
+                            variant="outline"
+                            className={
+                              c.severity === 'high'
+                                ? 'bg-red-50 text-red-700'
+                                : 'bg-amber-50 text-amber-700'
+                            }
+                          >
+                            Fail
+                          </Badge>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="mt-3 text-xs text-muted-foreground">
+                {air.data.summary.passing}/{air.data.summary.total} cohorts pass the 80% rule
+                {air.data.summary.failing > 0 && ` · ${air.data.summary.failing} failing`}
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Forecast scenario */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">12-month forecast + hiring impact</CardTitle>
+          <CardDescription>
+            Linear extrapolation of the worst-cohort gap from recent runs. Add hires to model their
+            effect on the projected trajectory. AI agent narrates drivers + actions.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <Label htmlFor="horizon">Horizon (months)</Label>
+              <input
+                id="horizon"
+                type="number"
+                min={1}
+                max={36}
+                value={horizonMonths}
+                onChange={(e) => setHorizonMonths(Math.max(1, parseInt(e.target.value, 10) || 12))}
+                className="mt-1 w-24 rounded-md border border-input bg-background px-2 py-1 text-sm"
+              />
+            </div>
+          </div>
+
+          <div className="rounded-md border border-border p-3">
+            <div className="mb-2 text-sm font-medium">Hiring scenario</div>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+              <input
+                placeholder="Level"
+                value={draft.level}
+                onChange={(e) => setDraft({ ...draft, level: e.target.value })}
+                className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+              />
+              <input
+                placeholder="Dimension"
+                value={draft.dimension}
+                onChange={(e) => setDraft({ ...draft, dimension: e.target.value })}
+                className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+              />
+              <input
+                placeholder="Group"
+                value={draft.group}
+                onChange={(e) => setDraft({ ...draft, group: e.target.value })}
+                className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+              />
+              <input
+                type="number"
+                min={1}
+                placeholder="Count"
+                value={draft.count}
+                onChange={(e) =>
+                  setDraft({ ...draft, count: Math.max(1, parseInt(e.target.value, 10) || 1) })
+                }
+                className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+              />
+              <input
+                type="number"
+                min={0}
+                placeholder="Mean salary"
+                value={draft.meanSalary}
+                onChange={(e) =>
+                  setDraft({
+                    ...draft,
+                    meanSalary: Math.max(0, parseInt(e.target.value, 10) || 0),
+                  })
+                }
+                className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+              />
+            </div>
+            <div className="mt-2 flex items-center justify-between">
+              <Button size="sm" variant="outline" onClick={handleAddHire}>
+                Add to plan
+              </Button>
+              {hires.length > 0 && (
+                <span className="text-xs text-muted-foreground">
+                  {hires.length} item{hires.length === 1 ? '' : 's'} in plan
+                </span>
+              )}
+            </div>
+            {hires.length > 0 && (
+              <ul className="mt-2 space-y-1 text-xs">
+                {hires.map((h, i) => (
+                  <li key={i} className="flex items-center justify-between">
+                    <span>
+                      {h.count}× {h.dimension}/{h.group} at {h.level} (mean{' '}
+                      {h.meanSalary.toLocaleString()})
+                    </span>
+                    <button
+                      className="text-muted-foreground hover:text-foreground"
+                      onClick={() => setHires((prev) => prev.filter((_, j) => j !== i))}
+                    >
+                      ✗
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div className="flex items-center justify-end">
+            <Button size="sm" onClick={handleRunForecast} disabled={forecastMutation.isPending}>
+              {forecastMutation.isPending ? (
+                <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+              ) : (
+                <TrendingUp className="mr-1 h-4 w-4" />
+              )}
+              Run forecast
+            </Button>
+          </div>
+
+          {forecast && (
+            <div className="space-y-3 rounded-md border border-border bg-muted/20 p-4">
+              <div>
+                <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                  {forecast.output.scenarioLabel} ·{' '}
+                  <span
+                    className={
+                      forecast.output.riskLevel === 'high'
+                        ? 'text-red-700'
+                        : forecast.output.riskLevel === 'medium'
+                          ? 'text-amber-700'
+                          : 'text-emerald-700'
+                    }
+                  >
+                    {forecast.output.riskLevel} risk
+                  </span>
+                </div>
+                <p className="mt-1 text-sm">{forecast.output.narrative}</p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
+                <div>
+                  <div className="text-xs text-muted-foreground">Today</div>
+                  <div className="font-mono">{forecast.output.baselineGap.toFixed(1)}%</div>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground">
+                    t+{forecast.output.horizonMonths}mo
+                  </div>
+                  <div className="font-mono">{forecast.output.projectedGap.toFixed(1)}%</div>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground">95% CI low</div>
+                  <div className="font-mono text-muted-foreground">
+                    {forecast.output.confidenceLow.toFixed(1)}%
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground">95% CI high</div>
+                  <div className="font-mono text-muted-foreground">
+                    {forecast.output.confidenceHigh.toFixed(1)}%
+                  </div>
+                </div>
+              </div>
+
+              {/* Sparkline-style projected series */}
+              <div className="rounded-md bg-background p-3">
+                <div className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">
+                  Projected series
+                </div>
+                <div className="flex items-end gap-2">
+                  {forecast.output.monthlySeries.map((p) => {
+                    const max = Math.max(
+                      ...forecast.output.monthlySeries.map((q) => Math.abs(q.projectedGapPercent)),
+                      Math.abs(forecast.output.baselineGap),
+                      1,
+                    );
+                    const h = Math.max(8, (Math.abs(p.projectedGapPercent) / max) * 80);
+                    return (
+                      <div key={p.monthsFromNow} className="flex flex-col items-center text-xs">
+                        <div
+                          className="w-10 rounded-t bg-primary/70"
+                          style={{ height: `${h}px` }}
+                          title={`${p.projectedGapPercent.toFixed(2)}%`}
+                        />
+                        <div className="mt-1 text-[10px] text-muted-foreground">
+                          t+{p.monthsFromNow}mo
+                        </div>
+                        <div className="font-mono text-[10px]">
+                          {p.projectedGapPercent.toFixed(1)}%
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {forecast.output.drivers.length > 0 && (
+                <div>
+                  <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                    Drivers
+                  </div>
+                  <ul className="mt-1 space-y-1 text-sm">
+                    {forecast.output.drivers.map((d, i) => (
+                      <li key={i}>
+                        <span className="font-medium">{d.factor}</span>
+                        <span className="ml-2 font-mono text-xs text-muted-foreground">
+                          {d.expectedDelta > 0 ? '+' : ''}
+                          {d.expectedDelta.toFixed(2)}pp
+                        </span>
+                        <span className="ml-2 text-muted-foreground">{d.explanation}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {forecast.output.recommendedActions.length > 0 && (
+                <div>
+                  <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                    Recommended actions
+                  </div>
+                  <ul className="mt-1 space-y-1 text-sm">
+                    {forecast.output.recommendedActions.map((a, i) => (
+                      <li key={i} className="flex items-start gap-2">
+                        <Badge
+                          variant="outline"
+                          className={
+                            a.priority === 'high'
+                              ? 'bg-red-50 text-red-700'
+                              : a.priority === 'medium'
+                                ? 'bg-amber-50 text-amber-700'
+                                : 'bg-emerald-50 text-emerald-700'
+                          }
+                        >
+                          {a.priority}
+                        </Badge>
+                        <span>
+                          <span className="font-medium">{a.action}</span>
+                          <span className="ml-2 text-muted-foreground">{a.rationale}</span>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
   );
 }

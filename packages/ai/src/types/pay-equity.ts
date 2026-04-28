@@ -149,8 +149,16 @@ export interface GapProjectionOutput {
   projectedGap: number;
   confidenceLow: number;
   confidenceHigh: number;
-  drivers: Array<{ factor: string; expectedDelta: number }>;
-  recommendedActions: string[];
+  monthlySeries: Array<{ monthsFromNow: number; projectedGapPercent: number }>;
+  drivers: Array<{ factor: string; expectedDelta: number; explanation: string }>;
+  recommendedActions: Array<{
+    action: string;
+    priority: 'high' | 'medium' | 'low';
+    rationale: string;
+  }>;
+  narrative: string;
+  riskLevel: 'high' | 'medium' | 'low';
+  scenarioLabel: string;
 }
 
 // ─── Helper builders ────────────────────────────────────────────────────────

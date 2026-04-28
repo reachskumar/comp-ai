@@ -460,3 +460,103 @@ export function useRunPayEquityAnalysisMutation() {
     },
   });
 }
+
+// ─── Phase 4 — Predict ─────────────────────────────────────────────
+
+export interface ProjectionMonthlyPoint {
+  monthsFromNow: number;
+  projectedGapPercent: number;
+}
+
+export interface ProjectionDriver {
+  factor: string;
+  expectedDelta: number;
+  explanation: string;
+}
+
+export interface ProjectionAction {
+  action: string;
+  priority: 'high' | 'medium' | 'low';
+  rationale: string;
+}
+
+export interface ProjectionEnvelope {
+  output: {
+    horizonMonths: number;
+    baselineGap: number;
+    projectedGap: number;
+    confidenceLow: number;
+    confidenceHigh: number;
+    monthlySeries: ProjectionMonthlyPoint[];
+    drivers: ProjectionDriver[];
+    recommendedActions: ProjectionAction[];
+    narrative: string;
+    riskLevel: 'high' | 'medium' | 'low';
+    scenarioLabel: string;
+  };
+  citations: PayEquityCitation[];
+  methodology: PayEquityMethodology;
+  confidence: 'high' | 'medium' | 'low';
+  warnings: PayEquityWarning[];
+  runId: string;
+  generatedAt: string;
+}
+
+export interface ForecastInput {
+  scenarioLabel?: string;
+  horizonMonths?: number;
+  hiringPlan?: Array<{
+    level: string;
+    dimension: string;
+    group: string;
+    count: number;
+    meanSalary: number;
+  }>;
+  promotionPlan?: Array<{
+    cohort: { dimension: string; group: string };
+    employees: number;
+    toLevel: string;
+  }>;
+}
+
+export function useForecastProjectionMutation() {
+  const qc = useQueryClient();
+  return useMutation<{ runId: string; envelope: ProjectionEnvelope }, Error, ForecastInput>({
+    mutationFn: (body) =>
+      apiClient.fetch('/api/v1/pay-equity/projections/forecast', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['pay-equity-runs'] });
+    },
+  });
+}
+
+export interface AirCohort {
+  dimension: string;
+  group: string;
+  referenceGroup: string;
+  sampleSize: number;
+  gapPercent: number;
+  adverseImpactRatio: number;
+  passesEightyPercentRule: boolean;
+  severity: 'high' | 'medium' | 'low';
+}
+
+export interface AirResponse {
+  runId: string;
+  runAt: string;
+  methodology: string;
+  threshold: number;
+  cohorts: AirCohort[];
+  summary: { total: number; passing: number; failing: number };
+}
+
+export function usePayEquityAir(runId: string | null) {
+  return useQuery<AirResponse>({
+    queryKey: ['pay-equity-air', runId],
+    queryFn: () => apiClient.fetch(`/api/v1/pay-equity/runs/${runId}/air`),
+    enabled: !!runId,
+  });
+}
