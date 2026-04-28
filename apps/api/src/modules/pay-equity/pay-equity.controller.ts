@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -10,13 +11,16 @@ import {
   Post,
   Query,
   Request,
+  Res,
   UseGuards,
 } from '@nestjs/common';
+import { FastifyReply } from 'fastify';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../../auth';
 import { PermissionGuard, RequirePermission, TenantGuard } from '../../common';
 import { PayEquityV2Service } from './pay-equity.service';
+import { REPORT_TYPES, type ReportType } from './report-renderers';
 import {
   CalculateRemediationDto,
   DecideRemediationDto,
@@ -238,5 +242,38 @@ export class PayEquityController {
   async applyRemediations(@Param('id') runId: string, @Request() req: AuthRequest) {
     const { tenantId, userId } = req.user;
     return this.service.applyApprovedRemediations(tenantId, runId, userId);
+  }
+
+  // ─── Phase 3 — Report ───────────────────────────────────────────────
+
+  @Get('runs/:id/reports/:type')
+  @ApiOperation({
+    summary:
+      'Download a Pay Equity report artifact (board PDF, EU PTD CSV, UK GPG CSV, EEO-1 CSV, CA SB 1162 CSV, or auditor PDF). Audit-logged per export.',
+  })
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  async downloadReport(
+    @Param('id') runId: string,
+    @Param('type') type: string,
+    @Request() req: AuthRequest,
+    @Res() reply: FastifyReply,
+  ) {
+    if (!REPORT_TYPES.includes(type as ReportType)) {
+      throw new BadRequestException(
+        `Unknown report type: ${type}. Valid: ${REPORT_TYPES.join(', ')}`,
+      );
+    }
+    const { tenantId, userId } = req.user;
+    const { buffer, filename, mimeType } = await this.service.generateReport(
+      tenantId,
+      runId,
+      type as ReportType,
+      userId,
+    );
+    void reply
+      .header('Content-Type', mimeType)
+      .header('Content-Disposition', `attachment; filename="${filename}"`)
+      .header('Content-Length', buffer.length)
+      .send(buffer);
   }
 }

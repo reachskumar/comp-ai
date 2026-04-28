@@ -1,4 +1,11 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  OnModuleInit,
+} from '@nestjs/common';
+import { existsSync } from 'node:fs';
 import { Prisma } from '@compensation/database';
 import {
   buildResult,
@@ -12,9 +19,13 @@ import {
   type PayEquityMethodology,
 } from '@compensation/ai';
 import { DatabaseService } from '../../database';
-import { PayEquityService as LegacyAnalyzer } from '../analytics/pay-equity.service';
+import {
+  PayEquityService as LegacyAnalyzer,
+  type PayEquityReport,
+} from '../analytics/pay-equity.service';
 import type { RunPayEquityAnalysisDto } from './dto/run-analysis.dto';
 import type { ListPayEquityRunsDto } from './dto/list-runs.dto';
+import { renderReport, REPORT_TYPES, type ReportType } from './report-renderers';
 
 /**
  * Phase 1: cohort drill-down row shape. Module-scope so the suppressed
@@ -68,17 +79,39 @@ interface OutlierRow {
  * remediation solver, projection) on top of this contract.
  */
 @Injectable()
-export class PayEquityV2Service {
+export class PayEquityV2Service implements OnModuleInit {
   private readonly logger = new Logger(PayEquityV2Service.name);
 
   /** Frozen methodology for the narrative agent. Bump version when EDGE spec or controls change. */
   static readonly METHODOLOGY_VERSION = '2026.04';
   static readonly METHODOLOGY_NAME = 'edge-multivariate';
 
+  /** Resolved at module init; null = no Chrome → Phase 3 PDF reports unavailable. */
+  private chromePathCache: string | null = null;
+
   constructor(
     private readonly db: DatabaseService,
     private readonly legacy: LegacyAnalyzer,
   ) {}
+
+  onModuleInit() {
+    const envPath = process.env['PUPPETEER_EXECUTABLE_PATH'];
+    if (envPath && existsSync(envPath)) {
+      this.chromePathCache = envPath;
+      return;
+    }
+    const candidates = [
+      '/usr/bin/chromium-browser',
+      '/usr/bin/chromium',
+      '/usr/bin/google-chrome-stable',
+    ];
+    this.chromePathCache = candidates.find((p) => existsSync(p)) ?? null;
+    if (!this.chromePathCache) {
+      this.logger.warn(
+        'No Chrome/Chromium binary found — Phase 3 PDF report exports will return 503',
+      );
+    }
+  }
 
   /**
    * Run a Pay Equity analysis: invoke the statistical engine, build a
@@ -1579,6 +1612,146 @@ export class PayEquityV2Service {
       );
       return { applied: approved.length, totalCost, employeeIds };
     });
+  }
+
+  // ─── Phase 3 — Report ──────────────────────────────────────────
+
+  /**
+   * Generate a downloadable report artifact for a stored run.
+   *
+   * - Reads the immutable PayEquityRun envelope (no re-computation)
+   * - Routes to the appropriate renderer (CSV string or PDF-ready HTML)
+   * - For PDF, runs Puppeteer with the cached Chrome path
+   * - Writes a PAY_EQUITY_REPORT_EXPORTED audit log row per export
+   * - Returns { buffer, filename, mimeType } for the controller to send
+   */
+  async generateReport(
+    tenantId: string,
+    runId: string,
+    type: ReportType,
+    userId: string,
+  ): Promise<{ buffer: Buffer; filename: string; mimeType: string }> {
+    if (!REPORT_TYPES.includes(type)) {
+      throw new BadRequestException(`Unknown report type: ${type}`);
+    }
+
+    const run = await this.getRun(tenantId, runId);
+    if (run.status !== 'COMPLETE') {
+      throw new BadRequestException(`Run ${runId} is ${run.status}, cannot export`);
+    }
+    if (run.agentType !== 'narrative') {
+      throw new BadRequestException(
+        `Run ${runId} agentType=${run.agentType}, only narrative runs are exportable`,
+      );
+    }
+
+    const tenant = await this.db.forTenant(tenantId, (tx) =>
+      tx.tenant.findUnique({ where: { id: tenantId }, select: { name: true } }),
+    );
+
+    const envelope = run.result as unknown as PayEquityAgentResult<PayEquityReport>;
+
+    const out = renderReport(type, {
+      runId,
+      runAt: run.createdAt,
+      tenantId,
+      tenantName: tenant?.name ?? 'Company',
+      envelope,
+    });
+
+    let buffer: Buffer;
+    if (out.format === 'csv') {
+      // Prefix UTF-8 BOM so Excel opens the file in UTF-8 instead of cp1252.
+      const bom = Buffer.from([0xef, 0xbb, 0xbf]);
+      buffer = Buffer.concat([bom, Buffer.from(out.content, 'utf-8')]);
+    } else {
+      if (!this.chromePathCache) {
+        throw new BadRequestException(
+          'PDF rendering unavailable on this server (no Chrome/Chromium binary). Set PUPPETEER_EXECUTABLE_PATH.',
+        );
+      }
+      buffer = await this.renderHtmlToPdf(out.html, this.chromePathCache);
+    }
+
+    await this.db.forTenant(tenantId, (tx) =>
+      tx.auditLog.create({
+        data: {
+          tenantId,
+          userId,
+          action: 'PAY_EQUITY_REPORT_EXPORTED',
+          entityType: 'PayEquityRun',
+          entityId: runId,
+          changes: {
+            reportType: type,
+            filename: out.filename,
+            byteLength: buffer.length,
+            methodologyVersion: run.methodologyVersion,
+          } as unknown as Prisma.InputJsonValue,
+        },
+      }),
+    );
+
+    this.logger.log(`Report exported: run=${runId} type=${type} bytes=${buffer.length}`);
+
+    return { buffer, filename: out.filename, mimeType: out.mimeType };
+  }
+
+  private async renderHtmlToPdf(html: string, executablePath: string): Promise<Buffer> {
+    const PDF_TIMEOUT_MS = 30_000;
+    const withTimeout = <T>(p: Promise<T>, ms: number, label: string): Promise<T> =>
+      new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+        p.then(
+          (v) => {
+            clearTimeout(t);
+            resolve(v);
+          },
+          (e: unknown) => {
+            clearTimeout(t);
+            reject(e instanceof Error ? e : new Error(String(e)));
+          },
+        );
+      });
+
+    const puppeteer = await import('puppeteer-core');
+    const browser = await withTimeout(
+      puppeteer.default.launch({
+        headless: true,
+        executablePath,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-gpu',
+          '--disable-dev-shm-usage',
+        ],
+      }),
+      PDF_TIMEOUT_MS,
+      'puppeteer launch',
+    );
+    try {
+      const page = await browser.newPage();
+      await withTimeout(
+        page.setContent(html, { waitUntil: 'domcontentloaded' }),
+        PDF_TIMEOUT_MS,
+        'puppeteer setContent',
+      );
+      const pdfUint8 = await withTimeout(
+        page.pdf({
+          format: 'A4',
+          printBackground: true,
+          margin: { top: '12mm', bottom: '12mm', left: '12mm', right: '12mm' },
+        }),
+        PDF_TIMEOUT_MS,
+        'puppeteer pdf',
+      );
+      return Buffer.from(pdfUint8);
+    } finally {
+      try {
+        await browser.close();
+      } catch (closeErr) {
+        this.logger.warn(`Failed to close puppeteer browser: ${(closeErr as Error).message}`);
+      }
+    }
   }
 }
 

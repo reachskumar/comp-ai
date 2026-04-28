@@ -30,7 +30,9 @@ import {
   Eye,
   ArrowUpRight,
   ArrowDownRight,
+  Download,
 } from 'lucide-react';
+import { apiClient } from '@/lib/api-client';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -303,11 +305,11 @@ export default function PayEquityWorkspacePage() {
             }
           />
         </TabsContent>
-        <TabsContent value="reports">
-          <PhasePlaceholder
-            phase="Phase 3"
-            title="Reports"
-            description="Board narrative PDF, EU PTD, UK GPG, EEO-1, CA SB 1162, comp committee deck, scheduled delivery."
+        <TabsContent value="reports" className="space-y-4">
+          <ReportsPanel
+            latestRunId={
+              overview.data?.hasData ? (overview.data as PayEquityOverviewData).latestRunId : null
+            }
           />
         </TabsContent>
         <TabsContent value="prevent">
@@ -1377,6 +1379,146 @@ function RemediationsTable({ runId }: { runId: string }) {
             </table>
           </div>
         )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Phase 3 — Reports panel ──────────────────────────────────────
+
+const REPORT_DEFS: Array<{
+  type: 'board' | 'eu_ptd' | 'uk_gpg' | 'eeo1' | 'sb1162' | 'auditor';
+  title: string;
+  description: string;
+  format: 'PDF' | 'CSV';
+}> = [
+  {
+    type: 'board',
+    title: 'Board narrative',
+    description: 'Executive summary, headline metrics, cohort findings, methodology box.',
+    format: 'PDF',
+  },
+  {
+    type: 'eu_ptd',
+    title: 'EU Pay Transparency Directive',
+    description: 'Article 9 disclosure (Directive (EU) 2023/970). Reviewed before filing.',
+    format: 'CSV',
+  },
+  {
+    type: 'uk_gpg',
+    title: 'UK Gender Pay Gap',
+    description:
+      'Six required figures (Equality Act 2010, 2017 Regulations). Bonus + quartile fields require raw payroll.',
+    format: 'CSV',
+  },
+  {
+    type: 'eeo1',
+    title: 'EEO-1 Component 1',
+    description: 'Federal contractor disclosure. Job-category mapping required for full grid.',
+    format: 'CSV',
+  },
+  {
+    type: 'sb1162',
+    title: 'California SB 1162 Pay Data',
+    description: 'Labor Code §12999 establishment-level rows. Pay-band detail requires raw rates.',
+    format: 'CSV',
+  },
+  {
+    type: 'auditor',
+    title: 'Auditor defensibility export',
+    description:
+      'Hashed identifiers, full methodology + regression detail + citation list. Watermarked.',
+    format: 'PDF',
+  },
+];
+
+function ReportsPanel({ latestRunId }: { latestRunId: string | null }) {
+  const { toast } = useToast();
+  const [busyType, setBusyType] = React.useState<string | null>(null);
+
+  if (!latestRunId) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Reports</CardTitle>
+          <CardDescription>
+            Run a Pay Equity analysis from the Overview tab to enable report exports.
+          </CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
+
+  const handleDownload = async (type: (typeof REPORT_DEFS)[number]['type']) => {
+    setBusyType(type);
+    try {
+      const { blob, fileName } = await apiClient.fetchBlob(
+        `/api/v1/pay-equity/runs/${latestRunId}/reports/${type}`,
+      );
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download =
+        fileName ?? `pay-equity-${type}.${type === 'board' || type === 'auditor' ? 'pdf' : 'csv'}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast({
+        title: 'Download failed',
+        description: err instanceof Error ? err.message : String(err),
+        variant: 'destructive',
+      });
+    } finally {
+      setBusyType(null);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Reports</CardTitle>
+        <CardDescription>
+          All exports are generated from the latest run&apos;s immutable envelope and audit-logged
+          on download. Statutory CSV templates may have fields marked{' '}
+          <code className="font-mono text-xs">not_available</code> until canonical schema gains the
+          underlying data (bonus components, hourly rate, race/ethnicity, job category).
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-3 sm:grid-cols-2">
+        {REPORT_DEFS.map((def) => (
+          <div
+            key={def.type}
+            className="flex flex-col gap-3 rounded-md border border-border bg-card p-4"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <div className="flex items-center gap-2">
+                  <FileText className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm font-semibold">{def.title}</span>
+                </div>
+                <Badge variant="outline" className="mt-1 text-[10px] uppercase">
+                  {def.format}
+                </Badge>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busyType !== null}
+                onClick={() => void handleDownload(def.type)}
+              >
+                {busyType === def.type ? (
+                  <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                ) : (
+                  <Download className="mr-1 h-4 w-4" />
+                )}
+                Download
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">{def.description}</p>
+          </div>
+        ))}
       </CardContent>
     </Card>
   );

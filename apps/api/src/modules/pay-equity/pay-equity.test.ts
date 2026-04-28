@@ -14,6 +14,7 @@ vi.mock('@compensation/ai', async () => {
 });
 
 import { PayEquityV2Service } from './pay-equity.service';
+import { renderReport } from './report-renderers';
 import {
   invokeCohortRootCauseGraph,
   invokeOutlierExplainerGraph,
@@ -1426,5 +1427,226 @@ describe('PayEquityV2Service.applyApprovedRemediations', () => {
     await expect(
       service.applyApprovedRemediations(TEST_TENANT_ID, 'narrative-run', TEST_USER_ID),
     ).rejects.toThrow(/expected remediation/);
+  });
+});
+
+// ─── Phase 3 — Reports ──────────────────────────────────────────────────
+
+describe('renderReport', () => {
+  function ctx(extra: Partial<Parameters<typeof renderReport>[1]> = {}) {
+    const envelope = buildEnvelope(
+      [
+        {
+          dimension: 'gender',
+          group: 'Female',
+          referenceGroup: 'Male',
+          coefficient: -0.032,
+          standardError: 0.011,
+          tStatistic: -2.91,
+          pValue: 0.004,
+          confidenceInterval: [-0.054, -0.01] as [number, number],
+          sampleSize: 250,
+          gapPercent: -3.2,
+          significance: 'significant',
+          riskLevel: 'MEDIUM',
+        },
+      ],
+      500,
+    );
+    (envelope.citations as Array<{ type: string; ref: string; excerpt: string }>).push({
+      type: 'regression_coefficient',
+      ref: 'gender.Female.vs.Male',
+      excerpt: 'β=-0.032',
+    });
+    return {
+      runId: 'run-rep',
+      runAt: new Date('2026-04-28T10:00:00Z'),
+      tenantId: TEST_TENANT_ID,
+      tenantName: 'Acme Corp',
+      envelope: envelope as unknown as Parameters<typeof renderReport>[1]['envelope'],
+      ...extra,
+    };
+  }
+
+  it('board: returns pdf-html with executive summary, cohort table, and methodology box', () => {
+    const out = renderReport('board', ctx());
+    expect(out.format).toBe('pdf-html');
+    expect(out.filename).toMatch(/^pay-equity-board-.*\.pdf$/);
+    if (out.format !== 'pdf-html') throw new Error('expected pdf-html');
+    expect(out.html).toMatch(/Pay Equity Report/);
+    expect(out.html).toMatch(/Executive summary/);
+    expect(out.html).toMatch(/Cohort findings/);
+    expect(out.html).toMatch(/edge-multivariate/);
+    expect(out.html).toMatch(/Female/);
+  });
+
+  it('eu_ptd: csv has Article 9 header + cohort rows with statutory columns', () => {
+    const out = renderReport('eu_ptd', ctx());
+    expect(out.format).toBe('csv');
+    if (out.format !== 'csv') throw new Error('expected csv');
+    expect(out.content).toMatch(/EU Pay Transparency Directive/);
+    expect(out.content).toMatch(/Directive \(EU\) 2023\/970/);
+    expect(out.content).toMatch(/category_of_workers/);
+    expect(out.content).toMatch(/median_pay_gap_percent/);
+    // bonus + median fields are flagged not_available rather than empty
+    expect(out.content).toMatch(/not_available/);
+    expect(out.content).toMatch(/Female/);
+  });
+
+  it('uk_gpg: csv emits the six required figures with median+bonus marked not_available', () => {
+    const out = renderReport('uk_gpg', ctx());
+    if (out.format !== 'csv') throw new Error('expected csv');
+    expect(out.content).toMatch(/UK Gender Pay Gap/);
+    expect(out.content).toMatch(/mean_gender_pay_gap_percent/);
+    expect(out.content).toMatch(/median_gender_pay_gap_percent/);
+    expect(out.content).toMatch(/mean_bonus_pay_gap_percent/);
+    expect(out.content).toMatch(/quartile_lower_male_percent/);
+    expect(out.content).toMatch(/quartile_upper_female_percent/);
+    expect(out.content).toMatch(/-3.2/); // mean computed from regression coefficient
+  });
+
+  it('eeo1: csv emits EEO header + sex column populated for gender cohorts', () => {
+    const out = renderReport('eeo1', ctx());
+    if (out.format !== 'csv') throw new Error('expected csv');
+    expect(out.content).toMatch(/EEO-1 Component 1/);
+    expect(out.content).toMatch(/eeo_job_category/);
+    expect(out.content).toMatch(/race_ethnicity/);
+    // gender cohort fills the sex column with the group name
+    expect(out.content).toMatch(/Female/);
+  });
+
+  it('sb1162: csv has SB 1162 header + establishment columns', () => {
+    const out = renderReport('sb1162', ctx());
+    if (out.format !== 'csv') throw new Error('expected csv');
+    expect(out.content).toMatch(/SB 1162/);
+    expect(out.content).toMatch(/establishment_id/);
+    expect(out.content).toMatch(/median_hourly_rate/);
+  });
+
+  it('auditor: pdf-html uses hashed tenant id and watermarks the page', () => {
+    const out = renderReport('auditor', ctx());
+    if (out.format !== 'pdf-html') throw new Error('expected pdf-html');
+    expect(out.html).toMatch(/Auditor Defensibility/);
+    expect(out.html).toMatch(/AUDITOR EXPORT/); // watermark text
+    // raw tenant id must NOT appear; only its hash
+    expect(out.html).not.toContain(TEST_TENANT_ID);
+    expect(out.html).toMatch(/Methodology/);
+    expect(out.html).toMatch(/Citations/);
+  });
+});
+
+describe('PayEquityV2Service.generateReport', () => {
+  let service: PayEquityV2Service;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createService());
+  });
+
+  function completeNarrativeRun() {
+    return {
+      id: 'rep-run-1',
+      tenantId: TEST_TENANT_ID,
+      agentType: 'narrative',
+      status: 'COMPLETE',
+      methodologyName: 'edge-multivariate',
+      methodologyVersion: '2026.04',
+      createdAt: new Date('2026-04-28T10:00:00Z'),
+      result: buildEnvelope(
+        [
+          {
+            dimension: 'gender',
+            group: 'Female',
+            referenceGroup: 'Male',
+            coefficient: -0.032,
+            standardError: 0.011,
+            tStatistic: -2.91,
+            pValue: 0.004,
+            confidenceInterval: [-0.054, -0.01] as [number, number],
+            sampleSize: 250,
+            gapPercent: -3.2,
+            significance: 'significant',
+            riskLevel: 'MEDIUM',
+          },
+        ],
+        500,
+      ),
+    };
+  }
+
+  it('CSV: returns BOM-prefixed UTF-8 buffer + writes audit log', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue(completeNarrativeRun());
+    db.client.tenant.findUnique.mockResolvedValue({ name: 'Acme Corp' });
+    db.client.auditLog.create.mockResolvedValue({});
+
+    const result = await service.generateReport(
+      TEST_TENANT_ID,
+      'rep-run-1',
+      'eu_ptd',
+      TEST_USER_ID,
+    );
+
+    expect(result.mimeType).toBe('text/csv');
+    expect(result.filename).toMatch(/eu-ptd.*\.csv$/);
+    // BOM (0xEF 0xBB 0xBF) for Excel UTF-8 compatibility
+    expect(result.buffer[0]).toBe(0xef);
+    expect(result.buffer[1]).toBe(0xbb);
+    expect(result.buffer[2]).toBe(0xbf);
+    // Buffer contents include the statutory header
+    expect(result.buffer.toString('utf-8')).toMatch(/EU Pay Transparency Directive/);
+
+    // Audit row written with PAY_EQUITY_REPORT_EXPORTED + reportType in changes
+    const auditCall = db.client.auditLog.create.mock.calls[0]![0];
+    expect(auditCall.data.action).toBe('PAY_EQUITY_REPORT_EXPORTED');
+    expect(auditCall.data.entityType).toBe('PayEquityRun');
+    expect(auditCall.data.entityId).toBe('rep-run-1');
+    expect(auditCall.data.changes.reportType).toBe('eu_ptd');
+    expect(auditCall.data.changes.byteLength).toBe(result.buffer.length);
+  });
+
+  it('PDF: throws BadRequestException when no Chrome path is cached', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue(completeNarrativeRun());
+    db.client.tenant.findUnique.mockResolvedValue({ name: 'Acme Corp' });
+
+    // chromePathCache stays null because onModuleInit wasn't called in tests
+    await expect(
+      service.generateReport(TEST_TENANT_ID, 'rep-run-1', 'board', TEST_USER_ID),
+    ).rejects.toThrow(/PDF rendering unavailable/);
+
+    // No audit log on the failure path
+    expect(db.client.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects unknown report types', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue(completeNarrativeRun());
+    db.client.tenant.findUnique.mockResolvedValue({ name: 'Acme Corp' });
+    await expect(
+      service.generateReport(
+        TEST_TENANT_ID,
+        'rep-run-1',
+        'gibberish' as unknown as Parameters<typeof service.generateReport>[2],
+        TEST_USER_ID,
+      ),
+    ).rejects.toThrow(/Unknown report type/);
+  });
+
+  it('rejects FAILED runs', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue({
+      ...completeNarrativeRun(),
+      status: 'FAILED',
+    });
+    await expect(
+      service.generateReport(TEST_TENANT_ID, 'rep-run-1', 'eu_ptd', TEST_USER_ID),
+    ).rejects.toThrow(/cannot export/);
+  });
+
+  it('rejects non-narrative runs (cohort_root_cause / outlier_explainer / remediation)', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue({
+      ...completeNarrativeRun(),
+      agentType: 'remediation',
+    });
+    await expect(
+      service.generateReport(TEST_TENANT_ID, 'rep-run-1', 'board', TEST_USER_ID),
+    ).rejects.toThrow(/only narrative runs are exportable/);
   });
 });
