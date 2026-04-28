@@ -6,6 +6,7 @@ import {
   HttpStatus,
   Logger,
   Param,
+  Patch,
   Post,
   Query,
   Request,
@@ -16,7 +17,12 @@ import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../../auth';
 import { PermissionGuard, RequirePermission, TenantGuard } from '../../common';
 import { PayEquityV2Service } from './pay-equity.service';
-import { ListPayEquityRunsDto, RunPayEquityAnalysisDto } from './dto';
+import {
+  CalculateRemediationDto,
+  DecideRemediationDto,
+  ListPayEquityRunsDto,
+  RunPayEquityAnalysisDto,
+} from './dto';
 
 interface AuthRequest {
   user: { userId: string; tenantId: string; email: string; role: string; name?: string };
@@ -174,5 +180,63 @@ export class PayEquityController {
   ) {
     const { tenantId, userId } = req.user;
     return this.service.explainOutlier(tenantId, runId, employeeId, userId);
+  }
+
+  // ─── Phase 2 — Remediate ────────────────────────────────────────────
+
+  @Post('runs/:id/remediations/calculate')
+  @ApiOperation({
+    summary:
+      'Compute proposed adjustments for a parent run. Persists a remediation child PayEquityRun + one PayEquityRemediation row per affected employee (status=PROPOSED). Includes AI-narrated justifications.',
+  })
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('Pay Equity', 'insert')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  async calculateRemediations(
+    @Param('id') runId: string,
+    @Body() dto: CalculateRemediationDto,
+    @Request() req: AuthRequest,
+  ) {
+    const { tenantId, userId } = req.user;
+    return this.service.calculateRemediations(tenantId, runId, dto, userId);
+  }
+
+  @Get('runs/:id/remediations')
+  @ApiOperation({
+    summary: 'List per-employee remediation rows for a remediation run.',
+  })
+  async listRemediations(@Param('id') runId: string, @Request() req: AuthRequest) {
+    return this.service.listRemediations(req.user.tenantId, runId);
+  }
+
+  @Patch('remediations/:id/decision')
+  @ApiOperation({
+    summary: 'Approve or decline a single PROPOSED remediation. Audit-logged.',
+  })
+  @RequirePermission('Pay Equity', 'update')
+  async decideRemediation(
+    @Param('id') id: string,
+    @Body() dto: DecideRemediationDto,
+    @Request() req: AuthRequest,
+  ) {
+    return this.service.decideRemediation(
+      req.user.tenantId,
+      id,
+      dto.decision,
+      req.user.userId,
+      dto.note,
+    );
+  }
+
+  @Post('runs/:id/remediations/apply')
+  @ApiOperation({
+    summary:
+      'Apply all APPROVED remediations on a remediation run: writes Employee.baseSalary, marks each row APPLIED, emits audit log per change.',
+  })
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('Pay Equity', 'update')
+  async applyRemediations(@Param('id') runId: string, @Request() req: AuthRequest) {
+    const { tenantId, userId } = req.user;
+    return this.service.applyApprovedRemediations(tenantId, runId, userId);
   }
 }

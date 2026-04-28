@@ -332,6 +332,120 @@ export function useExplainOutlierMutation() {
   });
 }
 
+// ─── Phase 2: Remediate ─────────────────────────────────────────────
+
+export interface RemediationRow {
+  id: string;
+  runId: string;
+  employeeId: string;
+  employeeCode: string;
+  name: string;
+  department: string | null;
+  level: string | null;
+  currency: string;
+  currentCompaRatio: number | null;
+  fromValue: number;
+  toValue: number;
+  deltaValue: number;
+  deltaPercent: number;
+  justification: string | null;
+  status: 'PROPOSED' | 'APPROVED' | 'DECLINED' | 'APPLIED';
+  appliedCycleId: string | null;
+  appliedAt: string | null;
+  decidedByUserId: string | null;
+  decidedAt: string | null;
+  createdAt: string;
+}
+
+export interface RemediationEnvelope {
+  output: {
+    targetGap: number;
+    totalCost: number;
+    affectedEmployees: number;
+    adjustments: Array<{
+      employeeId: string;
+      fromValue: number;
+      toValue: number;
+      justification: string;
+    }>;
+    alternativeScenarios: Array<{
+      label: string;
+      targetGap: number;
+      cost: number;
+      summary: string;
+    }>;
+  };
+  citations: PayEquityCitation[];
+  methodology: PayEquityMethodology;
+  confidence: 'high' | 'medium' | 'low';
+  warnings: PayEquityWarning[];
+  runId: string;
+  generatedAt: string;
+}
+
+export function useCalculateRemediationsMutation() {
+  const qc = useQueryClient();
+  return useMutation<
+    { runId: string; envelope: RemediationEnvelope },
+    Error,
+    { runId: string; targetGapPercent: number; maxPerEmployeePct?: number; note?: string }
+  >({
+    mutationFn: ({ runId, ...body }) =>
+      apiClient.fetch(`/api/v1/pay-equity/runs/${runId}/remediations/calculate`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['pay-equity-runs'] });
+    },
+  });
+}
+
+export function useRemediations(remediationRunId: string | null) {
+  return useQuery<RemediationRow[]>({
+    queryKey: ['pay-equity-remediations', remediationRunId],
+    queryFn: () => apiClient.fetch(`/api/v1/pay-equity/runs/${remediationRunId}/remediations`),
+    enabled: !!remediationRunId,
+  });
+}
+
+export function useDecideRemediationMutation() {
+  const qc = useQueryClient();
+  return useMutation<
+    RemediationRow,
+    Error,
+    { remediationId: string; runId: string; decision: 'APPROVED' | 'DECLINED'; note?: string }
+  >({
+    mutationFn: ({ remediationId, decision, note }) =>
+      apiClient.fetch(`/api/v1/pay-equity/remediations/${remediationId}/decision`, {
+        method: 'PATCH',
+        body: JSON.stringify({ decision, note }),
+      }),
+    onSuccess: (_data, vars) => {
+      void qc.invalidateQueries({ queryKey: ['pay-equity-remediations', vars.runId] });
+    },
+  });
+}
+
+export function useApplyRemediationsMutation() {
+  const qc = useQueryClient();
+  return useMutation<
+    { applied: number; totalCost: number; employeeIds: string[] },
+    Error,
+    { runId: string }
+  >({
+    mutationFn: ({ runId }) =>
+      apiClient.fetch(`/api/v1/pay-equity/runs/${runId}/remediations/apply`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      }),
+    onSuccess: (_data, vars) => {
+      void qc.invalidateQueries({ queryKey: ['pay-equity-remediations', vars.runId] });
+      void qc.invalidateQueries({ queryKey: ['pay-equity-runs'] });
+    },
+  });
+}
+
 export function useRunPayEquityAnalysisMutation() {
   const qc = useQueryClient();
   return useMutation<RunAnalysisResult, Error, RunAnalysisInput>({

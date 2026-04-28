@@ -6,6 +6,7 @@ import {
   checkSampleSize,
   invokeCohortRootCauseGraph,
   invokeOutlierExplainerGraph,
+  invokeRemediationGraph,
   type AgentWarning,
   type PayEquityAgentResult,
   type PayEquityMethodology,
@@ -1134,6 +1135,450 @@ export class PayEquityV2Service {
       default:
         return false;
     }
+  }
+
+  // ─── Phase 2: Remediation ──────────────────────────────────────────────
+
+  /**
+   * Calculate proposed adjustments for a parent run.
+   *
+   * Strategy (deterministic):
+   *   1. For each statistically-significant cohort with abs(gap) > targetGap,
+   *      pull the employees in that cohort (k-anonymity gated).
+   *   2. Compute the cohort mean salary.
+   *   3. For employees with compa-ratio < 1, propose an adjustment that
+   *      moves them toward the cohort mean — capped at maxPerEmployeePct of
+   *      their current salary so a single bump can't exceed the cap.
+   *   4. Sort by lowest compa-ratio so the biggest gainers are the most
+   *      underpaid people in significant cohorts.
+   *
+   * Then invoke the AI remediation agent for narrative justifications and
+   * scenario summaries. Persist each adjustment as a PayEquityRemediation
+   * row (status=PROPOSED) and the run-level envelope as a child PayEquityRun
+   * (agentType=remediation).
+   */
+  async calculateRemediations(
+    tenantId: string,
+    parentRunId: string,
+    dto: { targetGapPercent: number; maxPerEmployeePct?: number; note?: string },
+    userId: string,
+  ) {
+    const parentRun = await this.getRun(tenantId, parentRunId);
+    if (parentRun.status !== 'COMPLETE') {
+      throw new BadRequestException(`Parent run ${parentRunId} is ${parentRun.status}`);
+    }
+
+    const env = parentRun.result as unknown as PayEquityAgentResult<{
+      regressionResults: Array<{
+        dimension: string;
+        group: string;
+        referenceGroup: string;
+        gapPercent: number;
+        pValue: number;
+        sampleSize: number;
+        coefficient: number;
+        significance: string;
+      }>;
+    }>;
+
+    const targetGap = dto.targetGapPercent;
+    const cap = dto.maxPerEmployeePct ?? 0.15;
+
+    // Cohorts that need work: significant + |gap| > target.
+    const needRemediation = env.output.regressionResults.filter(
+      (r) =>
+        r.significance === 'significant' && Math.abs(r.gapPercent) > targetGap && r.sampleSize >= 5,
+    );
+
+    if (needRemediation.length === 0) {
+      throw new BadRequestException(
+        `No statistically-significant cohorts exceed target gap of ${targetGap}% in run ${parentRunId}`,
+      );
+    }
+
+    // Pre-create the remediation run row.
+    const childRun = await this.db.forTenant(tenantId, (tx) =>
+      tx.payEquityRun.create({
+        data: {
+          tenantId,
+          userId,
+          agentType: 'remediation',
+          methodologyName: parentRun.methodologyName,
+          methodologyVersion: parentRun.methodologyVersion,
+          controls: parentRun.controls,
+          status: 'PENDING',
+          summary:
+            dto.note ??
+            `Remediation plan for ${needRemediation.length} cohort(s), target ${targetGap}%`,
+          sampleSize: 0,
+        },
+      }),
+    );
+
+    try {
+      // ─── Compute deterministic adjustments per cohort ──
+      const proposedAdjustments: Array<{
+        employeeId: string;
+        employeeCode: string;
+        name: string;
+        level: string;
+        department: string;
+        cohort: { dimension: string; group: string };
+        currentSalary: number;
+        proposedSalary: number;
+        currency: string;
+        currentCompaRatio: number | null;
+        cohortMeanSalary: number;
+      }> = [];
+
+      for (const cohort of needRemediation) {
+        const employees = await this.db.forTenant(tenantId, (tx) =>
+          tx.employee.findMany({
+            where: this.buildCohortWhere(tenantId, cohort.dimension, cohort.group),
+            select: {
+              id: true,
+              employeeCode: true,
+              firstName: true,
+              lastName: true,
+              level: true,
+              department: true,
+              baseSalary: true,
+              currency: true,
+              compaRatio: true,
+            },
+          }),
+        );
+
+        if (employees.length === 0) continue;
+
+        const meanSalary =
+          employees.reduce((s, e) => s + Number(e.baseSalary), 0) / employees.length;
+
+        // Propose adjustments for employees with CR < 1 in this cohort.
+        for (const e of employees) {
+          if (e.compaRatio === null) continue;
+          const cr = Number(e.compaRatio);
+          if (cr >= 1) continue;
+          const current = Number(e.baseSalary);
+
+          // Move toward cohort mean by 50% of the gap, capped at maxPerEmployeePct.
+          const halfGap = (meanSalary - current) * 0.5;
+          const cappedDelta = Math.min(halfGap, current * cap);
+          if (cappedDelta <= 0) continue;
+          const proposed = Math.round((current + cappedDelta) * 100) / 100;
+
+          proposedAdjustments.push({
+            employeeId: e.id,
+            employeeCode: e.employeeCode,
+            name: `${e.firstName} ${e.lastName}`.trim(),
+            level: e.level,
+            department: e.department,
+            cohort: { dimension: cohort.dimension, group: cohort.group },
+            currentSalary: current,
+            proposedSalary: proposed,
+            currency: e.currency,
+            currentCompaRatio: cr,
+            cohortMeanSalary: meanSalary,
+          });
+        }
+      }
+
+      // Sort by lowest CR first — biggest gainers are most underpaid.
+      proposedAdjustments.sort((a, b) => (a.currentCompaRatio ?? 1) - (b.currentCompaRatio ?? 1));
+
+      const totalCost = proposedAdjustments.reduce(
+        (s, a) => s + (a.proposedSalary - a.currentSalary),
+        0,
+      );
+
+      const worstGap = needRemediation.reduce((a, b) =>
+        Math.abs(a.gapPercent) > Math.abs(b.gapPercent) ? a : b,
+      );
+
+      // ─── Invoke AI for narrative justifications ──
+      const envelope = await invokeRemediationGraph({
+        tenantId,
+        userId,
+        adjustments: proposedAdjustments,
+        plan: {
+          targetGapPercent: targetGap,
+          totalCost,
+          affectedEmployees: proposedAdjustments.length,
+          cohortsAddressed: needRemediation.map((c) => ({
+            dimension: c.dimension,
+            group: c.group,
+            gapPercent: c.gapPercent,
+          })),
+          currentWorstGap: worstGap.gapPercent,
+        },
+        methodology: {
+          name: parentRun.methodologyName,
+          version: parentRun.methodologyVersion,
+          controls: parentRun.controls,
+          sampleSize: env.methodology.sampleSize,
+        },
+      });
+
+      const finalEnvelope = { ...envelope, runId: childRun.id };
+
+      // ─── Persist: child run + per-employee PayEquityRemediation rows ──
+      await this.db.forTenant(tenantId, async (tx) => {
+        await tx.payEquityRun.update({
+          where: { id: childRun.id },
+          data: {
+            status: 'COMPLETE',
+            sampleSize: proposedAdjustments.length,
+            result: finalEnvelope as unknown as Prisma.InputJsonValue,
+            summary: `${proposedAdjustments.length} adjustment(s) proposed across ${needRemediation.length} cohort(s), total cost ${totalCost.toFixed(0)}`,
+          },
+        });
+
+        // One PayEquityRemediation row per proposed adjustment, with the
+        // AI-narrated justification mapped back by employeeId.
+        const justByEmp = new Map(
+          finalEnvelope.output.adjustments.map((a) => [a.employeeId, a.justification]),
+        );
+        if (proposedAdjustments.length > 0) {
+          await tx.payEquityRemediation.createMany({
+            data: proposedAdjustments.map((a) => ({
+              tenantId,
+              runId: childRun.id,
+              employeeId: a.employeeId,
+              fromValue: a.currentSalary,
+              toValue: a.proposedSalary,
+              justification: justByEmp.get(a.employeeId) ?? null,
+              status: 'PROPOSED',
+            })),
+          });
+        }
+
+        await tx.auditLog.create({
+          data: {
+            tenantId,
+            userId,
+            action: 'PAY_EQUITY_REMEDIATION_PROPOSED',
+            entityType: 'PayEquityRun',
+            entityId: childRun.id,
+            changes: {
+              parentRunId,
+              targetGapPercent: targetGap,
+              affectedEmployees: proposedAdjustments.length,
+              totalCost,
+              cohortsAddressed: needRemediation.length,
+            } as unknown as Prisma.InputJsonValue,
+          },
+        });
+      });
+
+      this.logger.log(
+        `Remediation calc: parent=${parentRunId} child=${childRun.id} adjustments=${proposedAdjustments.length} totalCost=${totalCost.toFixed(0)}`,
+      );
+
+      return { runId: childRun.id, envelope: finalEnvelope };
+    } catch (err) {
+      this.logger.error(`Remediation calc failed for ${childRun.id}`, err);
+      await this.db.forTenant(tenantId, (tx) =>
+        tx.payEquityRun.update({
+          where: { id: childRun.id },
+          data: {
+            status: 'FAILED',
+            errorMsg: err instanceof Error ? err.message : 'Unknown error',
+          },
+        }),
+      );
+      throw err;
+    }
+  }
+
+  /**
+   * List per-employee remediation rows attached to a remediation run.
+   */
+  async listRemediations(tenantId: string, remediationRunId: string) {
+    const run = await this.getRun(tenantId, remediationRunId);
+    if (run.agentType !== 'remediation') {
+      throw new BadRequestException(
+        `Run ${remediationRunId} is agentType=${run.agentType}; expected remediation`,
+      );
+    }
+    const rows = await this.db.forTenant(tenantId, (tx) =>
+      tx.payEquityRemediation.findMany({
+        where: { tenantId, runId: remediationRunId },
+        orderBy: [{ status: 'asc' }, { fromValue: 'asc' }],
+      }),
+    );
+
+    // Hydrate with employee data for the table.
+    const employeeIds = rows.map((r) => r.employeeId);
+    const employees =
+      employeeIds.length > 0
+        ? await this.db.forTenant(tenantId, (tx) =>
+            tx.employee.findMany({
+              where: { tenantId, id: { in: employeeIds } },
+              select: {
+                id: true,
+                employeeCode: true,
+                firstName: true,
+                lastName: true,
+                department: true,
+                level: true,
+                currency: true,
+                compaRatio: true,
+              },
+            }),
+          )
+        : [];
+    const empById = new Map(employees.map((e) => [e.id, e]));
+
+    return rows.map((r) => {
+      const e = empById.get(r.employeeId);
+      const from = Number(r.fromValue);
+      const to = Number(r.toValue);
+      return {
+        id: r.id,
+        runId: r.runId,
+        employeeId: r.employeeId,
+        employeeCode: e?.employeeCode ?? r.employeeId,
+        name: e ? `${e.firstName} ${e.lastName}`.trim() : r.employeeId,
+        department: e?.department ?? null,
+        level: e?.level ?? null,
+        currency: e?.currency ?? 'USD',
+        currentCompaRatio: e?.compaRatio ? Number(e.compaRatio) : null,
+        fromValue: from,
+        toValue: to,
+        deltaValue: to - from,
+        deltaPercent: from > 0 ? Math.round(((to - from) / from) * 10000) / 100 : 0,
+        justification: r.justification,
+        status: r.status,
+        appliedCycleId: r.appliedCycleId,
+        appliedAt: r.appliedAt,
+        decidedByUserId: r.decidedByUserId,
+        decidedAt: r.decidedAt,
+        createdAt: r.createdAt,
+      };
+    });
+  }
+
+  /**
+   * Approve or decline a single proposed remediation. Audit-logged.
+   */
+  async decideRemediation(
+    tenantId: string,
+    remediationId: string,
+    decision: 'APPROVED' | 'DECLINED',
+    userId: string,
+    note?: string,
+  ) {
+    return this.db.forTenant(tenantId, async (tx) => {
+      const row = await tx.payEquityRemediation.findFirst({
+        where: { id: remediationId, tenantId },
+      });
+      if (!row) throw new NotFoundException(`Remediation ${remediationId} not found`);
+      if (row.status !== 'PROPOSED') {
+        throw new BadRequestException(
+          `Remediation ${remediationId} is ${row.status}; can only decide PROPOSED`,
+        );
+      }
+
+      const updated = await tx.payEquityRemediation.update({
+        where: { id: remediationId },
+        data: {
+          status: decision,
+          decidedByUserId: userId,
+          decidedAt: new Date(),
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          tenantId,
+          userId,
+          action: `PAY_EQUITY_REMEDIATION_${decision}`,
+          entityType: 'PayEquityRemediation',
+          entityId: remediationId,
+          changes: {
+            employeeId: row.employeeId,
+            fromValue: Number(row.fromValue),
+            toValue: Number(row.toValue),
+            note: note ?? null,
+          } as unknown as Prisma.InputJsonValue,
+        },
+      });
+
+      this.logger.log(
+        `Remediation ${decision}: id=${remediationId} emp=${row.employeeId} by user=${userId}`,
+      );
+      return updated;
+    });
+  }
+
+  /**
+   * Apply all APPROVED remediations on a remediation run:
+   *   1. For each row, update Employee.baseSalary in one transaction.
+   *   2. Mark each row APPLIED with timestamp.
+   *   3. Write one AuditLog row per change (action=PAY_EQUITY_REMEDIATION_APPLIED).
+   *   4. Returns counts. The remediation run row stays COMPLETE; per-row
+   *      status becomes APPLIED so the UI can reflect the closed loop.
+   *
+   * No CompCycle is created — pay equity adjustments are tracked in their
+   * own audit trail. Phase 2.5 follow-up: optionally also link to a
+   * CompCycle for unified history.
+   */
+  async applyApprovedRemediations(tenantId: string, remediationRunId: string, userId: string) {
+    const run = await this.getRun(tenantId, remediationRunId);
+    if (run.agentType !== 'remediation') {
+      throw new BadRequestException(
+        `Run ${remediationRunId} is agentType=${run.agentType}; expected remediation`,
+      );
+    }
+
+    return this.db.forTenant(tenantId, async (tx) => {
+      const approved = await tx.payEquityRemediation.findMany({
+        where: { tenantId, runId: remediationRunId, status: 'APPROVED' },
+      });
+
+      if (approved.length === 0) {
+        return { applied: 0, totalCost: 0, employeeIds: [] as string[] };
+      }
+
+      let totalCost = 0;
+      const employeeIds: string[] = [];
+
+      for (const r of approved) {
+        const from = Number(r.fromValue);
+        const to = Number(r.toValue);
+        await tx.employee.update({
+          where: { id: r.employeeId },
+          data: { baseSalary: to },
+        });
+        await tx.payEquityRemediation.update({
+          where: { id: r.id },
+          data: { status: 'APPLIED', appliedAt: new Date() },
+        });
+        await tx.auditLog.create({
+          data: {
+            tenantId,
+            userId,
+            action: 'PAY_EQUITY_REMEDIATION_APPLIED',
+            entityType: 'Employee',
+            entityId: r.employeeId,
+            changes: {
+              remediationId: r.id,
+              runId: remediationRunId,
+              fromValue: from,
+              toValue: to,
+              delta: to - from,
+            } as unknown as Prisma.InputJsonValue,
+          },
+        });
+        totalCost += to - from;
+        employeeIds.push(r.employeeId);
+      }
+
+      this.logger.log(
+        `Remediation applied: run=${remediationRunId} count=${approved.length} cost=${totalCost.toFixed(0)}`,
+      );
+      return { applied: approved.length, totalCost, employeeIds };
+    });
   }
 }
 

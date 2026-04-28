@@ -49,10 +49,15 @@ import {
   usePayEquityOutliers,
   useAnalyzeCohortRootCauseMutation,
   useExplainOutlierMutation,
+  useCalculateRemediationsMutation,
+  useRemediations,
+  useDecideRemediationMutation,
+  useApplyRemediationsMutation,
   type PayEquityOverviewData,
   type CohortCell,
   type CohortRootCauseEnvelope,
   type OutlierExplainEnvelope,
+  type RemediationRow,
 } from '@/hooks/use-pay-equity';
 
 const ALL_DIMENSIONS = [
@@ -291,11 +296,11 @@ export default function PayEquityWorkspacePage() {
             }
           />
         </TabsContent>
-        <TabsContent value="remediate">
-          <PhasePlaceholder
-            phase="Phase 2"
-            title="Remediate"
-            description="Cost-to-close slider, optimal remediation AI, phased plan, apply as ad-hoc cycle, generate per-employee letters."
+        <TabsContent value="remediate" className="space-y-4">
+          <RemediatePanel
+            latestRunId={
+              overview.data?.hasData ? (overview.data as PayEquityOverviewData).latestRunId : null
+            }
           />
         </TabsContent>
         <TabsContent value="reports">
@@ -1018,6 +1023,361 @@ function OutliersCard({
           </div>
         </CardContent>
       )}
+    </Card>
+  );
+}
+
+// ─── Remediate Panel (Phase 2) ───────────────────────────────────────
+
+function RemediatePanel({ latestRunId }: { latestRunId: string | null }) {
+  const calcMutation = useCalculateRemediationsMutation();
+  const { toast } = useToast();
+  const [remediationRunId, setRemediationRunId] = React.useState<string | null>(null);
+  const [targetGap, setTargetGap] = React.useState('2');
+  const [maxPerEmp, setMaxPerEmp] = React.useState('15');
+  const [planSummary, setPlanSummary] = React.useState<string>('');
+
+  const handleCalculate = () => {
+    if (!latestRunId) return;
+    calcMutation.mutate(
+      {
+        runId: latestRunId,
+        targetGapPercent: Number(targetGap) || 2,
+        maxPerEmployeePct: Number(maxPerEmp) > 0 ? Number(maxPerEmp) / 100 : undefined,
+      },
+      {
+        onSuccess: (data) => {
+          setRemediationRunId(data.runId);
+          setPlanSummary(
+            `${data.envelope.output.affectedEmployees} adjustment(s) · cost ${Intl.NumberFormat(
+              'en-US',
+              { style: 'currency', currency: 'USD', maximumFractionDigits: 0 },
+            ).format(data.envelope.output.totalCost)}`,
+          );
+          toast({
+            title: 'Remediation plan computed',
+            description: `${data.envelope.output.affectedEmployees} adjustments proposed · confidence ${data.envelope.confidence}`,
+          });
+        },
+        onError: (err) =>
+          toast({
+            title: "Couldn't compute remediations",
+            description: err.message,
+            variant: 'destructive',
+          }),
+      },
+    );
+  };
+
+  if (!latestRunId) {
+    return (
+      <Card>
+        <CardContent className="py-12 text-center text-sm text-muted-foreground">
+          Run an analysis first (Overview tab) to compute remediations.
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <>
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Compute remediation plan</CardTitle>
+          <CardDescription>
+            Pulls employees in significant cohorts, proposes adjustments toward the cohort mean
+            (capped per employee), and gets AI-narrated justifications. Persists as PROPOSED rows
+            you approve below before apply.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1">
+              <Label htmlFor="target-gap">Target gap (%)</Label>
+              <input
+                id="target-gap"
+                type="number"
+                step="0.1"
+                min={0}
+                max={50}
+                value={targetGap}
+                onChange={(e) => setTargetGap(e.target.value)}
+                className="flex h-9 w-32 rounded-md border border-input bg-transparent px-3 text-sm"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="max-per-emp">Max per-employee bump (%)</Label>
+              <input
+                id="max-per-emp"
+                type="number"
+                step="0.1"
+                min={0}
+                max={100}
+                value={maxPerEmp}
+                onChange={(e) => setMaxPerEmp(e.target.value)}
+                className="flex h-9 w-32 rounded-md border border-input bg-transparent px-3 text-sm"
+              />
+            </div>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            {planSummary && <span className="text-sm text-muted-foreground">{planSummary}</span>}
+            <Button onClick={handleCalculate} disabled={calcMutation.isPending}>
+              {calcMutation.isPending ? (
+                <>
+                  <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                  Computing…
+                </>
+              ) : (
+                <>
+                  <Wrench className="mr-1 h-4 w-4" />
+                  {remediationRunId ? 'Re-compute plan' : 'Compute plan'}
+                </>
+              )}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {remediationRunId && <RemediationsTable runId={remediationRunId} />}
+    </>
+  );
+}
+
+function RemediationsTable({ runId }: { runId: string }) {
+  const remediations = useRemediations(runId);
+  const decideMutation = useDecideRemediationMutation();
+  const applyMutation = useApplyRemediationsMutation();
+  const { toast } = useToast();
+  const [showApplyConfirm, setShowApplyConfirm] = React.useState(false);
+
+  if (remediations.isLoading) return <Skeleton className="h-48 w-full" />;
+  const rows = remediations.data ?? [];
+
+  const counts = rows.reduce(
+    (acc, r) => {
+      acc[r.status] = (acc[r.status] ?? 0) + 1;
+      return acc;
+    },
+    {} as Record<string, number>,
+  );
+  const proposedCost = rows
+    .filter((r) => r.status === 'PROPOSED')
+    .reduce((s, r) => s + r.deltaValue, 0);
+  const approvedCost = rows
+    .filter((r) => r.status === 'APPROVED')
+    .reduce((s, r) => s + r.deltaValue, 0);
+
+  const handleDecide = (r: RemediationRow, decision: 'APPROVED' | 'DECLINED') => {
+    decideMutation.mutate(
+      { remediationId: r.id, runId, decision },
+      {
+        onError: (err) =>
+          toast({
+            title: `Couldn't ${decision === 'APPROVED' ? 'approve' : 'decline'}`,
+            description: err.message,
+            variant: 'destructive',
+          }),
+      },
+    );
+  };
+
+  const handleApply = () => {
+    applyMutation.mutate(
+      { runId },
+      {
+        onSuccess: (data) => {
+          toast({
+            title: 'Remediations applied',
+            description: `${data.applied} salar${data.applied === 1 ? 'y' : 'ies'} updated · cost ${Intl.NumberFormat(
+              'en-US',
+              { style: 'currency', currency: 'USD', maximumFractionDigits: 0 },
+            ).format(data.totalCost)}`,
+          });
+          setShowApplyConfirm(false);
+        },
+        onError: (err) =>
+          toast({
+            title: "Couldn't apply",
+            description: err.message,
+            variant: 'destructive',
+          }),
+      },
+    );
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="text-base">Proposed adjustments</CardTitle>
+            <CardDescription>
+              Approve or decline each row. APPROVED rows can be applied to Employee.baseSalary in
+              one transaction with full audit trail.
+            </CardDescription>
+          </div>
+          <Button
+            size="sm"
+            disabled={(counts['APPROVED'] ?? 0) === 0 || applyMutation.isPending}
+            onClick={() => setShowApplyConfirm(true)}
+          >
+            {applyMutation.isPending ? (
+              <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+            ) : (
+              <Wrench className="mr-1 h-4 w-4" />
+            )}
+            Apply {counts['APPROVED'] ?? 0} approved
+          </Button>
+        </div>
+        <div className="mt-2 flex flex-wrap gap-3 text-xs">
+          {Object.entries(counts).map(([status, n]) => (
+            <Badge key={status} variant="outline">
+              {status} · {n}
+            </Badge>
+          ))}
+          {(proposedCost > 0 || approvedCost > 0) && (
+            <span className="text-muted-foreground">
+              Proposed cost{' '}
+              {Intl.NumberFormat('en-US', {
+                style: 'currency',
+                currency: 'USD',
+                maximumFractionDigits: 0,
+              }).format(proposedCost)}{' '}
+              · Approved cost{' '}
+              {Intl.NumberFormat('en-US', {
+                style: 'currency',
+                currency: 'USD',
+                maximumFractionDigits: 0,
+              }).format(approvedCost)}
+            </span>
+          )}
+        </div>
+      </CardHeader>
+      <CardContent>
+        {showApplyConfirm && (
+          <div className="mb-4 rounded-md border border-amber-500 bg-amber-50 p-4 text-sm">
+            <p className="font-medium">
+              Apply {counts['APPROVED'] ?? 0} approved remediation
+              {(counts['APPROVED'] ?? 0) === 1 ? '' : 's'}?
+            </p>
+            <p className="mt-1 text-muted-foreground">
+              This writes Employee.baseSalary in a transaction and emits an AuditLog row per change.
+              Each remediation flips to APPLIED.
+            </p>
+            <div className="mt-3 flex justify-end gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setShowApplyConfirm(false)}>
+                Cancel
+              </Button>
+              <Button size="sm" onClick={handleApply} disabled={applyMutation.isPending}>
+                {applyMutation.isPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+                Confirm apply
+              </Button>
+            </div>
+          </div>
+        )}
+        {rows.length === 0 ? (
+          <p className="py-6 text-center text-sm text-muted-foreground">No remediations.</p>
+        ) : (
+          <div className="max-h-96 overflow-auto rounded-md border">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-muted text-xs">
+                <tr>
+                  <th className="px-2 py-1.5 text-left">Employee</th>
+                  <th className="px-2 py-1.5 text-right">From</th>
+                  <th className="px-2 py-1.5 text-right">To</th>
+                  <th className="px-2 py-1.5 text-right">Δ</th>
+                  <th className="px-2 py-1.5 text-left">Justification</th>
+                  <th className="px-2 py-1.5 text-left">Status</th>
+                  <th className="px-2 py-1.5 text-left">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.id} className="border-t hover:bg-muted/30">
+                    <td className="px-2 py-1.5">
+                      <div className="font-medium">{r.name}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {r.employeeCode} · {r.level} · {r.department}
+                        {r.currentCompaRatio !== null && ` · CR ${r.currentCompaRatio.toFixed(2)}`}
+                      </div>
+                    </td>
+                    <td className="px-2 py-1.5 text-right font-mono">
+                      {Intl.NumberFormat('en-US', {
+                        style: 'currency',
+                        currency: r.currency,
+                        maximumFractionDigits: 0,
+                      }).format(r.fromValue)}
+                    </td>
+                    <td className="px-2 py-1.5 text-right font-mono">
+                      {Intl.NumberFormat('en-US', {
+                        style: 'currency',
+                        currency: r.currency,
+                        maximumFractionDigits: 0,
+                      }).format(r.toValue)}
+                    </td>
+                    <td className="px-2 py-1.5 text-right">
+                      <div className="font-mono text-emerald-600">
+                        +
+                        {Intl.NumberFormat('en-US', {
+                          style: 'currency',
+                          currency: r.currency,
+                          maximumFractionDigits: 0,
+                        }).format(r.deltaValue)}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        +{r.deltaPercent.toFixed(1)}%
+                      </div>
+                    </td>
+                    <td className="px-2 py-1.5 text-xs text-muted-foreground max-w-xs">
+                      {r.justification ?? '—'}
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <Badge
+                        variant={
+                          r.status === 'APPLIED'
+                            ? 'default'
+                            : r.status === 'APPROVED'
+                              ? 'default'
+                              : r.status === 'DECLINED'
+                                ? 'destructive'
+                                : 'outline'
+                        }
+                        className="text-xs"
+                      >
+                        {r.status}
+                      </Badge>
+                    </td>
+                    <td className="px-2 py-1.5">
+                      {r.status === 'PROPOSED' ? (
+                        <div className="flex gap-1">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleDecide(r, 'APPROVED')}
+                            disabled={decideMutation.isPending}
+                          >
+                            ✓
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleDecide(r, 'DECLINED')}
+                            disabled={decideMutation.isPending}
+                          >
+                            ✗
+                          </Button>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CardContent>
     </Card>
   );
 }

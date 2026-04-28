@@ -9,11 +9,16 @@ vi.mock('@compensation/ai', async () => {
     ...actual,
     invokeCohortRootCauseGraph: vi.fn(),
     invokeOutlierExplainerGraph: vi.fn(),
+    invokeRemediationGraph: vi.fn(),
   };
 });
 
 import { PayEquityV2Service } from './pay-equity.service';
-import { invokeCohortRootCauseGraph, invokeOutlierExplainerGraph } from '@compensation/ai';
+import {
+  invokeCohortRootCauseGraph,
+  invokeOutlierExplainerGraph,
+  invokeRemediationGraph,
+} from '@compensation/ai';
 import type { PayEquityService as LegacyAnalyzer } from '../analytics/pay-equity.service';
 import { createMockDatabaseService, TEST_TENANT_ID, TEST_USER_ID } from '../../test/setup';
 
@@ -1017,5 +1022,409 @@ describe('PayEquityV2Service.explainOutlier', () => {
     await expect(
       service.explainOutlier(TEST_TENANT_ID, 'parent-run', 'emp-1', TEST_USER_ID),
     ).rejects.toThrow(/compa-ratio/);
+  });
+});
+
+// ─── Phase 2: Remediation ──────────────────────────────────────────────
+
+const mockedRemediationAgent = vi.mocked(invokeRemediationGraph);
+
+function stubRemediationAgent(adjustmentCount: number) {
+  mockedRemediationAgent.mockImplementation((input) =>
+    Promise.resolve({
+      output: {
+        targetGap: input.plan.targetGapPercent,
+        totalCost: input.plan.totalCost,
+        affectedEmployees: input.plan.affectedEmployees,
+        adjustments: input.adjustments.slice(0, adjustmentCount).map((a) => ({
+          employeeId: a.employeeId,
+          fromValue: a.currentSalary,
+          toValue: a.proposedSalary,
+          justification: `Adjust ${a.employeeCode} toward cohort mean for ${a.cohort.dimension}/${a.cohort.group}`,
+        })),
+        alternativeScenarios: [
+          {
+            label: 'Aggressive',
+            targetGap: 1,
+            cost: input.plan.totalCost * 1.5,
+            summary: '50% larger',
+          },
+        ],
+      },
+      citations: [],
+      methodology: {
+        name: 'edge-multivariate',
+        version: '2026.04',
+        controls: ['job_level'],
+        dependentVariable: 'log_salary',
+        sampleSize: 500,
+        confidenceInterval: 0.95,
+      },
+      confidence: 'high',
+      warnings: [],
+      runId: '',
+      generatedAt: new Date().toISOString(),
+    }),
+  );
+}
+
+describe('PayEquityV2Service.calculateRemediations', () => {
+  let service: PayEquityV2Service;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createService());
+    mockedRemediationAgent.mockReset();
+  });
+
+  function parentRunWithSignificantCohort() {
+    return {
+      id: 'parent-run',
+      tenantId: TEST_TENANT_ID,
+      status: 'COMPLETE',
+      methodologyName: 'edge-multivariate',
+      methodologyVersion: '2026.04',
+      controls: ['job_level'],
+      result: buildEnvelope(
+        [
+          {
+            dimension: 'gender',
+            group: 'F',
+            referenceGroup: 'M',
+            gapPercent: -5,
+            pValue: 0.01,
+            sampleSize: 100,
+            coefficient: -0.05,
+            significance: 'significant',
+          },
+        ],
+        500,
+      ),
+    };
+  }
+
+  it('proposes adjustments for underpaid employees in significant cohorts and persists rows', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue(parentRunWithSignificantCohort());
+    db.client.employee.findMany.mockResolvedValue([
+      // Underpaid (CR < 1) — should be adjusted
+      {
+        id: 'emp-1',
+        employeeCode: 'E1',
+        firstName: 'A',
+        lastName: 'D',
+        level: 'L4',
+        department: 'Eng',
+        baseSalary: 90000,
+        currency: 'USD',
+        compaRatio: 0.85,
+      },
+      {
+        id: 'emp-2',
+        employeeCode: 'E2',
+        firstName: 'B',
+        lastName: 'E',
+        level: 'L4',
+        department: 'Eng',
+        baseSalary: 95000,
+        currency: 'USD',
+        compaRatio: 0.9,
+      },
+      // At-or-above CR 1 — should NOT be adjusted
+      {
+        id: 'emp-3',
+        employeeCode: 'E3',
+        firstName: 'C',
+        lastName: 'F',
+        level: 'L4',
+        department: 'Eng',
+        baseSalary: 110000,
+        currency: 'USD',
+        compaRatio: 1.05,
+      },
+    ]);
+    db.client.payEquityRun.create.mockResolvedValue({ id: 'rem-run-1' });
+    db.client.payEquityRun.update.mockResolvedValue({ id: 'rem-run-1' });
+    db.client.payEquityRemediation.createMany.mockResolvedValue({ count: 2 });
+    db.client.auditLog.create.mockResolvedValue({});
+    stubRemediationAgent(2);
+
+    const result = await service.calculateRemediations(
+      TEST_TENANT_ID,
+      'parent-run',
+      { targetGapPercent: 2, maxPerEmployeePct: 0.15 },
+      TEST_USER_ID,
+    );
+
+    // Agent received 2 adjustments (only emp-1 + emp-2 — underpaid).
+    expect(mockedRemediationAgent).toHaveBeenCalledTimes(1);
+    const agentArgs = mockedRemediationAgent.mock.calls[0]![0];
+    expect(agentArgs.adjustments).toHaveLength(2);
+    expect(agentArgs.adjustments.map((a) => a.employeeId).sort()).toEqual(['emp-1', 'emp-2']);
+
+    // Adjustments are sorted by lowest CR first (emp-1 CR=0.85 before emp-2 CR=0.9).
+    expect(agentArgs.adjustments[0]!.employeeId).toBe('emp-1');
+
+    // PayEquityRemediation rows persisted with PROPOSED status.
+    const createManyArgs = db.client.payEquityRemediation.createMany.mock.calls[0]![0];
+    expect(createManyArgs.data).toHaveLength(2);
+    expect(createManyArgs.data[0].status).toBe('PROPOSED');
+    expect(createManyArgs.data[0].justification).toMatch(/cohort mean/);
+
+    // AuditLog row written with the right action.
+    const auditArgs = db.client.auditLog.create.mock.calls[0]![0];
+    expect(auditArgs.data.action).toBe('PAY_EQUITY_REMEDIATION_PROPOSED');
+    expect(auditArgs.data.changes.affectedEmployees).toBe(2);
+    expect(result.runId).toBe('rem-run-1');
+  });
+
+  it('caps single-employee adjustment at maxPerEmployeePct of base salary', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue(parentRunWithSignificantCohort());
+    db.client.employee.findMany.mockResolvedValue([
+      // Cohort mean will be 200000 from this employee alone, gap is huge
+      {
+        id: 'emp-1',
+        employeeCode: 'E1',
+        firstName: 'A',
+        lastName: 'D',
+        level: 'L4',
+        department: 'Eng',
+        baseSalary: 100000,
+        currency: 'USD',
+        compaRatio: 0.5,
+      },
+      {
+        id: 'emp-2',
+        employeeCode: 'E2',
+        firstName: 'B',
+        lastName: 'E',
+        level: 'L4',
+        department: 'Eng',
+        baseSalary: 300000,
+        currency: 'USD',
+        compaRatio: 1.5,
+      },
+    ]);
+    db.client.payEquityRun.create.mockResolvedValue({ id: 'rem-run-2' });
+    db.client.payEquityRun.update.mockResolvedValue({ id: 'rem-run-2' });
+    db.client.payEquityRemediation.createMany.mockResolvedValue({ count: 1 });
+    db.client.auditLog.create.mockResolvedValue({});
+    stubRemediationAgent(1);
+
+    await service.calculateRemediations(
+      TEST_TENANT_ID,
+      'parent-run',
+      { targetGapPercent: 2, maxPerEmployeePct: 0.15 },
+      TEST_USER_ID,
+    );
+
+    const agentArgs = mockedRemediationAgent.mock.calls[0]![0];
+    // emp-1 is at 100000; cap at 15% means proposed <= 115000.
+    expect(agentArgs.adjustments[0]!.proposedSalary).toBeLessThanOrEqual(115000);
+    expect(agentArgs.adjustments[0]!.proposedSalary).toBeGreaterThan(100000);
+  });
+
+  it('refuses when no significant cohorts exceed the target gap', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue({
+      ...parentRunWithSignificantCohort(),
+      result: buildEnvelope(
+        [
+          {
+            dimension: 'gender',
+            group: 'F',
+            referenceGroup: 'M',
+            gapPercent: -1,
+            pValue: 0.5,
+            sampleSize: 100,
+            coefficient: -0.01,
+            significance: 'not_significant',
+          },
+        ],
+        500,
+      ),
+    });
+
+    await expect(
+      service.calculateRemediations(
+        TEST_TENANT_ID,
+        'parent-run',
+        { targetGapPercent: 2 },
+        TEST_USER_ID,
+      ),
+    ).rejects.toThrow(/No statistically-significant cohorts/);
+  });
+
+  it('marks the remediation run FAILED when the agent throws', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue(parentRunWithSignificantCohort());
+    db.client.employee.findMany.mockResolvedValue([
+      {
+        id: 'emp-1',
+        employeeCode: 'E1',
+        firstName: 'A',
+        lastName: 'D',
+        level: 'L4',
+        department: 'Eng',
+        baseSalary: 90000,
+        currency: 'USD',
+        compaRatio: 0.85,
+      },
+    ]);
+    db.client.payEquityRun.create.mockResolvedValue({ id: 'rem-run-3' });
+    db.client.payEquityRun.update.mockResolvedValue({ id: 'rem-run-3' });
+    mockedRemediationAgent.mockRejectedValue(new Error('LLM down'));
+
+    await expect(
+      service.calculateRemediations(
+        TEST_TENANT_ID,
+        'parent-run',
+        { targetGapPercent: 2 },
+        TEST_USER_ID,
+      ),
+    ).rejects.toThrow(/LLM down/);
+
+    const failArgs = db.client.payEquityRun.update.mock.calls[0]![0];
+    expect(failArgs.data.status).toBe('FAILED');
+  });
+});
+
+describe('PayEquityV2Service.decideRemediation', () => {
+  let service: PayEquityV2Service;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createService());
+  });
+
+  it('flips PROPOSED to APPROVED and writes audit log', async () => {
+    db.client.payEquityRemediation.findFirst.mockResolvedValue({
+      id: 'rem-1',
+      tenantId: TEST_TENANT_ID,
+      runId: 'rem-run-1',
+      employeeId: 'emp-1',
+      fromValue: 90000,
+      toValue: 95000,
+      status: 'PROPOSED',
+    });
+    db.client.payEquityRemediation.update.mockResolvedValue({ id: 'rem-1' });
+    db.client.auditLog.create.mockResolvedValue({});
+
+    await service.decideRemediation(TEST_TENANT_ID, 'rem-1', 'APPROVED', TEST_USER_ID);
+
+    const updateArgs = db.client.payEquityRemediation.update.mock.calls[0]![0];
+    expect(updateArgs.data.status).toBe('APPROVED');
+    expect(updateArgs.data.decidedByUserId).toBe(TEST_USER_ID);
+    expect(updateArgs.data.decidedAt).toBeInstanceOf(Date);
+
+    const auditArgs = db.client.auditLog.create.mock.calls[0]![0];
+    expect(auditArgs.data.action).toBe('PAY_EQUITY_REMEDIATION_APPROVED');
+  });
+
+  it('refuses to decide a row that is already APPROVED', async () => {
+    db.client.payEquityRemediation.findFirst.mockResolvedValue({
+      id: 'rem-1',
+      tenantId: TEST_TENANT_ID,
+      runId: 'rem-run-1',
+      employeeId: 'emp-1',
+      fromValue: 90000,
+      toValue: 95000,
+      status: 'APPROVED',
+    });
+
+    await expect(
+      service.decideRemediation(TEST_TENANT_ID, 'rem-1', 'APPROVED', TEST_USER_ID),
+    ).rejects.toThrow(/PROPOSED/);
+  });
+});
+
+describe('PayEquityV2Service.applyApprovedRemediations', () => {
+  let service: PayEquityV2Service;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createService());
+  });
+
+  it('writes baseSalary, marks each row APPLIED, emits audit log per change', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue({
+      id: 'rem-run-1',
+      tenantId: TEST_TENANT_ID,
+      agentType: 'remediation',
+      status: 'COMPLETE',
+    });
+    db.client.payEquityRemediation.findMany.mockResolvedValue([
+      {
+        id: 'rem-1',
+        tenantId: TEST_TENANT_ID,
+        runId: 'rem-run-1',
+        employeeId: 'emp-1',
+        fromValue: 90000,
+        toValue: 95000,
+        status: 'APPROVED',
+      },
+      {
+        id: 'rem-2',
+        tenantId: TEST_TENANT_ID,
+        runId: 'rem-run-1',
+        employeeId: 'emp-2',
+        fromValue: 80000,
+        toValue: 84000,
+        status: 'APPROVED',
+      },
+    ]);
+    db.client.employee.update.mockResolvedValue({});
+    db.client.payEquityRemediation.update.mockResolvedValue({});
+    db.client.auditLog.create.mockResolvedValue({});
+
+    const result = await service.applyApprovedRemediations(
+      TEST_TENANT_ID,
+      'rem-run-1',
+      TEST_USER_ID,
+    );
+
+    expect(result.applied).toBe(2);
+    expect(result.totalCost).toBe(9000); // 5000 + 4000
+    expect(result.employeeIds).toEqual(['emp-1', 'emp-2']);
+
+    expect(db.client.employee.update).toHaveBeenCalledWith({
+      where: { id: 'emp-1' },
+      data: { baseSalary: 95000 },
+    });
+    expect(db.client.payEquityRemediation.update).toHaveBeenCalledTimes(2);
+    expect(db.client.auditLog.create).toHaveBeenCalledTimes(2);
+
+    const auditArgs = db.client.auditLog.create.mock.calls[0]![0];
+    expect(auditArgs.data.action).toBe('PAY_EQUITY_REMEDIATION_APPLIED');
+    expect(auditArgs.data.entityType).toBe('Employee');
+  });
+
+  it('returns zero counts when no rows are APPROVED', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue({
+      id: 'rem-run-1',
+      tenantId: TEST_TENANT_ID,
+      agentType: 'remediation',
+      status: 'COMPLETE',
+    });
+    db.client.payEquityRemediation.findMany.mockResolvedValue([]);
+
+    const result = await service.applyApprovedRemediations(
+      TEST_TENANT_ID,
+      'rem-run-1',
+      TEST_USER_ID,
+    );
+
+    expect(result.applied).toBe(0);
+    expect(db.client.employee.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses if the run is not a remediation run', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue({
+      id: 'narrative-run',
+      tenantId: TEST_TENANT_ID,
+      agentType: 'narrative',
+      status: 'COMPLETE',
+    });
+
+    await expect(
+      service.applyApprovedRemediations(TEST_TENANT_ID, 'narrative-run', TEST_USER_ID),
+    ).rejects.toThrow(/expected remediation/);
   });
 });

@@ -194,6 +194,11 @@ export {
   type OutlierExplainInput,
   type OutlierExplainOutput,
 } from './graphs/pay-equity-outlier-graph.js';
+export {
+  buildRemediationGraph,
+  invokeRemediationGraph,
+  type RemediationAgentInput,
+} from './graphs/pay-equity-remediation-graph.js';
 
 // Attrition Predictor tools
 export { createAttritionTools, type AttritionDbAdapter } from './tools/attrition-tools.js';
