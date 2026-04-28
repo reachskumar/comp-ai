@@ -44,7 +44,12 @@ import {
   usePayEquityOverview,
   usePayEquityRuns,
   useRunPayEquityAnalysisMutation,
+  usePayEquityTrend,
+  usePayEquityCohorts,
+  usePayEquityCohortDetail,
+  usePayEquityOutliers,
   type PayEquityOverviewData,
+  type CohortCell,
 } from '@/hooks/use-pay-equity';
 
 const ALL_DIMENSIONS = [
@@ -276,11 +281,11 @@ export default function PayEquityWorkspacePage() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="diagnose">
-          <PhasePlaceholder
-            phase="Phase 1"
-            title="Diagnose"
-            description="Multi-dim cohort matrix, drill-down to row level, cohort root-cause AI, statistical tests panel, outlier explainer."
+        <TabsContent value="diagnose" className="space-y-4">
+          <DiagnosePanel
+            latestRunId={
+              overview.data?.hasData ? (overview.data as PayEquityOverviewData).latestRunId : null
+            }
           />
         </TabsContent>
         <TabsContent value="remediate">
@@ -458,6 +463,400 @@ function PhasePlaceholder({
           Tracked in PAY_EQUITY_CONTEXT.md — not yet shipped
         </p>
       </CardContent>
+    </Card>
+  );
+}
+
+// ─── Diagnose Panel (Phase 1) ──────────────────────────────────────────
+
+function DiagnosePanel({ latestRunId }: { latestRunId: string | null }) {
+  const trend = usePayEquityTrend(undefined, 12);
+  const cohorts = usePayEquityCohorts(latestRunId);
+  const outliers = usePayEquityOutliers(latestRunId, undefined, 10);
+  const [selected, setSelected] = React.useState<{ dimension: string; group: string } | null>(null);
+
+  if (!latestRunId) {
+    return (
+      <Card>
+        <CardContent className="py-12 text-center text-sm text-muted-foreground">
+          Run an analysis first (Overview tab) to see diagnostics.
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <>
+      <TrendCard trend={trend.data} loading={trend.isLoading} />
+      <CohortMatrixCard
+        cohorts={cohorts.data}
+        loading={cohorts.isLoading}
+        selected={selected}
+        onSelect={setSelected}
+      />
+      {selected && (
+        <CohortDetailCard
+          runId={latestRunId}
+          dimension={selected.dimension}
+          group={selected.group}
+          onClose={() => setSelected(null)}
+        />
+      )}
+      <OutliersCard outliers={outliers.data} loading={outliers.isLoading} />
+    </>
+  );
+}
+
+function TrendCard({
+  trend,
+  loading,
+}: {
+  trend?: ReturnType<typeof usePayEquityTrend>['data'];
+  loading: boolean;
+}) {
+  if (loading) return <Skeleton className="h-48 w-full" />;
+  if (!trend || trend.series.length === 0) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Trend (last runs)</CardTitle>
+        </CardHeader>
+        <CardContent className="py-6 text-center text-sm text-muted-foreground">
+          Need at least 2 completed runs for a trend.
+        </CardContent>
+      </Card>
+    );
+  }
+  const series = trend.series;
+  const max = Math.max(...series.map((p) => Math.abs(p.worstGapPercent)), 1);
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Worst-cohort gap over time</CardTitle>
+        <CardDescription>
+          Latest {series.length} runs. Methodology version shifts shown as separators.
+          {trend.methodologyShifts.length > 0 &&
+            ` ${trend.methodologyShifts.length} shift(s) in this window.`}
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="flex h-32 items-end gap-1">
+          {series.map((p, i) => {
+            const h = Math.max(4, (Math.abs(p.worstGapPercent) / max) * 100);
+            const isShift = trend.methodologyShifts.includes(i);
+            return (
+              <div
+                key={p.runId}
+                className="group flex flex-1 flex-col items-center justify-end"
+                title={`${new Date(p.at).toLocaleDateString()} · ${p.worstGapPercent}% (${p.worstCohort ?? '—'}) · ${p.methodology}`}
+              >
+                <div
+                  className={
+                    'w-full rounded-t-sm transition-all ' +
+                    (Math.abs(p.worstGapPercent) > 5
+                      ? 'bg-amber-500/70'
+                      : Math.abs(p.worstGapPercent) > 2
+                        ? 'bg-primary/60'
+                        : 'bg-emerald-500/60')
+                  }
+                  style={{ height: `${h}%` }}
+                />
+                <span className="mt-1 text-[10px] text-muted-foreground">
+                  {p.worstGapPercent.toFixed(1)}%
+                  {isShift && <span className="ml-1 text-amber-600">↺</span>}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+        <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
+          <span>{new Date(series[0]!.at).toLocaleDateString()}</span>
+          <span>{new Date(series[series.length - 1]!.at).toLocaleDateString()}</span>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function CohortMatrixCard({
+  cohorts,
+  loading,
+  selected,
+  onSelect,
+}: {
+  cohorts?: ReturnType<typeof usePayEquityCohorts>['data'];
+  loading: boolean;
+  selected: { dimension: string; group: string } | null;
+  onSelect: (s: { dimension: string; group: string }) => void;
+}) {
+  if (loading) return <Skeleton className="h-40 w-full" />;
+  if (!cohorts) return null;
+  if (cohorts.cells.length === 0) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Cohort matrix</CardTitle>
+        </CardHeader>
+        <CardContent className="py-6 text-center text-sm text-muted-foreground">
+          No cohorts in this run.
+        </CardContent>
+      </Card>
+    );
+  }
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Cohort matrix</CardTitle>
+        <CardDescription>
+          Click a cell to drill into the employee rows behind it. Suppressed cells (n &lt; 5) are
+          greyed out per k-anonymity.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-3">
+          {cohorts.dimensions.map((dim) => (
+            <div key={dim}>
+              <div className="mb-1 text-xs font-medium uppercase text-muted-foreground">{dim}</div>
+              <div className="flex flex-wrap gap-2">
+                {cohorts.cells
+                  .filter((c) => c.dimension === dim)
+                  .map((c) => (
+                    <CohortCellButton
+                      key={`${c.dimension}-${c.group}`}
+                      cell={c}
+                      isSelected={selected?.dimension === c.dimension && selected.group === c.group}
+                      onClick={() => onSelect({ dimension: c.dimension, group: c.group })}
+                    />
+                  ))}
+              </div>
+            </div>
+          ))}
+        </div>
+        {cohorts.warnings.length > 0 && (
+          <div className="mt-4 space-y-1">
+            {cohorts.warnings.map((w, i) => (
+              <p key={i} className="text-xs text-amber-600">
+                ⚠ {w.message}
+              </p>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function CohortCellButton({
+  cell,
+  isSelected,
+  onClick,
+}: {
+  cell: CohortCell;
+  isSelected: boolean;
+  onClick: () => void;
+}) {
+  if (cell.suppressed) {
+    return (
+      <div
+        className="cursor-not-allowed rounded-md border border-dashed bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
+        title={`Suppressed: n=${cell.sampleSize} below k=5 threshold`}
+      >
+        {cell.group} · n &lt; 5
+      </div>
+    );
+  }
+  const tone =
+    Math.abs(cell.gapPercent) > 5
+      ? 'border-destructive bg-destructive/10 text-destructive'
+      : Math.abs(cell.gapPercent) > 2
+        ? 'border-amber-500 bg-amber-50 text-amber-900'
+        : 'border-emerald-500 bg-emerald-50 text-emerald-900';
+  return (
+    <button
+      onClick={onClick}
+      className={
+        'rounded-md border px-3 py-2 text-left text-xs transition-all ' +
+        tone +
+        (isSelected ? ' ring-2 ring-primary ring-offset-1' : ' hover:opacity-80')
+      }
+    >
+      <div className="font-semibold">{cell.group}</div>
+      <div>
+        {cell.gapPercent > 0 ? '+' : ''}
+        {cell.gapPercent}% · n={cell.sampleSize}
+      </div>
+      <div className="text-[10px] opacity-70">
+        p={cell.pValue.toFixed(3)} · {cell.significance}
+      </div>
+    </button>
+  );
+}
+
+function CohortDetailCard({
+  runId,
+  dimension,
+  group,
+  onClose,
+}: {
+  runId: string;
+  dimension: string;
+  group: string;
+  onClose: () => void;
+}) {
+  const detail = usePayEquityCohortDetail(runId, dimension, group);
+
+  if (detail.isLoading) return <Skeleton className="h-56 w-full" />;
+  if (!detail.data) return null;
+
+  if (detail.data.suppressed) {
+    return (
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-base">
+              {dimension} / {group} — suppressed
+            </CardTitle>
+            <Button variant="ghost" size="sm" onClick={onClose}>
+              Close
+            </Button>
+          </div>
+          <CardDescription className="text-amber-600">
+            {detail.data.suppressionReason}
+          </CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
+
+  const t = detail.data.statisticalTest;
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-base">
+            {dimension} / {group} — {detail.data.rows.length} employees
+            {detail.data.truncated && ' (truncated to 50)'}
+          </CardTitle>
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+        <CardDescription>
+          β={t.coefficient.toFixed(3)} · SE={t.standardError.toFixed(3)} · p={t.pValue.toFixed(4)}
+          {' · CI '}[{t.confidenceInterval[0]}, {t.confidenceInterval[1]}] · n={t.sampleSize}
+          {' · '}
+          <span
+            className={
+              t.significance === 'significant'
+                ? 'text-destructive'
+                : t.significance === 'marginal'
+                  ? 'text-amber-600'
+                  : 'text-emerald-600'
+            }
+          >
+            {t.significance}
+          </span>
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="max-h-72 overflow-auto rounded-md border">
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-muted text-xs">
+              <tr>
+                <th className="px-2 py-1.5 text-left">Code</th>
+                <th className="px-2 py-1.5 text-left">Name</th>
+                <th className="px-2 py-1.5 text-left">Dept</th>
+                <th className="px-2 py-1.5 text-left">Level</th>
+                <th className="px-2 py-1.5 text-right">Salary</th>
+                <th className="px-2 py-1.5 text-right">CR</th>
+                <th className="px-2 py-1.5 text-right">Perf</th>
+              </tr>
+            </thead>
+            <tbody>
+              {detail.data.rows.map((r) => (
+                <tr key={r.id} className="border-t hover:bg-muted/30">
+                  <td className="px-2 py-1.5 font-mono text-xs">{r.employeeCode}</td>
+                  <td className="px-2 py-1.5">{r.name}</td>
+                  <td className="px-2 py-1.5">{r.department}</td>
+                  <td className="px-2 py-1.5">{r.level}</td>
+                  <td className="px-2 py-1.5 text-right font-mono">
+                    {Intl.NumberFormat('en-US', {
+                      style: 'currency',
+                      currency: r.currency,
+                      maximumFractionDigits: 0,
+                    }).format(r.baseSalary)}
+                  </td>
+                  <td className="px-2 py-1.5 text-right">
+                    {r.compaRatio !== null ? r.compaRatio.toFixed(2) : '—'}
+                  </td>
+                  <td className="px-2 py-1.5 text-right">
+                    {r.performanceRating !== null ? r.performanceRating.toFixed(1) : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function OutliersCard({
+  outliers,
+  loading,
+}: {
+  outliers?: ReturnType<typeof usePayEquityOutliers>['data'];
+  loading: boolean;
+}) {
+  if (loading) return <Skeleton className="h-32 w-full" />;
+  if (!outliers) return null;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Outliers — most underpaid in their cohort</CardTitle>
+        <CardDescription>
+          {outliers.outliers.length === 0
+            ? (outliers.reason ?? 'No outliers detected.')
+            : `Lowest compa-ratios within statistically-significant cohorts. AI explainer in Phase 1.5.`}
+        </CardDescription>
+      </CardHeader>
+      {outliers.outliers.length > 0 && (
+        <CardContent>
+          <div className="space-y-2">
+            {outliers.outliers.map((o) => (
+              <div
+                key={o.employeeId}
+                className="flex items-center justify-between rounded-md border p-3 text-sm"
+              >
+                <div className="flex items-center gap-3">
+                  <Badge variant="outline" className="text-xs">
+                    CR {o.compaRatio.toFixed(2)}
+                  </Badge>
+                  <div>
+                    <div className="font-medium">{o.name}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {o.employeeCode} · {o.level} · {o.department}
+                    </div>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="font-mono text-xs">
+                    {Intl.NumberFormat('en-US', {
+                      style: 'currency',
+                      currency: o.currency,
+                      maximumFractionDigits: 0,
+                    }).format(o.baseSalary)}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {o.cohort.dimension}/{o.cohort.group} · {o.gapPercent}%
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      )}
     </Card>
   );
 }

@@ -240,17 +240,17 @@ interface Citation {
 
 **Migration to apply** (manual step, not auto-run): `pnpm db:migrate` to apply `20260428151213_add_pay_equity_models`.
 
-### Phase 1 — Diagnose _(~1 week, 2 sessions)_
+### Phase 1 — Diagnose _(shipped 2026-04-28)_
 
-| #   | Feature                                                                   | Status | Effort | Notes                            |
-| --- | ------------------------------------------------------------------------- | ------ | ------ | -------------------------------- |
-| 1.1 | Status bar (4 KPI cards: adj gap, unadj gap, significance, at-risk count) | ⬜     | 0.5 d  | Pulls from latest PayEquityRun   |
-| 1.2 | 8-quarter trend chart                                                     | ⬜     | 1 d    | Reads PayEquityRun history       |
-| 1.3 | Multi-dim cohort matrix (heatmap)                                         | ⬜     | 2 d    | gender × level / dept / location |
-| 1.4 | Cohort drill-down to employee rows                                        | ⬜     | 1 d    | k-anonymity gates                |
-| 1.5 | Cohort root-cause AI agent                                                | ⬜     | 1 d    | New graph extending existing     |
-| 1.6 | Statistical tests panel (β, p-value, CI, n)                               | ⬜     | 0.5 d  |                                  |
-| 1.7 | Outlier list with AI explanation                                          | ⬜     | 1 d    |                                  |
+| #   | Feature                                            | Status | Notes                                                                                                                         |
+| --- | -------------------------------------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| 1.1 | Status bar (4 KPI cards)                           | ✅     | Shipped in Phase 0; pulls from `GET /pay-equity/overview`                                                                     |
+| 1.2 | Trend chart (last N runs, methodology-shift flags) | ✅     | `GET /pay-equity/trend?dimension&limit`; oldest→newest series; bar chart with shift indicator                                 |
+| 1.3 | Multi-dim cohort matrix (heatmap)                  | ✅     | `GET /pay-equity/runs/:id/cohorts`; severity-tinted clickable cells grouped by dimension; suppressed cells render as n<5 stub |
+| 1.4 | Cohort drill-down to employee rows                 | ✅     | `GET /pay-equity/runs/:id/cohorts/:dim/:group`; k-anonymity gate; 50-row default with truncated flag                          |
+| 1.5 | Cohort root-cause AI agent                         | ⬜     | Deferred to Phase 1.5 (depends on LLM-as-judge eval upgrade)                                                                  |
+| 1.6 | Statistical tests panel (β, SE, p, CI, n)          | ✅     | Inside the cohort drill-down card header                                                                                      |
+| 1.7 | Outlier list                                       | ✅     | `GET /pay-equity/runs/:id/outliers`; lowest compa-ratio employees within significant cohorts. AI explainer deferred to 1.5    |
 
 ### Phase 2 — Remediate _(~1 week, 2 sessions)_
 
@@ -315,23 +315,30 @@ interface Citation {
 
 Will populate as we ship. Format:
 
-| Phase    | Feature                                                                          | Status | Commit | Demo notes                                                          |
-| -------- | -------------------------------------------------------------------------------- | ------ | ------ | ------------------------------------------------------------------- |
-| existing | Pay Equity narrative graph (LLM)                                                 | ✅     | —      | Pre-existing; produces EDGE-style report                            |
-| existing | Analyzer page (one-shot)                                                         | ✅     | —      | Untouched. Lives at `/dashboard/analytics/pay-equity`.              |
-| existing | EDGE flow + `PayEquityReport` schema                                             | ✅     | —      | Untouched. Lives at `/dashboard/analytics/pay-equity/edge`.         |
-| existing | Real OLS regression engine in legacy `PayEquityService`                          | ✅     | —      | Reused by the new module via injection.                             |
-| 0        | `PayEquityAgentResult<T>` AI agent contract                                      | ✅     | TBD    | packages/ai/src/types/pay-equity.ts; exported from index            |
-| 0        | `PayEquityRun` + `PayEquityRemediation` Prisma models + migration SQL            | ✅     | TBD    | Migration not yet applied — run `pnpm db:migrate`                   |
-| 0        | New `pay-equity` API module: POST runs, GET runs, GET runs/:id, GET overview     | ✅     | TBD    | Routes are `/api/v1/pay-equity/*`                                   |
-| 0        | Audit log writes (`action=PAY_EQUITY_RUN`) on every analysis                     | ✅     | TBD    |                                                                     |
-| 0        | Methodology versioning (`edge-multivariate@2026.04`) stamped on every run        | ✅     | TBD    | Constants live in PayEquityV2Service                                |
-| 0        | Eval harness: 5 golden examples + 28 structural assertions                       | ✅     | TBD    | Phase 1 adds LLM-as-judge scoring                                   |
-| 0        | k-anonymity guard (n<5) + sample-size warning (n<30) helpers in agent contract   | ✅     | TBD    | `checkKAnonymity`, `checkSampleSize` in packages/ai                 |
-| 0        | Workspace shell page at `/dashboard/pay-equity` with 5 tabs + status bar         | ✅     | TBD    | Overview tab wired; Diagnose/Remediate/Reports/Prevent placeholders |
-| 0        | useMyPayEquity React Query hooks (overview, runs list, run detail, run mutation) | ✅     | TBD    | apps/web/src/hooks/use-pay-equity.ts                                |
-| 0        | Sidebar entry: "Pay Equity Workspace" under AI Features                          | ✅     | TBD    | navigation.ts                                                       |
-| 0        | 7 service unit tests + 28 eval-harness assertions                                | ✅     | TBD    | All green                                                           |
+| Phase    | Feature                                                                                                                     | Status | Commit | Demo notes                                                          |
+| -------- | --------------------------------------------------------------------------------------------------------------------------- | ------ | ------ | ------------------------------------------------------------------- |
+| existing | Pay Equity narrative graph (LLM)                                                                                            | ✅     | —      | Pre-existing; produces EDGE-style report                            |
+| existing | Analyzer page (one-shot)                                                                                                    | ✅     | —      | Untouched. Lives at `/dashboard/analytics/pay-equity`.              |
+| existing | EDGE flow + `PayEquityReport` schema                                                                                        | ✅     | —      | Untouched. Lives at `/dashboard/analytics/pay-equity/edge`.         |
+| existing | Real OLS regression engine in legacy `PayEquityService`                                                                     | ✅     | —      | Reused by the new module via injection.                             |
+| 0        | `PayEquityAgentResult<T>` AI agent contract                                                                                 | ✅     | TBD    | packages/ai/src/types/pay-equity.ts; exported from index            |
+| 0        | `PayEquityRun` + `PayEquityRemediation` Prisma models + migration SQL                                                       | ✅     | TBD    | Migration not yet applied — run `pnpm db:migrate`                   |
+| 0        | New `pay-equity` API module: POST runs, GET runs, GET runs/:id, GET overview                                                | ✅     | TBD    | Routes are `/api/v1/pay-equity/*`                                   |
+| 0        | Audit log writes (`action=PAY_EQUITY_RUN`) on every analysis                                                                | ✅     | TBD    |                                                                     |
+| 0        | Methodology versioning (`edge-multivariate@2026.04`) stamped on every run                                                   | ✅     | TBD    | Constants live in PayEquityV2Service                                |
+| 0        | Eval harness: 5 golden examples + 28 structural assertions                                                                  | ✅     | TBD    | Phase 1 adds LLM-as-judge scoring                                   |
+| 0        | k-anonymity guard (n<5) + sample-size warning (n<30) helpers in agent contract                                              | ✅     | TBD    | `checkKAnonymity`, `checkSampleSize` in packages/ai                 |
+| 0        | Workspace shell page at `/dashboard/pay-equity` with 5 tabs + status bar                                                    | ✅     | TBD    | Overview tab wired; Diagnose/Remediate/Reports/Prevent placeholders |
+| 0        | useMyPayEquity React Query hooks (overview, runs list, run detail, run mutation)                                            | ✅     | TBD    | apps/web/src/hooks/use-pay-equity.ts                                |
+| 0        | Sidebar entry: "Pay Equity Workspace" under AI Features                                                                     | ✅     | TBD    | navigation.ts                                                       |
+| 0        | 7 service unit tests + 28 eval-harness assertions                                                                           | ✅     | TBD    | All green                                                           |
+| 1        | `GET /pay-equity/trend?dimension&limit` — last-N runs time series                                                           | ✅     | TBD    | Includes `methodologyShifts[]` so UI can flag drift between runs    |
+| 1        | `GET /pay-equity/runs/:id/cohorts` — heatmap-friendly cell array                                                            | ✅     | TBD    | Severity score + `suppressed` flag per cell                         |
+| 1        | `GET /pay-equity/runs/:id/cohorts/:dim/:group` — drill-down with k-anon gate                                                | ✅     | TBD    | Returns `suppressed: true` with reason when n<5                     |
+| 1        | `GET /pay-equity/runs/:id/outliers` — lowest compa-ratio in significant cohorts                                             | ✅     | TBD    | Statistical only; AI explainer in Phase 1.5                         |
+| 1        | Diagnose tab UI: trend bar-chart + cohort heatmap + drill-down panel + outliers                                             | ✅     | TBD    | All four panels live; replaces phase placeholder                    |
+| 1        | Phase 1 hook additions (useTrend, useCohorts, useCohortDetail, useOutliers)                                                 | ✅     | TBD    | apps/web/src/hooks/use-pay-equity.ts                                |
+| 1        | 9 new service tests (trend ordering + methodology shift, cohort suppression, drill-down k-anon, outliers empty + populated) | ✅     | TBD    | 44 total tests green                                                |
 
 (Add rows as features ship.)
 
@@ -339,17 +346,20 @@ Will populate as we ship. Format:
 
 ## 6 — Decision log
 
-| Date       | Decision                                                                                                                        | Rationale                                                                                                                   |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| 2026-04-28 | Build Pay Equity end-to-end as the wedge feature                                                                                | CHRO buyer, regulatory tailwind, existing AI strength                                                                       |
-| 2026-04-28 | Maintain `PAY_EQUITY_CONTEXT.md` as the source of truth                                                                         | Multi-week arc needs persistence across sessions                                                                            |
-| 2026-04-28 | Phase 0 (foundation) before any feature work                                                                                    | Avoid the "shallow everything" trap from today's comp-cycle session                                                         |
-| 2026-04-28 | AI agent contract enforces citations + methodology + runId                                                                      | Defensibility = trust = sellability to CHRO                                                                                 |
-| 2026-04-28 | k-anonymity threshold n<5 (cohort), n<30 (specific salary disclosures)                                                          | Privacy + statutory compliance                                                                                              |
-| 2026-04-28 | New module `pay-equity` _coexists_ with legacy `analytics/pay-equity` and `analytics/pay-equity/edge` instead of replacing them | "Stop breaking things" rule. Legacy works; we migrate users in later phases when the new shell has parity + extras.         |
-| 2026-04-28 | Methodology pinned to `edge-multivariate@2026.04` as the Phase 0 default                                                        | Captures EDGE Standard methodology assumptions. Bump version when controls/threshold change.                                |
-| 2026-04-28 | Migration file written to disk but NOT auto-applied; user runs `pnpm db:migrate` manually                                       | Avoid silent prod schema changes.                                                                                           |
-| 2026-04-28 | LLM narrative invocation deferred to Phase 1.5                                                                                  | Phase 0 priority is contract + persistence + audit trail; LLM call adds latency and isn't required for the foundation demo. |
+| Date       | Decision                                                                                                                        | Rationale                                                                                                                    |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| 2026-04-28 | Build Pay Equity end-to-end as the wedge feature                                                                                | CHRO buyer, regulatory tailwind, existing AI strength                                                                        |
+| 2026-04-28 | Maintain `PAY_EQUITY_CONTEXT.md` as the source of truth                                                                         | Multi-week arc needs persistence across sessions                                                                             |
+| 2026-04-28 | Phase 0 (foundation) before any feature work                                                                                    | Avoid the "shallow everything" trap from today's comp-cycle session                                                          |
+| 2026-04-28 | AI agent contract enforces citations + methodology + runId                                                                      | Defensibility = trust = sellability to CHRO                                                                                  |
+| 2026-04-28 | k-anonymity threshold n<5 (cohort), n<30 (specific salary disclosures)                                                          | Privacy + statutory compliance                                                                                               |
+| 2026-04-28 | New module `pay-equity` _coexists_ with legacy `analytics/pay-equity` and `analytics/pay-equity/edge` instead of replacing them | "Stop breaking things" rule. Legacy works; we migrate users in later phases when the new shell has parity + extras.          |
+| 2026-04-28 | Methodology pinned to `edge-multivariate@2026.04` as the Phase 0 default                                                        | Captures EDGE Standard methodology assumptions. Bump version when controls/threshold change.                                 |
+| 2026-04-28 | Migration file written to disk but NOT auto-applied; user runs `pnpm db:migrate` manually                                       | Avoid silent prod schema changes.                                                                                            |
+| 2026-04-28 | LLM narrative invocation deferred to Phase 1.5                                                                                  | Phase 0 priority is contract + persistence + audit trail; LLM call adds latency and isn't required for the foundation demo.  |
+| 2026-04-28 | Phase 1.5 (cohort root-cause AI + outlier AI explainer) deferred to its own session                                             | Builds on Phase 1 data shape; needs LLM-as-judge eval upgrade first to gate model drift. Phase 1 ships statistical + UI now. |
+| 2026-04-28 | Outlier detection uses compa-ratio as proxy (lowest CR within significant cohorts) instead of full residual analysis            | Compa-ratio is reliable + already in schema; full residual modeling pairs naturally with the AI explainer in 1.5.            |
+| 2026-04-28 | Trend chart rendered as bars instead of pulling in an external chart library                                                    | Avoids new dep + version surface; bars communicate gap magnitude well enough for Phase 1. SVG line chart deferred.           |
 
 ---
 
@@ -413,10 +423,11 @@ To be linked / quoted in implementation:
 
 ## 11 — Changelog
 
-| Date       | What changed                                                                                                                                                                                                                                                                                                                                                | By                             |
-| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
-| 2026-04-28 | Initial bible created with 6-phase plan, agent contract, methodology, risks                                                                                                                                                                                                                                                                                 | Claude (session 2026-04-27/28) |
-| 2026-04-28 | Phase 0 (Foundation) shipped: agent contract types, Prisma models + migration SQL, new pay-equity module with audit + methodology versioning, eval harness with 5 goldens + 28 structural assertions, workspace shell at /dashboard/pay-equity with 5 tabs (Overview wired). 7 service tests + 35 total tests green. Legacy analyzer + EDGE flow untouched. | Claude                         |
+| Date       | What changed                                                                                                                                                                                                                                                                                                                                                                   | By                             |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------ |
+| 2026-04-28 | Initial bible created with 6-phase plan, agent contract, methodology, risks                                                                                                                                                                                                                                                                                                    | Claude (session 2026-04-27/28) |
+| 2026-04-28 | Phase 0 (Foundation) shipped: agent contract types, Prisma models + migration SQL, new pay-equity module with audit + methodology versioning, eval harness with 5 goldens + 28 structural assertions, workspace shell at /dashboard/pay-equity with 5 tabs (Overview wired). 7 service tests + 35 total tests green. Legacy analyzer + EDGE flow untouched.                    | Claude                         |
+| 2026-04-28 | Phase 1 (Diagnose) shipped: trend endpoint + bar-chart UI with methodology-shift markers; cohort matrix endpoint + severity-tinted clickable heatmap with k-anonymity gate; cohort drill-down endpoint + employee-row table with full statistical-test panel; outlier endpoint (statistical, AI explainer deferred to 1.5) + ranked list. 9 new service tests, 44 total green. | Claude                         |
 
 ---
 

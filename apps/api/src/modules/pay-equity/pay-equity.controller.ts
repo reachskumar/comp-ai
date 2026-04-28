@@ -69,4 +69,65 @@ export class PayEquityController {
   async overview(@Request() req: AuthRequest) {
     return this.service.getOverview(req.user.tenantId);
   }
+
+  // ─── Phase 1 — Diagnose ─────────────────────────────────────────────
+
+  @Get('trend')
+  @ApiOperation({
+    summary: 'Time series of gaps across the last N runs (oldest→newest).',
+  })
+  async getTrend(
+    @Request() req: AuthRequest,
+    @Query('dimension') dimension?: string,
+    @Query('limit') limitStr?: string,
+  ) {
+    return this.service.getTrend(req.user.tenantId, {
+      dimension: dimension || undefined,
+      limit: limitStr ? parseInt(limitStr, 10) : undefined,
+    });
+  }
+
+  @Get('runs/:id/cohorts')
+  @ApiOperation({
+    summary: 'Cohort matrix from a single run — heatmap-friendly cell array.',
+  })
+  async getCohorts(@Param('id') id: string, @Request() req: AuthRequest) {
+    return this.service.getCohorts(req.user.tenantId, id);
+  }
+
+  @Get('runs/:id/cohorts/:dimension/:group')
+  @ApiOperation({
+    summary: 'Drill into a specific cohort — employee rows + statistical test.',
+  })
+  async getCohortDetail(
+    @Param('id') id: string,
+    @Param('dimension') dimension: string,
+    @Param('group') group: string,
+    @Request() req: AuthRequest,
+    @Query('limit') limitStr?: string,
+  ) {
+    return this.service.getCohortDetail(
+      req.user.tenantId,
+      id,
+      dimension,
+      decodeURIComponent(group),
+      { limit: limitStr ? parseInt(limitStr, 10) : undefined },
+    );
+  }
+
+  @Get('runs/:id/outliers')
+  @ApiOperation({
+    summary: 'Lowest-compaRatio outliers within statistically-significant cohorts.',
+  })
+  async getOutliers(
+    @Param('id') id: string,
+    @Request() req: AuthRequest,
+    @Query('dimension') dimension?: string,
+    @Query('limit') limitStr?: string,
+  ) {
+    return this.service.getOutliers(req.user.tenantId, id, {
+      dimension: dimension || undefined,
+      limit: limitStr ? parseInt(limitStr, 10) : undefined,
+    });
+  }
 }

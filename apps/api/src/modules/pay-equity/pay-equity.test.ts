@@ -232,3 +232,417 @@ describe('PayEquityV2Service.getOverview', () => {
     }
   });
 });
+
+// ─── Phase 1 — Diagnose ────────────────────────────────────────────────
+
+function buildEnvelope(
+  regressionResults: Array<Record<string, unknown>>,
+  totalEmployees: number,
+  warnings: Array<{ code: string; message: string }> = [],
+) {
+  return {
+    output: {
+      regressionResults,
+      compaRatios: [],
+      overallStats: { totalEmployees },
+    },
+    citations: [],
+    methodology: {
+      name: 'edge-multivariate',
+      version: '2026.04',
+      controls: [],
+      dependentVariable: 'log_salary',
+      sampleSize: totalEmployees,
+      confidenceInterval: 0.95,
+    },
+    confidence: 'high',
+    warnings,
+    runId: 'r',
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+describe('PayEquityV2Service.getTrend', () => {
+  let service: PayEquityV2Service;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createService());
+  });
+
+  it('returns oldest→newest series with worst-gap per run', async () => {
+    db.client.payEquityRun.findMany.mockResolvedValue([
+      // Newest first from DB
+      {
+        id: 'r3',
+        createdAt: new Date('2026-04-01'),
+        methodologyName: 'edge-multivariate',
+        methodologyVersion: '2026.04',
+        result: buildEnvelope(
+          [
+            {
+              dimension: 'gender',
+              group: 'F',
+              gapPercent: -3,
+              pValue: 0.04,
+              significance: 'significant',
+              sampleSize: 100,
+            },
+          ],
+          500,
+        ),
+      },
+      {
+        id: 'r2',
+        createdAt: new Date('2026-03-01'),
+        methodologyName: 'edge-multivariate',
+        methodologyVersion: '2026.04',
+        result: buildEnvelope(
+          [
+            {
+              dimension: 'gender',
+              group: 'F',
+              gapPercent: -5,
+              pValue: 0.02,
+              significance: 'significant',
+              sampleSize: 100,
+            },
+          ],
+          480,
+        ),
+      },
+      {
+        id: 'r1',
+        createdAt: new Date('2026-02-01'),
+        methodologyName: 'edge-multivariate',
+        methodologyVersion: '2026.03',
+        result: buildEnvelope(
+          [
+            {
+              dimension: 'gender',
+              group: 'F',
+              gapPercent: -7,
+              pValue: 0.001,
+              significance: 'significant',
+              sampleSize: 100,
+            },
+          ],
+          450,
+        ),
+      },
+    ]);
+
+    const result = await service.getTrend(TEST_TENANT_ID, { limit: 10 });
+
+    expect(result.series).toHaveLength(3);
+    expect(result.series[0]!.runId).toBe('r1');
+    expect(result.series[2]!.runId).toBe('r3');
+    expect(result.series[0]!.worstGapPercent).toBe(-7);
+    expect(result.series[2]!.worstGapPercent).toBe(-3);
+    // Detected the methodology shift between r1 (2026.03) and r2 (2026.04)
+    expect(result.methodologyShifts).toContain(1);
+  });
+
+  it('filters by dimension when provided', async () => {
+    db.client.payEquityRun.findMany.mockResolvedValue([
+      {
+        id: 'r',
+        createdAt: new Date(),
+        methodologyName: 'edge-multivariate',
+        methodologyVersion: '2026.04',
+        result: buildEnvelope(
+          [
+            {
+              dimension: 'gender',
+              group: 'F',
+              gapPercent: -3,
+              pValue: 0.04,
+              significance: 'significant',
+              sampleSize: 100,
+            },
+            {
+              dimension: 'ethnicity',
+              group: 'Black',
+              gapPercent: -8,
+              pValue: 0.001,
+              significance: 'significant',
+              sampleSize: 50,
+            },
+          ],
+          500,
+        ),
+      },
+    ]);
+
+    const result = await service.getTrend(TEST_TENANT_ID, { dimension: 'gender' });
+    expect(result.series[0]!.worstGapPercent).toBe(-3);
+    expect(result.dimension).toBe('gender');
+  });
+});
+
+describe('PayEquityV2Service.getCohorts', () => {
+  let service: PayEquityV2Service;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createService());
+  });
+
+  it('returns one cell per regression result with severity score and suppression flags', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue({
+      id: 'run-1',
+      tenantId: TEST_TENANT_ID,
+      status: 'COMPLETE',
+      createdAt: new Date(),
+      methodologyName: 'edge-multivariate',
+      methodologyVersion: '2026.04',
+      result: buildEnvelope(
+        [
+          {
+            dimension: 'gender',
+            group: 'F',
+            referenceGroup: 'M',
+            gapPercent: -3,
+            pValue: 0.04,
+            significance: 'significant',
+            sampleSize: 100,
+            riskLevel: 'MEDIUM',
+            coefficient: -0.03,
+            standardError: 0.01,
+            confidenceInterval: [-0.05, -0.01],
+          },
+          {
+            // Below k-anonymity → suppressed
+            dimension: 'gender',
+            group: 'NB',
+            referenceGroup: 'M',
+            gapPercent: -2,
+            pValue: 0.5,
+            significance: 'not_significant',
+            sampleSize: 3,
+            riskLevel: 'LOW',
+            coefficient: -0.02,
+            standardError: 0.05,
+            confidenceInterval: [-0.1, 0.1],
+          },
+        ],
+        103,
+      ),
+    });
+
+    const result = await service.getCohorts(TEST_TENANT_ID, 'run-1');
+
+    expect(result.cells).toHaveLength(2);
+    expect(result.cells[0]!.suppressed).toBe(false);
+    expect(result.cells[1]!.suppressed).toBe(true); // n=3 < 5
+    expect(result.cells[0]!.severityScore).toBeGreaterThan(0);
+    expect(result.dimensions).toContain('gender');
+  });
+
+  it('refuses cohorts on a non-COMPLETE run', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue({
+      id: 'run-1',
+      tenantId: TEST_TENANT_ID,
+      status: 'PENDING',
+      createdAt: new Date(),
+      methodologyName: 'edge-multivariate',
+      methodologyVersion: '2026.04',
+      result: {},
+    });
+    await expect(service.getCohorts(TEST_TENANT_ID, 'run-1')).rejects.toThrow(/PENDING/);
+  });
+});
+
+describe('PayEquityV2Service.getCohortDetail', () => {
+  let service: PayEquityV2Service;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createService());
+  });
+
+  it('suppresses employee rows when cohort n < 5 (k-anonymity)', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue({
+      id: 'run-1',
+      tenantId: TEST_TENANT_ID,
+      status: 'COMPLETE',
+      createdAt: new Date(),
+      methodologyName: 'edge-multivariate',
+      methodologyVersion: '2026.04',
+      result: buildEnvelope(
+        [
+          {
+            dimension: 'gender',
+            group: 'NB',
+            referenceGroup: 'M',
+            gapPercent: 0,
+            pValue: 1,
+            significance: 'not_significant',
+            sampleSize: 3,
+            coefficient: 0,
+            standardError: 0,
+            confidenceInterval: [0, 0],
+          },
+        ],
+        100,
+      ),
+    });
+
+    const result = await service.getCohortDetail(TEST_TENANT_ID, 'run-1', 'gender', 'NB');
+
+    expect(result.suppressed).toBe(true);
+    expect(result.rows).toEqual([]);
+    expect(result.suppressionReason).toMatch(/k=5/);
+    expect(db.client.employee.findMany).not.toHaveBeenCalled();
+  });
+
+  it('returns employee rows when cohort meets k-anonymity', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue({
+      id: 'run-1',
+      tenantId: TEST_TENANT_ID,
+      status: 'COMPLETE',
+      createdAt: new Date(),
+      methodologyName: 'edge-multivariate',
+      methodologyVersion: '2026.04',
+      result: buildEnvelope(
+        [
+          {
+            dimension: 'gender',
+            group: 'F',
+            referenceGroup: 'M',
+            gapPercent: -3,
+            pValue: 0.04,
+            significance: 'significant',
+            sampleSize: 100,
+            coefficient: -0.03,
+            standardError: 0.01,
+            confidenceInterval: [-0.05, -0.01],
+          },
+        ],
+        500,
+      ),
+    });
+    db.client.employee.findMany.mockResolvedValue([
+      {
+        id: 'e1',
+        employeeCode: 'E1',
+        firstName: 'A',
+        lastName: 'D',
+        department: 'Eng',
+        level: 'L4',
+        location: 'US',
+        hireDate: new Date(),
+        baseSalary: 100000,
+        currency: 'USD',
+        performanceRating: 4,
+        compaRatio: 0.95,
+      },
+    ]);
+
+    const result = await service.getCohortDetail(TEST_TENANT_ID, 'run-1', 'gender', 'F');
+
+    expect(result.suppressed).toBe(false);
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]!.name).toBe('A D');
+    // Confirm the WHERE filtered by gender=F
+    const findArgs = db.client.employee.findMany.mock.calls[0]![0];
+    expect(findArgs.where.gender).toBe('F');
+  });
+
+  it('throws NotFound when cohort cell is not in the run', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue({
+      id: 'run-1',
+      tenantId: TEST_TENANT_ID,
+      status: 'COMPLETE',
+      createdAt: new Date(),
+      methodologyName: 'edge-multivariate',
+      methodologyVersion: '2026.04',
+      result: buildEnvelope([], 100),
+    });
+
+    await expect(service.getCohortDetail(TEST_TENANT_ID, 'run-1', 'gender', 'F')).rejects.toThrow(
+      /not found/,
+    );
+  });
+});
+
+describe('PayEquityV2Service.getOutliers', () => {
+  let service: PayEquityV2Service;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createService());
+  });
+
+  it('returns empty when no significant cohorts in the run', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue({
+      id: 'run-1',
+      tenantId: TEST_TENANT_ID,
+      status: 'COMPLETE',
+      createdAt: new Date(),
+      methodologyName: 'edge-multivariate',
+      methodologyVersion: '2026.04',
+      result: buildEnvelope(
+        [
+          {
+            dimension: 'gender',
+            group: 'F',
+            gapPercent: -1,
+            pValue: 0.5,
+            significance: 'not_significant',
+            sampleSize: 100,
+          },
+        ],
+        500,
+      ),
+    });
+
+    const result = await service.getOutliers(TEST_TENANT_ID, 'run-1');
+    expect(result.outliers).toEqual([]);
+    expect(result.reason).toMatch(/significant/);
+  });
+
+  it('returns the lowest compa-ratio employees in significant cohorts', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue({
+      id: 'run-1',
+      tenantId: TEST_TENANT_ID,
+      status: 'COMPLETE',
+      createdAt: new Date(),
+      methodologyName: 'edge-multivariate',
+      methodologyVersion: '2026.04',
+      result: buildEnvelope(
+        [
+          {
+            dimension: 'gender',
+            group: 'F',
+            gapPercent: -5,
+            pValue: 0.01,
+            significance: 'significant',
+            sampleSize: 100,
+          },
+        ],
+        500,
+      ),
+    });
+    db.client.employee.findMany.mockResolvedValue([
+      {
+        id: 'e1',
+        employeeCode: 'E1',
+        firstName: 'Alex',
+        lastName: 'D',
+        department: 'Eng',
+        level: 'L4',
+        baseSalary: 90000,
+        currency: 'USD',
+        compaRatio: 0.85,
+      },
+    ]);
+
+    const result = await service.getOutliers(TEST_TENANT_ID, 'run-1', { limit: 5 });
+
+    expect(result.outliers).toHaveLength(1);
+    expect(result.outliers[0]!.name).toBe('Alex D');
+    expect(result.outliers[0]!.cohort.dimension).toBe('gender');
+    expect(result.outliers[0]!.explanation).toMatch(/0\.85/);
+  });
+});

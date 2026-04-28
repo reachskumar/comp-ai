@@ -119,6 +119,149 @@ export function usePayEquityRun(runId: string | null) {
   });
 }
 
+// ─── Phase 1: Diagnose ──────────────────────────────────────────────
+
+export interface TrendPoint {
+  runId: string;
+  at: string;
+  methodology: string;
+  worstGapPercent: number;
+  worstCohort: string | null;
+  significantCount: number;
+  totalEmployees: number;
+  methodologyVersion: string;
+}
+
+export interface TrendResponse {
+  series: TrendPoint[];
+  methodologyShifts: number[];
+  dimension: string | null;
+}
+
+export function usePayEquityTrend(dimension?: string, limit = 12) {
+  const params = new URLSearchParams();
+  if (dimension) params.set('dimension', dimension);
+  params.set('limit', String(limit));
+  return useQuery<TrendResponse>({
+    queryKey: ['pay-equity-trend', dimension, limit],
+    queryFn: () => apiClient.fetch(`/api/v1/pay-equity/trend?${params}`),
+  });
+}
+
+export interface CohortCell {
+  dimension: string;
+  group: string;
+  referenceGroup: string;
+  gapPercent: number;
+  pValue: number;
+  significance: string;
+  sampleSize: number;
+  riskLevel: string;
+  avgCompaRatio: number | null;
+  medianCompaRatio: number | null;
+  suppressed: boolean;
+  severityScore: number;
+}
+
+export interface CohortsResponse {
+  runId: string;
+  runAt: string;
+  dimensions: string[];
+  cells: CohortCell[];
+  warnings: PayEquityWarning[];
+  methodology: string;
+}
+
+export function usePayEquityCohorts(runId: string | null) {
+  return useQuery<CohortsResponse>({
+    queryKey: ['pay-equity-cohorts', runId],
+    queryFn: () => apiClient.fetch(`/api/v1/pay-equity/runs/${runId}/cohorts`),
+    enabled: !!runId,
+  });
+}
+
+export interface CohortDetailRow {
+  id: string;
+  employeeCode: string;
+  name: string;
+  department: string;
+  level: string;
+  location: string | null;
+  hireDate: string;
+  baseSalary: number;
+  currency: string;
+  performanceRating: number | null;
+  compaRatio: number | null;
+}
+
+export interface CohortDetailResponse {
+  runId: string;
+  dimension: string;
+  group: string;
+  suppressed: boolean;
+  suppressionReason?: string;
+  statisticalTest: {
+    coefficient: number;
+    standardError: number;
+    pValue: number;
+    confidenceInterval: [number, number];
+    sampleSize: number;
+    gapPercent: number;
+    significance: string;
+  };
+  rows: CohortDetailRow[];
+  truncated: boolean;
+}
+
+export function usePayEquityCohortDetail(
+  runId: string | null,
+  dimension: string | null,
+  group: string | null,
+) {
+  return useQuery<CohortDetailResponse>({
+    queryKey: ['pay-equity-cohort-detail', runId, dimension, group],
+    queryFn: () =>
+      apiClient.fetch(
+        `/api/v1/pay-equity/runs/${runId}/cohorts/${encodeURIComponent(
+          dimension!,
+        )}/${encodeURIComponent(group!)}`,
+      ),
+    enabled: !!runId && !!dimension && !!group,
+  });
+}
+
+export interface OutlierRow {
+  employeeId: string;
+  employeeCode: string;
+  name: string;
+  department: string;
+  level: string;
+  compaRatio: number;
+  baseSalary: number;
+  currency: string;
+  cohort: { dimension: string; group: string };
+  gapPercent: number;
+  explanation: string;
+}
+
+export interface OutliersResponse {
+  runId: string;
+  outliers: OutlierRow[];
+  total?: number;
+  reason?: string;
+}
+
+export function usePayEquityOutliers(runId: string | null, dimension?: string, limit = 10) {
+  const params = new URLSearchParams();
+  if (dimension) params.set('dimension', dimension);
+  params.set('limit', String(limit));
+  return useQuery<OutliersResponse>({
+    queryKey: ['pay-equity-outliers', runId, dimension, limit],
+    queryFn: () => apiClient.fetch(`/api/v1/pay-equity/runs/${runId}/outliers?${params}`),
+    enabled: !!runId,
+  });
+}
+
 export function useRunPayEquityAnalysisMutation() {
   const qc = useQueryClient();
   return useMutation<RunAnalysisResult, Error, RunAnalysisInput>({
