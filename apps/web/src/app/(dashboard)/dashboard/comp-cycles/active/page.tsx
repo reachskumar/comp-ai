@@ -347,19 +347,42 @@ function CycleDetailView({ cycleId, onBack }: { cycleId: string; onBack: () => v
   const transitionMutation = useTransitionCycleMutation();
   const runMonitorsMutation = useRunMonitorsMutation();
   const nudgeMutation = useNudgeMutation();
+  const [closureDialogOpen, setClosureDialogOpen] = React.useState(false);
+  const [closureGenerateLetters, setClosureGenerateLetters] = React.useState(true);
 
-  const handleTransition = (targetStatus: CycleStatus) => {
+  const runTransition = (targetStatus: CycleStatus, generateLetters?: boolean) => {
     transitionMutation.mutate(
-      { cycleId, targetStatus },
+      { cycleId, targetStatus, generateLetters },
       {
-        onSuccess: () => {
-          toast({ title: 'Cycle updated', description: `Moved to ${targetStatus}` });
+        onSuccess: (data) => {
+          const closure = data.closure;
+          const letters = data.letters;
+          let description = `Moved to ${targetStatus}`;
+          if (closure) {
+            description += ` · ${closure.applied} salaries written back`;
+          }
+          if (letters?.enqueued) {
+            description += ` · ${letters.enqueued} letters enqueued`;
+          } else if (letters?.error) {
+            description += ` · letters failed: ${letters.error}`;
+          }
+          toast({ title: 'Cycle updated', description });
+          setClosureDialogOpen(false);
         },
         onError: (err) => {
           toast({ title: 'Transition failed', description: err.message, variant: 'destructive' });
         },
       },
     );
+  };
+
+  const handleTransition = (targetStatus: CycleStatus) => {
+    if (targetStatus === 'COMPLETED') {
+      // Confirm + offer letter generation as opt-in (paid LLM calls).
+      setClosureDialogOpen(true);
+      return;
+    }
+    runTransition(targetStatus);
   };
 
   const handleRunMonitors = () => {
@@ -677,6 +700,58 @@ function CycleDetailView({ cycleId, onBack }: { cycleId: string; onBack: () => v
           </div>
         </CardContent>
       </Card>
+
+      {/* Closure confirmation */}
+      <Dialog open={closureDialogOpen} onOpenChange={setClosureDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Close this cycle?</DialogTitle>
+            <DialogDescription>
+              This will write every approved recommendation back to{' '}
+              <span className="font-medium">Employee.baseSalary</span> in a single transaction and
+              emit an audit log entry per change. The cycle becomes terminal — you cannot re-open
+              it.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex items-start gap-3 rounded-md border bg-muted/30 p-3">
+            <input
+              id="closure-letters"
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 rounded border-input"
+              checked={closureGenerateLetters}
+              onChange={(e) => setClosureGenerateLetters(e.target.checked)}
+            />
+            <div className="space-y-1">
+              <Label htmlFor="closure-letters" className="font-medium">
+                Also generate letters for every employee
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                Enqueues a Letters batch (one per letter type) for each recommendation that was
+                written back. Each letter is one paid LLM call. You can track progress in Letters →
+                Batch.
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setClosureDialogOpen(false)}
+              disabled={transitionMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => runTransition('COMPLETED', closureGenerateLetters)}
+              disabled={transitionMutation.isPending}
+            >
+              {transitionMutation.isPending ? (
+                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+              ) : null}
+              Close cycle
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

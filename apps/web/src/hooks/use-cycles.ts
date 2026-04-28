@@ -230,21 +230,38 @@ export function useCreateCycleMutation() {
   });
 }
 
+export interface TransitionResult extends Cycle {
+  closure?: { applied: number; skipped: number; total: number; appliedEmployeeIds: string[] };
+  letters?: {
+    requested: number;
+    enqueued: number;
+    batches: Array<{ batchId: string; letterType: string; total: number }>;
+    error?: string;
+  };
+}
+
 export function useTransitionCycleMutation() {
   const qc = useQueryClient();
-  return useMutation<Cycle, Error, { cycleId: string; targetStatus: CycleStatus; reason?: string }>(
+  return useMutation<
+    TransitionResult,
+    Error,
     {
-      mutationFn: ({ cycleId, ...body }) =>
-        apiClient.fetch<Cycle>(`/api/v1/cycles/${cycleId}/transition`, {
-          method: 'PATCH',
-          body: JSON.stringify(body),
-        }),
-      onSuccess: (_data, vars) => {
-        void qc.invalidateQueries({ queryKey: ['cycle', vars.cycleId] });
-        void qc.invalidateQueries({ queryKey: ['cycles'] });
-      },
+      cycleId: string;
+      targetStatus: CycleStatus;
+      reason?: string;
+      generateLetters?: boolean;
+    }
+  >({
+    mutationFn: ({ cycleId, ...body }) =>
+      apiClient.fetch<TransitionResult>(`/api/v1/cycles/${cycleId}/transition`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: (_data, vars) => {
+      void qc.invalidateQueries({ queryKey: ['cycle', vars.cycleId] });
+      void qc.invalidateQueries({ queryKey: ['cycles'] });
     },
-  );
+  });
 }
 
 export function useUpdateRecommendationStatusMutation() {
@@ -401,6 +418,98 @@ export function useNudgeMutation() {
         method: 'POST',
         body: JSON.stringify({ message }),
       }),
+  });
+}
+
+// ─── Manager workspace ──────────────────────────────────
+
+export interface MyTeamEmployee {
+  id: string;
+  employeeCode: string;
+  name: string;
+  email: string;
+  department: string;
+  level: string;
+  location: string | null;
+  jobFamily: string | null;
+  hireDate: string;
+  currentSalary: number;
+  currency: string;
+  performanceRating: number | null;
+  compaRatio: number | null;
+}
+
+export interface MyTeamRecommendation {
+  id: string;
+  recType: string;
+  currentValue: number;
+  proposedValue: number;
+  justification: string | null;
+  status: string;
+  approvedAt: string | null;
+}
+
+export interface MyTeamMember {
+  employee: MyTeamEmployee;
+  recommendation: MyTeamRecommendation | null;
+  allRecommendations: Array<{
+    id: string;
+    recType: string;
+    currentValue: number;
+    proposedValue: number;
+    status: string;
+  }>;
+}
+
+export interface MyTeamResponse {
+  cycle: { id: string; name: string; status: CycleStatus; currency: string };
+  managerEmployeeId: string;
+  managerName: string;
+  budget: {
+    department: string;
+    allocated: number;
+    spent: number;
+    remaining: number;
+  } | null;
+  teamSize: number;
+  members: MyTeamMember[];
+}
+
+export function useMyTeam(cycleId: string | null) {
+  return useQuery<MyTeamResponse>({
+    queryKey: ['cycle-my-team', cycleId],
+    queryFn: () => apiClient.fetch<MyTeamResponse>(`/api/v1/cycles/${cycleId}/my-team`),
+    enabled: !!cycleId,
+  });
+}
+
+export interface SaveTeamRecommendationsInput {
+  cycleId: string;
+  recommendations: Array<{
+    employeeId: string;
+    recType: 'MERIT_INCREASE';
+    currentValue: number;
+    proposedValue: number;
+    justification?: string | null;
+  }>;
+}
+
+export function useSaveTeamRecommendationsMutation() {
+  const qc = useQueryClient();
+  return useMutation<
+    { cycleId: string; created: number; updated: number; total: number },
+    Error,
+    SaveTeamRecommendationsInput
+  >({
+    mutationFn: ({ cycleId, recommendations }) =>
+      apiClient.fetch(`/api/v1/cycles/${cycleId}/recommendations`, {
+        method: 'POST',
+        body: JSON.stringify({ recommendations }),
+      }),
+    onSuccess: (_data, vars) => {
+      void qc.invalidateQueries({ queryKey: ['cycle-my-team', vars.cycleId] });
+      void qc.invalidateQueries({ queryKey: ['recommendations', vars.cycleId] });
+    },
   });
 }
 

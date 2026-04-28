@@ -795,6 +795,149 @@ export class CycleService {
     });
   }
 
+  // ─── Manager workspace ──────────────────────────────────────────────────
+
+  /**
+   * Manager-scoped view of a cycle: the user's direct reports as Employee
+   * rows joined with their existing CompRecommendation (if any) for this
+   * cycle, plus any matching department/manager budget. Used by the manager
+   * planning workspace.
+   *
+   * Returns an empty members[] if the user has no direct reports, instead
+   * of throwing — so the UI can render a friendly empty state.
+   */
+  async getMyTeamForCycle(tenantId: string, cycleId: string, userId: string) {
+    return this.db.forTenant(tenantId, async (tx) => {
+      const cycle = await tx.compCycle.findFirst({
+        where: { id: cycleId, tenantId },
+        select: { id: true, status: true, currency: true, name: true },
+      });
+      if (!cycle) throw new NotFoundException(`Cycle ${cycleId} not found`);
+
+      // Find the manager's Employee record via User.employeeId.
+      const user = await tx.user.findFirst({
+        where: { id: userId, tenantId },
+        select: { employeeId: true, name: true },
+      });
+      if (!user || !user.employeeId) {
+        throw new BadRequestException(
+          'Your user is not linked to an employee record — ask an admin to sync your user.',
+        );
+      }
+      const managerEmployeeId = user.employeeId;
+
+      // Direct reports.
+      const team = await tx.employee.findMany({
+        where: { tenantId, managerId: managerEmployeeId },
+        orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }],
+        select: {
+          id: true,
+          employeeCode: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          department: true,
+          level: true,
+          location: true,
+          hireDate: true,
+          baseSalary: true,
+          totalComp: true,
+          currency: true,
+          performanceRating: true,
+          compaRatio: true,
+          jobFamily: true,
+        },
+      });
+
+      const teamIds = team.map((e) => e.id);
+      // Existing recommendations for this team in this cycle.
+      const recs =
+        teamIds.length > 0
+          ? await tx.compRecommendation.findMany({
+              where: { cycleId, employeeId: { in: teamIds } },
+              select: {
+                id: true,
+                employeeId: true,
+                recType: true,
+                currentValue: true,
+                proposedValue: true,
+                justification: true,
+                status: true,
+                approvedAt: true,
+              },
+            })
+          : [];
+
+      const recsByEmp = new Map<string, (typeof recs)[number][]>();
+      for (const r of recs) {
+        const arr = recsByEmp.get(r.employeeId) ?? [];
+        arr.push(r);
+        recsByEmp.set(r.employeeId, arr);
+      }
+
+      // Manager's budget pool, if one is set.
+      const budget = await tx.cycleBudget.findFirst({
+        where: { cycleId, managerId: managerEmployeeId },
+        select: { allocated: true, spent: true, remaining: true, department: true },
+      });
+
+      return {
+        cycle: { id: cycle.id, name: cycle.name, status: cycle.status, currency: cycle.currency },
+        managerEmployeeId,
+        managerName: user.name,
+        budget: budget
+          ? {
+              department: budget.department,
+              allocated: Number(budget.allocated),
+              spent: Number(budget.spent),
+              remaining: Number(budget.remaining),
+            }
+          : null,
+        teamSize: team.length,
+        members: team.map((e) => {
+          const empRecs = recsByEmp.get(e.id) ?? [];
+          // The "primary" rec for the workspace is MERIT_INCREASE, else the first one.
+          const primary = empRecs.find((r) => r.recType === 'MERIT_INCREASE') ?? empRecs[0] ?? null;
+          return {
+            employee: {
+              id: e.id,
+              employeeCode: e.employeeCode,
+              name: `${e.firstName} ${e.lastName}`.trim(),
+              email: e.email,
+              department: e.department,
+              level: e.level,
+              location: e.location,
+              jobFamily: e.jobFamily,
+              hireDate: e.hireDate,
+              currentSalary: Number(e.baseSalary),
+              currency: e.currency,
+              performanceRating: e.performanceRating ? Number(e.performanceRating) : null,
+              compaRatio: e.compaRatio ? Number(e.compaRatio) : null,
+            },
+            recommendation: primary
+              ? {
+                  id: primary.id,
+                  recType: primary.recType,
+                  currentValue: Number(primary.currentValue),
+                  proposedValue: Number(primary.proposedValue),
+                  justification: primary.justification,
+                  status: primary.status,
+                  approvedAt: primary.approvedAt,
+                }
+              : null,
+            allRecommendations: empRecs.map((r) => ({
+              id: r.id,
+              recType: r.recType,
+              currentValue: Number(r.currentValue),
+              proposedValue: Number(r.proposedValue),
+              status: r.status,
+            })),
+          };
+        }),
+      };
+    });
+  }
+
   // ─── Eligibility ────────────────────────────────────────────────────────
 
   /**

@@ -431,6 +431,146 @@ describe('CycleService — closure writeback (APPROVAL → COMPLETED)', () => {
   });
 });
 
+describe('CycleService — getMyTeamForCycle', () => {
+  let service: CycleService;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createCycleService());
+  });
+
+  it('returns direct reports joined with their existing recommendations and the manager budget', async () => {
+    db.client.compCycle.findFirst.mockResolvedValue({
+      id: 'cycle-001',
+      status: 'ACTIVE',
+      currency: 'USD',
+      name: 'FY26 Merit',
+    });
+    db.client.user.findFirst.mockResolvedValue({
+      employeeId: 'mgr-emp-1',
+      name: 'Pat Manager',
+    });
+    db.client.employee.findMany.mockResolvedValue([
+      {
+        id: 'emp-1',
+        employeeCode: 'E1',
+        firstName: 'Alex',
+        lastName: 'Doe',
+        email: 'a@x.com',
+        department: 'Eng',
+        level: 'L4',
+        location: 'US',
+        hireDate: new Date('2024-01-01'),
+        baseSalary: 100000,
+        totalComp: 100000,
+        currency: 'USD',
+        performanceRating: 4,
+        compaRatio: 0.95,
+        jobFamily: 'Software',
+      },
+      {
+        id: 'emp-2',
+        employeeCode: 'E2',
+        firstName: 'Sam',
+        lastName: 'Lee',
+        email: 's@x.com',
+        department: 'Eng',
+        level: 'L5',
+        location: 'IN',
+        hireDate: new Date('2023-06-01'),
+        baseSalary: 130000,
+        totalComp: 130000,
+        currency: 'USD',
+        performanceRating: 5,
+        compaRatio: 1.02,
+        jobFamily: 'Software',
+      },
+    ]);
+    db.client.compRecommendation.findMany.mockResolvedValue([
+      {
+        id: 'rec-1',
+        employeeId: 'emp-1',
+        recType: 'MERIT_INCREASE',
+        currentValue: 100000,
+        proposedValue: 105000,
+        justification: 'Strong year',
+        status: 'DRAFT',
+        approvedAt: null,
+      },
+    ]);
+    db.client.cycleBudget.findFirst.mockResolvedValue({
+      department: 'Eng',
+      allocated: 50000,
+      spent: 5000,
+      remaining: 45000,
+    });
+
+    const result = await service.getMyTeamForCycle(TEST_TENANT_ID, 'cycle-001', TEST_USER_ID);
+
+    expect(result.managerEmployeeId).toBe('mgr-emp-1');
+    expect(result.teamSize).toBe(2);
+    expect(result.budget).toEqual({
+      department: 'Eng',
+      allocated: 50000,
+      spent: 5000,
+      remaining: 45000,
+    });
+    expect(result.members).toHaveLength(2);
+    expect(result.members[0]?.employee.name).toBe('Alex Doe');
+    expect(result.members[0]?.recommendation?.proposedValue).toBe(105000);
+    expect(result.members[1]?.recommendation).toBeNull();
+
+    // Confirm we filtered by managerId.
+    expect(db.client.employee.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { tenantId: TEST_TENANT_ID, managerId: 'mgr-emp-1' },
+      }),
+    );
+  });
+
+  it('returns empty members when the user has no direct reports', async () => {
+    db.client.compCycle.findFirst.mockResolvedValue({
+      id: 'cycle-001',
+      status: 'ACTIVE',
+      currency: 'USD',
+      name: 'FY26',
+    });
+    db.client.user.findFirst.mockResolvedValue({ employeeId: 'mgr-1', name: 'Pat' });
+    db.client.employee.findMany.mockResolvedValue([]);
+    db.client.compRecommendation.findMany.mockResolvedValue([]);
+    db.client.cycleBudget.findFirst.mockResolvedValue(null);
+
+    const result = await service.getMyTeamForCycle(TEST_TENANT_ID, 'cycle-001', TEST_USER_ID);
+
+    expect(result.teamSize).toBe(0);
+    expect(result.members).toEqual([]);
+    expect(result.budget).toBeNull();
+    // Skipped the recs IN-list query since there were no employees.
+    expect(db.client.compRecommendation.findMany).not.toHaveBeenCalled();
+  });
+
+  it('throws when the user is not linked to an employee record', async () => {
+    db.client.compCycle.findFirst.mockResolvedValue({
+      id: 'cycle-001',
+      status: 'ACTIVE',
+      currency: 'USD',
+      name: 'FY26',
+    });
+    db.client.user.findFirst.mockResolvedValue({ employeeId: null, name: 'Admin' });
+
+    await expect(
+      service.getMyTeamForCycle(TEST_TENANT_ID, 'cycle-001', TEST_USER_ID),
+    ).rejects.toThrow(/not linked/);
+  });
+
+  it('throws NotFound for a missing cycle', async () => {
+    db.client.compCycle.findFirst.mockResolvedValue(null);
+    await expect(
+      service.getMyTeamForCycle(TEST_TENANT_ID, 'missing', TEST_USER_ID),
+    ).rejects.toThrow(NotFoundException);
+  });
+});
+
 describe('CycleService — closure-letters opt-in', () => {
   let service: CycleService;
   let db: ReturnType<typeof createMockDatabaseService>;

@@ -127,6 +127,17 @@ export class CycleController {
     });
   }
 
+  // ─── Manager workspace ──────────────────────────────────────────────
+
+  @Get(':id/my-team')
+  @ApiOperation({
+    summary:
+      'Manager planning workspace: direct reports + their existing recommendations + budget.',
+  })
+  async getMyTeam(@Param('id') id: string, @Request() req: AuthRequest) {
+    return this.cycleService.getMyTeamForCycle(req.user.tenantId, id, req.user.userId);
+  }
+
   // ─── Budget Allocation ──────────────────────────────────────────────
 
   @Post(':id/budgets')

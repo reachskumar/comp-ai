@@ -113,6 +113,7 @@ export const navGroups: NavGroup[] = [
     featureKey: 'comp_cycles',
     items: [
       { title: 'Active Cycles', href: '/dashboard/comp-cycles/active', icon: ListChecks },
+      { title: 'My Team', href: '/dashboard/comp-cycles/my-team', icon: Users },
       { title: 'Recommendations', href: '/dashboard/comp-cycles/recommendations', icon: BarChart3 },
       { title: 'Calibration', href: '/dashboard/comp-cycles/calibration', icon: GitCompare },
       { title: 'Merit Matrix', href: '/dashboard/comp-cycles/merit-matrix', icon: Grid3X3 },
