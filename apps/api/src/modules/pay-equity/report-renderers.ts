@@ -17,7 +17,14 @@ import { createHash } from 'node:crypto';
 import type { PayEquityAgentResult } from '@compensation/ai';
 import type { PayEquityReport } from '../analytics/pay-equity.service';
 
-export type ReportType = 'board' | 'eu_ptd' | 'uk_gpg' | 'eeo1' | 'sb1162' | 'auditor';
+export type ReportType =
+  | 'board'
+  | 'eu_ptd'
+  | 'uk_gpg'
+  | 'eeo1'
+  | 'sb1162'
+  | 'auditor'
+  | 'defensibility';
 
 export const REPORT_TYPES: ReportType[] = [
   'board',
@@ -26,11 +33,30 @@ export const REPORT_TYPES: ReportType[] = [
   'eeo1',
   'sb1162',
   'auditor',
+  'defensibility',
 ];
 
 export type RenderOutput =
   | { format: 'csv'; filename: string; mimeType: 'text/csv'; content: string }
   | { format: 'pdf-html'; filename: string; mimeType: 'application/pdf'; html: string };
+
+export interface AuditEvent {
+  id: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  userId: string | null;
+  changes: unknown;
+  createdAt: Date;
+}
+
+export interface ChildAgentRun {
+  runId: string;
+  agentType: string;
+  status: string;
+  summary: string | null;
+  createdAt: Date;
+}
 
 export interface RenderContext {
   runId: string;
@@ -38,6 +64,9 @@ export interface RenderContext {
   tenantId: string;
   tenantName: string;
   envelope: PayEquityAgentResult<PayEquityReport>;
+  /** Phase 5 — populated only for the defensibility renderer. */
+  auditTrail?: AuditEvent[];
+  childRuns?: ChildAgentRun[];
 }
 
 const NA = 'not_available';
@@ -533,6 +562,119 @@ function renderSb1162Csv(ctx: RenderContext): RenderOutput {
   };
 }
 
+/**
+ * Phase 5 — Defensibility export.
+ *
+ * Comprehensive litigation-ready PDF: methodology, full regression detail,
+ * citations, every audit event since the run was created, every child agent
+ * invocation. Unlike the auditor export, this one is NOT anonymized — it's
+ * an internal artifact prepared in case the analysis is challenged.
+ *
+ * Watermark: "DEFENSIBILITY EXPORT".
+ */
+function renderDefensibilityPdf(ctx: RenderContext): RenderOutput {
+  const { envelope, tenantName, runAt, runId, auditTrail = [], childRuns = [] } = ctx;
+  const r = envelope.output;
+
+  const cohortRows = r.regressionResults
+    .map(
+      (x) =>
+        `<tr><td>${htmlEscape(x.dimension)}/${htmlEscape(x.group)}</td><td>${htmlEscape(
+          x.referenceGroup,
+        )}</td><td>${x.coefficient.toFixed(4)}</td><td>${x.standardError.toFixed(
+          4,
+        )}</td><td>${x.tStatistic.toFixed(2)}</td><td>${x.pValue.toFixed(
+          4,
+        )}</td><td>[${x.confidenceInterval[0].toFixed(3)}, ${x.confidenceInterval[1].toFixed(
+          3,
+        )}]</td><td>${x.sampleSize}</td><td>${pct(x.gapPercent)}</td><td>${htmlEscape(
+          x.significance,
+        )}</td></tr>`,
+    )
+    .join('');
+
+  const citationRows = envelope.citations
+    .map(
+      (c, i) =>
+        `<tr><td>${i + 1}</td><td>${htmlEscape(c.type)}</td><td>${htmlEscape(c.ref)}</td><td>${htmlEscape(c.excerpt ?? '')}</td></tr>`,
+    )
+    .join('');
+
+  const childRows = childRuns.length
+    ? childRuns
+        .map(
+          (c) =>
+            `<tr><td>${htmlEscape(c.agentType)}</td><td>${htmlEscape(c.runId)}</td><td>${htmlEscape(c.status)}</td><td>${htmlEscape(c.summary ?? '')}</td><td>${c.createdAt.toISOString()}</td></tr>`,
+        )
+        .join('')
+    : `<tr><td colspan="5" style="color:#94a3b8">No child agent invocations recorded.</td></tr>`;
+
+  const auditRows = auditTrail.length
+    ? auditTrail
+        .map((e) => {
+          let changesText = '';
+          try {
+            changesText = JSON.stringify(e.changes ?? {});
+          } catch {
+            changesText = '[unserializable]';
+          }
+          if (changesText.length > 200) changesText = changesText.slice(0, 200) + '…';
+          return `<tr><td>${e.createdAt.toISOString()}</td><td>${htmlEscape(e.action)}</td><td>${htmlEscape(e.entityType)}/${htmlEscape(e.entityId)}</td><td>${htmlEscape(e.userId ?? 'system')}</td><td><code style="font-size:10px">${htmlEscape(changesText)}</code></td></tr>`;
+        })
+        .join('')
+    : `<tr><td colspan="5" style="color:#94a3b8">No audit events recorded.</td></tr>`;
+
+  const body = `
+    <h1>${htmlEscape(tenantName)} — Pay Equity Defensibility Export</h1>
+    <div class="meta">Run ${htmlEscape(runId)} · Generated ${runAt.toISOString()} · Methodology ${htmlEscape(envelope.methodology.name)}@${htmlEscape(envelope.methodology.version)} · Confidence ${htmlEscape(envelope.confidence)} · ${envelope.citations.length} citations · ${auditTrail.length} audit events · ${childRuns.length} child agent invocations</div>
+
+    <h2>Methodology</h2>
+    <table>
+      <tr><th>Field</th><th>Value</th></tr>
+      <tr><td>Model</td><td>${htmlEscape(envelope.methodology.name)}@${htmlEscape(envelope.methodology.version)}</td></tr>
+      <tr><td>Dependent variable</td><td>${htmlEscape(envelope.methodology.dependentVariable ?? 'log_salary')}</td></tr>
+      <tr><td>Controls</td><td>${envelope.methodology.controls.map(htmlEscape).join(', ')}</td></tr>
+      <tr><td>Sample size</td><td>${envelope.methodology.sampleSize}</td></tr>
+      <tr><td>Confidence interval</td><td>${(envelope.methodology.confidenceInterval * 100).toFixed(0)}%</td></tr>
+      <tr><td>Compliance threshold</td><td>${envelope.methodology.complianceThreshold ?? '—'}%</td></tr>
+      <tr><td>Confidence level</td><td>${htmlEscape(envelope.confidence)}</td></tr>
+    </table>
+
+    <h2>Regression results (full detail)</h2>
+    <table><thead><tr><th>Cohort</th><th>vs reference</th><th>β</th><th>SE</th><th>t</th><th>p</th><th>95% CI</th><th>n</th><th>gap %</th><th>significance</th></tr></thead><tbody>${cohortRows}</tbody></table>
+
+    <h2>Citations (${envelope.citations.length})</h2>
+    <table><thead><tr><th>#</th><th>type</th><th>ref</th><th>excerpt</th></tr></thead><tbody>${citationRows}</tbody></table>
+
+    <h2>Agent invocations on this run</h2>
+    <table><thead><tr><th>agent</th><th>child run id</th><th>status</th><th>summary</th><th>at</th></tr></thead><tbody>${childRows}</tbody></table>
+
+    <h2>Audit trail (${auditTrail.length} events)</h2>
+    <table><thead><tr><th>at</th><th>action</th><th>entity</th><th>user</th><th>changes</th></tr></thead><tbody>${auditRows}</tbody></table>
+
+    ${
+      envelope.warnings.length
+        ? `<h2>Warnings recorded at run time</h2><ul>${envelope.warnings
+            .map((w) => `<li><b>${htmlEscape(w.code)}:</b> ${htmlEscape(w.message)}</li>`)
+            .join('')}</ul>`
+        : ''
+    }
+
+    <div class="footer">This export is intended for litigation defense. The underlying PayEquityRun row + every audit event listed above are immutable; this artifact is reproducible from the same runId. Generated automatically; no manual editing.</div>
+  `;
+
+  return {
+    format: 'pdf-html',
+    filename: `pay-equity-defensibility-${isoDate(runAt)}.pdf`,
+    mimeType: 'application/pdf',
+    html: pdfShell({
+      title: 'Pay Equity Defensibility Export',
+      bodyHtml: body,
+      watermark: 'DEFENSIBILITY EXPORT',
+    }),
+  };
+}
+
 /* ─── Dispatch ──────────────────────────────────────────────── */
 
 export function renderReport(type: ReportType, ctx: RenderContext): RenderOutput {
@@ -549,5 +691,7 @@ export function renderReport(type: ReportType, ctx: RenderContext): RenderOutput
       return renderEeo1Csv(ctx);
     case 'sb1162':
       return renderSb1162Csv(ctx);
+    case 'defensibility':
+      return renderDefensibilityPdf(ctx);
   }
 }

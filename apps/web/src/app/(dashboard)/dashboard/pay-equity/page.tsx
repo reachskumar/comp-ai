@@ -18,7 +18,6 @@ import * as React from 'react';
 import {
   Scale,
   Play,
-  AlertCircle,
   TrendingUp,
   Users,
   ShieldAlert,
@@ -57,6 +56,8 @@ import {
   useApplyRemediationsMutation,
   useForecastProjectionMutation,
   usePayEquityAir,
+  usePayEquityMethodology,
+  usePayEquityAuditTrail,
   type PayEquityOverviewData,
   type CohortCell,
   type CohortRootCauseEnvelope,
@@ -64,6 +65,7 @@ import {
   type RemediationRow,
   type ProjectionEnvelope,
   type AirCohort,
+  type AuditEvent,
 } from '@/hooks/use-pay-equity';
 
 const ALL_DIMENSIONS = [
@@ -293,6 +295,12 @@ export default function PayEquityWorkspacePage() {
               )}
             </CardContent>
           </Card>
+
+          <TrustCard
+            latestRunId={
+              overview.data?.hasData ? (overview.data as PayEquityOverviewData).latestRunId : null
+            }
+          />
         </TabsContent>
 
         <TabsContent value="diagnose" className="space-y-4">
@@ -451,32 +459,6 @@ function StatCard({
         </div>
         {subtitle && <p className="text-xs text-muted-foreground">{subtitle}</p>}
       </CardHeader>
-    </Card>
-  );
-}
-
-function PhasePlaceholder({
-  phase,
-  title,
-  description,
-}: {
-  phase: string;
-  title: string;
-  description: string;
-}) {
-  return (
-    <Card>
-      <CardContent className="flex flex-col items-center py-12 text-center">
-        <div className="mb-3 rounded-full bg-muted px-3 py-1 text-xs text-muted-foreground">
-          {phase}
-        </div>
-        <h3 className="text-lg font-semibold">{title}</h3>
-        <p className="mt-2 max-w-md text-sm text-muted-foreground">{description}</p>
-        <p className="mt-4 flex items-center gap-2 text-xs text-muted-foreground">
-          <AlertCircle className="h-3 w-3" />
-          Tracked in PAY_EQUITY_CONTEXT.md — not yet shipped
-        </p>
-      </CardContent>
     </Card>
   );
 }
@@ -1391,7 +1373,7 @@ function RemediationsTable({ runId }: { runId: string }) {
 // ─── Phase 3 — Reports panel ──────────────────────────────────────
 
 const REPORT_DEFS: Array<{
-  type: 'board' | 'eu_ptd' | 'uk_gpg' | 'eeo1' | 'sb1162' | 'auditor';
+  type: 'board' | 'eu_ptd' | 'uk_gpg' | 'eeo1' | 'sb1162' | 'auditor' | 'defensibility';
   title: string;
   description: string;
   format: 'PDF' | 'CSV';
@@ -1432,6 +1414,13 @@ const REPORT_DEFS: Array<{
     title: 'Auditor defensibility export',
     description:
       'Hashed identifiers, full methodology + regression detail + citation list. Watermarked.',
+    format: 'PDF',
+  },
+  {
+    type: 'defensibility',
+    title: 'Litigation defensibility export',
+    description:
+      'Comprehensive: methodology + full regression detail + citations + every audit event + every child agent invocation. Internal use; identifiers NOT hashed.',
     format: 'PDF',
   },
 ];
@@ -1902,5 +1891,184 @@ function PreventPanel({ latestRunId }: { latestRunId: string | null }) {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+// ─── Phase 5 — Trust card ──────────────────────────────────────────
+
+function TrustCard({ latestRunId }: { latestRunId: string | null }) {
+  const meth = usePayEquityMethodology(latestRunId);
+  const audit = usePayEquityAuditTrail(latestRunId);
+  const [showAudit, setShowAudit] = React.useState(false);
+
+  if (!latestRunId) return null;
+  if (meth.isLoading) return <Skeleton className="h-32 w-full" />;
+  if (!meth.data) return null;
+
+  const m = meth.data;
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <CardTitle className="text-base">Trust & methodology</CardTitle>
+            <CardDescription>
+              What was done, by what model, on what data — auditor- and litigation-ready.
+            </CardDescription>
+          </div>
+          <Badge variant="outline" className="font-mono">
+            {m.methodology.fullName}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+          <div>
+            <div className="text-xs text-muted-foreground">Sample size</div>
+            <div className="font-semibold">{m.methodology.sampleSize.toLocaleString()}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">Cohorts</div>
+            <div className="font-semibold">{m.headline.cohortsEvaluated}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">Significant gaps</div>
+            <div className="font-semibold">{m.headline.significantGaps}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">Citations</div>
+            <div className="font-semibold">{m.citationCount}</div>
+          </div>
+        </div>
+
+        <div className="rounded-md border border-border bg-muted/30 p-3 text-xs">
+          <div className="mb-1 font-semibold uppercase tracking-wide text-muted-foreground">
+            Methodology
+          </div>
+          <div className="space-y-1">
+            <div>
+              <span className="text-muted-foreground">Dependent variable:</span>{' '}
+              <code className="font-mono">{m.methodology.dependentVariable}</code>
+            </div>
+            <div>
+              <span className="text-muted-foreground">Controls:</span>{' '}
+              {m.methodology.controls.length === 0 ? (
+                <span className="italic text-muted-foreground">none recorded</span>
+              ) : (
+                m.methodology.controls.map((c, i) => (
+                  <span key={c}>
+                    <code className="font-mono">{c}</code>
+                    {i < m.methodology.controls.length - 1 ? ', ' : ''}
+                  </span>
+                ))
+              )}
+            </div>
+            <div>
+              <span className="text-muted-foreground">Confidence interval:</span>{' '}
+              {(m.methodology.confidenceInterval * 100).toFixed(0)}%
+              {m.methodology.complianceThreshold !== null && (
+                <>
+                  {' '}
+                  · <span className="text-muted-foreground">Compliance threshold:</span> ±
+                  {m.methodology.complianceThreshold}%
+                </>
+              )}
+            </div>
+            {m.headline.confidence && (
+              <div>
+                <span className="text-muted-foreground">Confidence level:</span>{' '}
+                <Badge
+                  variant="outline"
+                  className={
+                    m.headline.confidence === 'high'
+                      ? 'bg-emerald-50 text-emerald-700'
+                      : m.headline.confidence === 'medium'
+                        ? 'bg-amber-50 text-amber-700'
+                        : 'bg-red-50 text-red-700'
+                  }
+                >
+                  {m.headline.confidence}
+                </Badge>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {m.agentInvocations.length > 0 && (
+          <div>
+            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Agent invocations on this run
+            </div>
+            <div className="space-y-1">
+              {m.agentInvocations.slice(0, 6).map((a) => (
+                <div key={a.runId} className="flex items-center justify-between text-xs">
+                  <span>
+                    <Badge variant="outline" className="mr-2 font-mono">
+                      {a.agentType}
+                    </Badge>
+                    {a.summary ?? a.runId}
+                  </span>
+                  <span className="text-muted-foreground">
+                    {new Date(a.createdAt).toISOString().slice(0, 10)} · {a.status}
+                  </span>
+                </div>
+              ))}
+              {m.agentInvocations.length > 6 && (
+                <div className="text-xs italic text-muted-foreground">
+                  + {m.agentInvocations.length - 6} more — see audit trail
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        <div>
+          <button
+            type="button"
+            className="text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+            onClick={() => setShowAudit((v) => !v)}
+          >
+            {showAudit ? '▾' : '▸'} Audit trail ({audit.data?.total ?? 0} events)
+          </button>
+          {showAudit && audit.data && (
+            <div className="mt-2 max-h-72 overflow-auto rounded-md border border-border bg-background">
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-muted text-left">
+                  <tr>
+                    <th className="px-2 py-1">at</th>
+                    <th className="px-2 py-1">action</th>
+                    <th className="px-2 py-1">entity</th>
+                    <th className="px-2 py-1">user</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {audit.data.events.slice(0, 100).map((e: AuditEvent) => (
+                    <tr key={e.id} className="border-t">
+                      <td className="px-2 py-1 font-mono text-[10px]">
+                        {new Date(e.createdAt).toISOString().slice(0, 19).replace('T', ' ')}
+                      </td>
+                      <td className="px-2 py-1 font-mono text-[10px]">{e.action}</td>
+                      <td className="px-2 py-1 font-mono text-[10px] text-muted-foreground">
+                        {e.entityType}/{e.entityId.slice(0, 8)}…
+                      </td>
+                      <td className="px-2 py-1 font-mono text-[10px] text-muted-foreground">
+                        {e.userId?.slice(0, 8) ?? 'system'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {audit.data.events.length > 100 && (
+                <div className="px-2 py-1 text-[10px] italic text-muted-foreground">
+                  Showing 100 of {audit.data.events.length}. Download the defensibility export for
+                  the full record.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </CardContent>
+    </Card>
   );
 }

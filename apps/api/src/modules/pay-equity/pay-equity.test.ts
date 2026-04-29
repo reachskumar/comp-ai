@@ -1927,3 +1927,226 @@ describe('PayEquityV2Service.getAirAnalysis', () => {
     );
   });
 });
+
+// ─── Phase 5 — Trust ───────────────────────────────────────────────────
+
+describe('PayEquityV2Service.getMethodology', () => {
+  let service: PayEquityV2Service;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createService());
+  });
+
+  it('returns methodology snapshot + headline stats + child agent invocations', async () => {
+    const env = buildEnvelope(
+      [
+        {
+          dimension: 'gender',
+          group: 'F',
+          referenceGroup: 'M',
+          coefficient: -0.05,
+          gapPercent: -4.9,
+          pValue: 0.01,
+          sampleSize: 200,
+          significance: 'significant',
+        },
+      ],
+      500,
+    );
+    (env.methodology as { controls: string[] }).controls = ['job_level', 'tenure'];
+    (env.methodology as { sampleSize: number }).sampleSize = 500;
+
+    db.client.payEquityRun.findFirst.mockResolvedValue({
+      id: 'run-meth',
+      tenantId: TEST_TENANT_ID,
+      status: 'COMPLETE',
+      methodologyName: 'edge-multivariate',
+      methodologyVersion: '2026.04',
+      controls: ['job_level', 'tenure'],
+      sampleSize: 500,
+      createdAt: new Date('2026-04-28'),
+      result: env,
+    });
+
+    db.client.payEquityRun.findMany.mockResolvedValue([
+      {
+        id: 'child-1',
+        agentType: 'cohort_root_cause',
+        status: 'COMPLETE',
+        summary: 'gender/F root cause',
+        createdAt: new Date('2026-04-28T01:00:00Z'),
+      },
+      {
+        id: 'child-2',
+        agentType: 'remediation',
+        status: 'COMPLETE',
+        summary: 'Proposed 3 adjustments',
+        createdAt: new Date('2026-04-28T02:00:00Z'),
+      },
+    ]);
+
+    const result = await service.getMethodology(TEST_TENANT_ID, 'run-meth');
+
+    expect(result.runId).toBe('run-meth');
+    expect(result.methodology.fullName).toBe('edge-multivariate@2026.04');
+    expect(result.methodology.controls).toEqual(['job_level', 'tenure']);
+    expect(result.methodology.dependentVariable).toBe('log_salary');
+    expect(result.headline.cohortsEvaluated).toBe(1);
+    expect(result.headline.significantGaps).toBe(1);
+    expect(result.agentInvocations).toHaveLength(2);
+    expect(result.agentInvocations.map((a) => a.agentType)).toEqual([
+      'cohort_root_cause',
+      'remediation',
+    ]);
+  });
+
+  it('404s when run does not exist', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue(null);
+    await expect(service.getMethodology(TEST_TENANT_ID, 'missing')).rejects.toThrow(/not found/);
+  });
+});
+
+describe('PayEquityV2Service.getAuditTrail', () => {
+  let service: PayEquityV2Service;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createService());
+  });
+
+  it('returns the audit log rows tied to this run + its children + remediations, newest first', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue({
+      id: 'run-audit',
+      tenantId: TEST_TENANT_ID,
+      status: 'COMPLETE',
+      createdAt: new Date('2026-04-28'),
+      result: buildEnvelope([], 500),
+    });
+    db.client.payEquityRun.findMany.mockResolvedValue([
+      { id: 'rem-run-1', agentType: 'remediation' },
+    ]);
+    db.client.payEquityRemediation.findMany.mockResolvedValue([
+      { id: 'rem-row-1', runId: 'rem-run-1' },
+    ]);
+    db.client.auditLog.findMany.mockResolvedValue([
+      {
+        id: 'a1',
+        action: 'PAY_EQUITY_RUN',
+        entityType: 'PayEquityRun',
+        entityId: 'run-audit',
+        userId: TEST_USER_ID,
+        changes: {},
+        createdAt: new Date('2026-04-28T00:00:00Z'),
+      },
+      {
+        id: 'a2',
+        action: 'PAY_EQUITY_REMEDIATION_PROPOSED',
+        entityType: 'PayEquityRun',
+        entityId: 'rem-run-1',
+        userId: TEST_USER_ID,
+        changes: {},
+        createdAt: new Date('2026-04-28T01:00:00Z'),
+      },
+      {
+        id: 'a3',
+        action: 'PAY_EQUITY_REMEDIATION_APPLIED',
+        entityType: 'Employee',
+        entityId: 'rem-row-1',
+        userId: TEST_USER_ID,
+        changes: {},
+        createdAt: new Date('2026-04-28T02:00:00Z'),
+      },
+    ]);
+
+    const result = await service.getAuditTrail(TEST_TENANT_ID, 'run-audit');
+    expect(result.total).toBe(3);
+    expect(result.events.map((e) => e.action)).toContain('PAY_EQUITY_RUN');
+    expect(result.events.map((e) => e.action)).toContain('PAY_EQUITY_REMEDIATION_APPLIED');
+  });
+
+  it('404s when run does not exist', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue(null);
+    await expect(service.getAuditTrail(TEST_TENANT_ID, 'missing')).rejects.toThrow(/not found/);
+  });
+});
+
+describe('PayEquityV2Service.generateReport — defensibility', () => {
+  let service: PayEquityV2Service;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createService());
+  });
+
+  it('defensibility export bundles audit trail + child runs into the PDF context', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue({
+      id: 'def-run',
+      tenantId: TEST_TENANT_ID,
+      agentType: 'narrative',
+      status: 'COMPLETE',
+      methodologyName: 'edge-multivariate',
+      methodologyVersion: '2026.04',
+      createdAt: new Date('2026-04-28'),
+      result: buildEnvelope(
+        [
+          {
+            dimension: 'gender',
+            group: 'F',
+            referenceGroup: 'M',
+            coefficient: -0.05,
+            standardError: 0.01,
+            tStatistic: -2.5,
+            pValue: 0.01,
+            confidenceInterval: [-0.07, -0.03] as [number, number],
+            gapPercent: -4.9,
+            sampleSize: 200,
+            significance: 'significant',
+          },
+        ],
+        500,
+      ),
+    });
+    db.client.tenant.findUnique.mockResolvedValue({ name: 'Acme Corp' });
+    db.client.payEquityRun.findMany.mockResolvedValue([
+      {
+        id: 'child-1',
+        agentType: 'cohort_root_cause',
+        status: 'COMPLETE',
+        summary: 'gender/F root cause',
+        createdAt: new Date('2026-04-28T01:00:00Z'),
+      },
+    ]);
+    db.client.payEquityRemediation.findMany.mockResolvedValue([]);
+    db.client.auditLog.findMany.mockResolvedValue([
+      {
+        id: 'a1',
+        action: 'PAY_EQUITY_RUN',
+        entityType: 'PayEquityRun',
+        entityId: 'def-run',
+        userId: TEST_USER_ID,
+        changes: { sampleSize: 500 },
+        createdAt: new Date('2026-04-28T00:00:00Z'),
+      },
+    ]);
+    db.client.auditLog.create.mockResolvedValue({});
+
+    // The PDF path requires a Chrome binary, but we want to test only the
+    // composition (audit + child runs flowing into the renderer ctx).
+    // Force the renderer to emit pdf-html and assert the buffer build path
+    // by setting chromePathCache — but we don't actually want to launch
+    // Puppeteer in unit tests. Instead, swap the type to a CSV-generating
+    // surrogate by stubbing renderHtmlToPdf.
+    // Workaround: assert via the PDF refusal path that auditTrail + childRuns
+    // still get fetched (i.e., the service composes them BEFORE checking Chrome).
+    await expect(
+      service.generateReport(TEST_TENANT_ID, 'def-run', 'defensibility', TEST_USER_ID),
+    ).rejects.toThrow(/PDF rendering unavailable/);
+
+    // Both auxiliary fetches happened — methodology + audit trail were composed
+    // before the chrome check. payEquityRun.findMany covers BOTH the methodology
+    // child-run lookup AND the audit-trail child-run lookup.
+    expect(db.client.payEquityRun.findMany).toHaveBeenCalled();
+    expect(db.client.auditLog.findMany).toHaveBeenCalled();
+  });
+});

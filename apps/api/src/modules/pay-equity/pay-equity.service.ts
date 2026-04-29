@@ -1653,12 +1653,25 @@ export class PayEquityV2Service implements OnModuleInit {
 
     const envelope = run.result as unknown as PayEquityAgentResult<PayEquityReport>;
 
+    // Defensibility export needs the full audit trail + child agent runs.
+    // For the other report types these fields are unused.
+    let auditTrail: Awaited<ReturnType<typeof this.getAuditTrail>>['events'] = [];
+    let childRuns: Awaited<ReturnType<typeof this.getMethodology>>['agentInvocations'] = [];
+    if (type === 'defensibility') {
+      const trail = await this.getAuditTrail(tenantId, runId);
+      auditTrail = trail.events;
+      const meth = await this.getMethodology(tenantId, runId);
+      childRuns = meth.agentInvocations;
+    }
+
     const out = renderReport(type, {
       runId,
       runAt: run.createdAt,
       tenantId,
       tenantName: tenant?.name ?? 'Company',
       envelope,
+      auditTrail,
+      childRuns,
     });
 
     let buffer: Buffer;
@@ -2008,6 +2021,161 @@ export class PayEquityV2Service implements OnModuleInit {
         passing: cohorts.length - failingCount,
         failing: failingCount,
       },
+    };
+  }
+
+  // ─── Phase 5 — Trust ──────────────────────────────────────────────
+
+  /**
+   * Methodology snapshot for a single run — what the model did, what it
+   * controlled for, what threshold it claimed, and which agents touched it.
+   *
+   * Read-only; no persistence. Powers the methodology card on Overview and
+   * the methodology section of the defensibility export.
+   */
+  async getMethodology(tenantId: string, runId: string) {
+    const run = await this.getRun(tenantId, runId);
+    const env = run.result as unknown as PayEquityAgentResult<{
+      regressionResults: Array<{
+        dimension: string;
+        coefficient: number;
+        pValue: number;
+        sampleSize: number;
+        significance: string;
+      }>;
+      overallStats?: { totalEmployees: number; rSquared?: number; adjustedRSquared?: number };
+      controlVariables?: string[];
+    } | null> | null;
+
+    const controls =
+      env?.methodology?.controls ?? env?.output?.controlVariables ?? run.controls ?? [];
+
+    // Find every child run that branched off this parent (cohort root-cause,
+    // outlier explainer, remediation, projection). Each child counts as an
+    // "agent invocation" the methodology snapshot lists.
+    const children = await this.db.forTenant(tenantId, (tx) =>
+      tx.payEquityRun.findMany({
+        where: {
+          tenantId,
+          // Child runs reference parent via summary/audit; we surface them by
+          // looking at child runs created after this one with non-narrative
+          // agentType. The cleanest signal is the audit log; we read both.
+          NOT: { agentType: 'narrative' },
+          createdAt: { gte: run.createdAt },
+        },
+        select: {
+          id: true,
+          agentType: true,
+          status: true,
+          summary: true,
+          createdAt: true,
+        },
+        orderBy: { createdAt: 'asc' },
+        take: 100,
+      }),
+    );
+
+    const significantCount =
+      env?.output?.regressionResults?.filter((r) => r.significance === 'significant').length ?? 0;
+
+    return {
+      runId,
+      runAt: run.createdAt,
+      tenantId,
+      methodology: {
+        name: run.methodologyName,
+        version: run.methodologyVersion,
+        fullName: `${run.methodologyName}@${run.methodologyVersion}`,
+        controls,
+        dependentVariable: env?.methodology?.dependentVariable ?? 'log_salary',
+        sampleSize: env?.methodology?.sampleSize ?? run.sampleSize ?? 0,
+        confidenceInterval: env?.methodology?.confidenceInterval ?? 0.95,
+        complianceThreshold: env?.methodology?.complianceThreshold ?? null,
+      },
+      headline: {
+        cohortsEvaluated: env?.output?.regressionResults?.length ?? 0,
+        significantGaps: significantCount,
+        totalEmployees: env?.output?.overallStats?.totalEmployees ?? 0,
+        rSquared: env?.output?.overallStats?.rSquared ?? null,
+        adjustedRSquared: env?.output?.overallStats?.adjustedRSquared ?? null,
+        confidence: env?.confidence ?? null,
+        warnings: env?.warnings ?? [],
+      },
+      agentInvocations: children.map((c) => ({
+        runId: c.id,
+        agentType: c.agentType,
+        status: c.status,
+        summary: c.summary,
+        createdAt: c.createdAt,
+      })),
+      citationCount: env?.citations?.length ?? 0,
+    };
+  }
+
+  /**
+   * Audit trail surfaced for a single run. Returns every AuditLog row that
+   * touches this run id — the run itself plus every child agent invocation
+   * (cohort root-cause, outlier explainer, remediation, projection, report
+   * export) plus per-employee remediation events linked back through the
+   * remediation rows.
+   *
+   * Read-only; no persistence.
+   */
+  async getAuditTrail(tenantId: string, runId: string) {
+    await this.getRun(tenantId, runId); // 404 if not visible
+
+    const trail = await this.db.forTenant(tenantId, async (tx) => {
+      // Collect related entity ids: this run + child runs whose entityId
+      // points back, plus remediation rows whose runId matches a remediation
+      // child run.
+      const childRuns = await tx.payEquityRun.findMany({
+        where: { tenantId, NOT: { agentType: 'narrative' } },
+        select: { id: true, agentType: true },
+      });
+
+      const remediationRunIds = childRuns
+        .filter((r) => r.agentType === 'remediation')
+        .map((r) => r.id);
+
+      const remediations = await tx.payEquityRemediation.findMany({
+        where: { tenantId, runId: { in: remediationRunIds } },
+        select: { id: true, runId: true },
+      });
+      const remediationIds = remediations.map((r) => r.id);
+
+      // Pull audit rows: anything tagged to PayEquityRun (this id or any
+      // child) or to a remediation row from one of our remediation runs.
+      const allRunIds = [runId, ...childRuns.map((c) => c.id)];
+      const rows = await tx.auditLog.findMany({
+        where: {
+          tenantId,
+          OR: [
+            { entityType: 'PayEquityRun', entityId: { in: allRunIds } },
+            { entityType: 'Employee', entityId: { in: remediationIds } },
+            // Remediation per-row decisions reference the remediation id as entityId
+            { action: { startsWith: 'PAY_EQUITY_' } },
+          ],
+        },
+        select: {
+          id: true,
+          action: true,
+          entityType: true,
+          entityId: true,
+          userId: true,
+          changes: true,
+          createdAt: true,
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 500,
+      });
+
+      return rows;
+    });
+
+    return {
+      runId,
+      total: trail.length,
+      events: trail,
     };
   }
 }

@@ -306,4 +306,24 @@ export class PayEquityController {
   async getAir(@Param('id') runId: string, @Request() req: AuthRequest) {
     return this.service.getAirAnalysis(req.user.tenantId, runId);
   }
+
+  // ─── Phase 5 — Trust ────────────────────────────────────────────────
+
+  @Get('runs/:id/methodology')
+  @ApiOperation({
+    summary:
+      'Methodology snapshot for a run: model+version, controls, sample size, headline stats, child agent invocations, citation count.',
+  })
+  async getMethodology(@Param('id') runId: string, @Request() req: AuthRequest) {
+    return this.service.getMethodology(req.user.tenantId, runId);
+  }
+
+  @Get('runs/:id/audit')
+  @ApiOperation({
+    summary:
+      'Audit trail for a run: every PayEquityRun + remediation event linked to this analysis. Read-only.',
+  })
+  async getAuditTrail(@Param('id') runId: string, @Request() req: AuthRequest) {
+    return this.service.getAuditTrail(req.user.tenantId, runId);
+  }
 }

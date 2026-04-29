@@ -560,3 +560,70 @@ export function usePayEquityAir(runId: string | null) {
     enabled: !!runId,
   });
 }
+
+// ─── Phase 5 — Trust ───────────────────────────────────────────────
+
+export interface MethodologySnapshot {
+  runId: string;
+  runAt: string;
+  tenantId: string;
+  methodology: {
+    name: string;
+    version: string;
+    fullName: string;
+    controls: string[];
+    dependentVariable: string;
+    sampleSize: number;
+    confidenceInterval: number;
+    complianceThreshold: number | null;
+  };
+  headline: {
+    cohortsEvaluated: number;
+    significantGaps: number;
+    totalEmployees: number;
+    rSquared: number | null;
+    adjustedRSquared: number | null;
+    confidence: 'high' | 'medium' | 'low' | null;
+    warnings: PayEquityWarning[];
+  };
+  agentInvocations: Array<{
+    runId: string;
+    agentType: string;
+    status: string;
+    summary: string | null;
+    createdAt: string;
+  }>;
+  citationCount: number;
+}
+
+export function usePayEquityMethodology(runId: string | null) {
+  return useQuery<MethodologySnapshot>({
+    queryKey: ['pay-equity-methodology', runId],
+    queryFn: () => apiClient.fetch(`/api/v1/pay-equity/runs/${runId}/methodology`),
+    enabled: !!runId,
+  });
+}
+
+export interface AuditEvent {
+  id: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  userId: string | null;
+  changes: unknown;
+  createdAt: string;
+}
+
+export interface AuditTrailResponse {
+  runId: string;
+  total: number;
+  events: AuditEvent[];
+}
+
+export function usePayEquityAuditTrail(runId: string | null) {
+  return useQuery<AuditTrailResponse>({
+    queryKey: ['pay-equity-audit', runId],
+    queryFn: () => apiClient.fetch(`/api/v1/pay-equity/runs/${runId}/audit`),
+    enabled: !!runId,
+  });
+}
