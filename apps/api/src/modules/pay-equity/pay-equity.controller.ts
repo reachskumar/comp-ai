@@ -22,6 +22,7 @@ import { PermissionGuard, RequirePermission, TenantGuard } from '../../common';
 import { PayEquityV2Service } from './pay-equity.service';
 import { REPORT_TYPES, type ReportType } from './report-renderers';
 import {
+  AskCopilotDto,
   CalculateRemediationDto,
   DecideRemediationDto,
   ForecastProjectionDto,
@@ -325,5 +326,20 @@ export class PayEquityController {
   })
   async getAuditTrail(@Param('id') runId: string, @Request() req: AuthRequest) {
     return this.service.getAuditTrail(req.user.tenantId, runId);
+  }
+
+  // ─── Phase 6.3 — Manager Equity Copilot ────────────────────────────
+
+  @Post('copilot/ask')
+  @ApiOperation({
+    summary:
+      'Bounded-scope Q&A for managers about their team or the org PE state. Service resolves the manager → team via email, pulls latest narrative run, invokes the copilot LLM agent. Persists a child PayEquityRun.',
+  })
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('Pay Equity', 'insert')
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  async askCopilot(@Body() dto: AskCopilotDto, @Request() req: AuthRequest) {
+    const { tenantId, userId, email, name } = req.user;
+    return this.service.askCopilot(tenantId, userId, { email, name }, dto.question);
   }
 }

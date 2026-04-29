@@ -58,6 +58,7 @@ import {
   usePayEquityAir,
   usePayEquityMethodology,
   usePayEquityAuditTrail,
+  usePayEquityCopilotMutation,
   type PayEquityOverviewData,
   type CohortCell,
   type CohortRootCauseEnvelope,
@@ -66,6 +67,7 @@ import {
   type ProjectionEnvelope,
   type AirCohort,
   type AuditEvent,
+  type CopilotEnvelope,
 } from '@/hooks/use-pay-equity';
 
 const ALL_DIMENSIONS = [
@@ -295,6 +297,8 @@ export default function PayEquityWorkspacePage() {
               )}
             </CardContent>
           </Card>
+
+          <CopilotCard />
 
           <TrustCard
             latestRunId={
@@ -2068,6 +2072,157 @@ function TrustCard({ latestRunId }: { latestRunId: string | null }) {
             </div>
           )}
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Phase 6.3 — Manager Equity Copilot card ────────────────────
+
+function CopilotCard() {
+  const { toast } = useToast();
+  const copilot = usePayEquityCopilotMutation();
+  const [question, setQuestion] = React.useState('');
+  const [answer, setAnswer] = React.useState<CopilotEnvelope | null>(null);
+
+  const SUGGESTED = [
+    'Is anyone on my team underpaid relative to their cohort?',
+    "What's the worst pay equity gap across the company right now?",
+    'Which of my reports has the lowest compa-ratio?',
+  ];
+
+  const ask = (q: string) => {
+    if (!q.trim()) return;
+    copilot.mutate(
+      { question: q.trim() },
+      {
+        onSuccess: (res) => {
+          setAnswer(res.envelope);
+          if (res.envelope.output.refused) {
+            toast({
+              title: 'Out of scope',
+              description: res.envelope.output.refusalReason ?? 'Copilot refused this question.',
+              variant: 'destructive',
+            });
+          }
+        },
+        onError: (err) =>
+          toast({ title: 'Copilot failed', description: err.message, variant: 'destructive' }),
+      },
+    );
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Manager equity copilot</CardTitle>
+        <CardDescription>
+          Bounded Q&A about your team or the org&apos;s pay equity state. The copilot only answers
+          using data from this workspace — out-of-scope questions are politely refused.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Textarea
+            placeholder="Ask about your team or org PE state…"
+            value={question}
+            onChange={(e) => setQuestion(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                ask(question);
+              }
+            }}
+            rows={2}
+            className="resize-none text-sm"
+          />
+          <Button
+            size="sm"
+            disabled={copilot.isPending || question.trim().length < 3}
+            onClick={() => ask(question)}
+          >
+            {copilot.isPending ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : null}
+            Ask
+          </Button>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {SUGGESTED.map((s) => (
+            <button
+              key={s}
+              onClick={() => {
+                setQuestion(s);
+                ask(s);
+              }}
+              disabled={copilot.isPending}
+              className="rounded-full border border-input bg-background px-3 py-1 text-xs text-muted-foreground hover:bg-muted"
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+
+        {answer && (
+          <div className="space-y-3 rounded-md border border-border bg-muted/20 p-4">
+            <div className="flex items-center gap-2">
+              <Badge
+                variant="outline"
+                className={
+                  answer.output.refused
+                    ? 'bg-amber-50 text-amber-700'
+                    : answer.output.scope === 'team'
+                      ? 'bg-emerald-50 text-emerald-700'
+                      : 'bg-blue-50 text-blue-700'
+                }
+              >
+                {answer.output.refused ? 'refused' : answer.output.scope}
+              </Badge>
+              <span className="text-xs text-muted-foreground">
+                Confidence: {answer.confidence} · {answer.citations.length} citations
+              </span>
+            </div>
+
+            <p className="whitespace-pre-wrap text-sm">{answer.output.answer}</p>
+
+            {answer.output.highlights.length > 0 && (
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {answer.output.highlights.map((h, i) => (
+                  <div
+                    key={i}
+                    className="rounded-md border border-border bg-background p-2 text-xs"
+                  >
+                    <div className="text-muted-foreground">{h.label}</div>
+                    <div className="font-mono text-sm">{h.value}</div>
+                    {h.detail && <div className="text-muted-foreground">{h.detail}</div>}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {answer.output.followUpSuggestions.length > 0 && (
+              <div>
+                <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                  Follow-up
+                </div>
+                <div className="mt-1 flex flex-wrap gap-2">
+                  {answer.output.followUpSuggestions.map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => {
+                        setQuestion(s);
+                        ask(s);
+                      }}
+                      disabled={copilot.isPending}
+                      className="rounded-full border border-input bg-background px-3 py-1 text-xs hover:bg-muted"
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </CardContent>
     </Card>
   );

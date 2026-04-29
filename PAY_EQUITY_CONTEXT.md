@@ -21,6 +21,7 @@
 - ✅ Phase 3 (Report) first cut shipped — board PDF + EU PTD + UK GPG + EEO-1 + CA SB 1162 + auditor PDF
 - ✅ Phase 4 — Predict half shipped — 12-month forecast + hiring/promotion scenario + AIR (80% rule)
 - ✅ Phase 5 (Trust) first cut shipped — methodology snapshot + per-run audit trail + defensibility export
+- ✅ Phase 6.3 (Manager equity copilot) shipped — bounded RAG Q&A on the Overview tab
 - ⬜ Phase 4 — Prevent half (4.3 promotion slate, 4.4 pay band drift, 4.6 in-cycle warning, 4.7 pre-offer guardrail) deferred
 - ⬜ Phase 5.5 — external auditor read-only portal deferred (needs token/share-link infra)
 - ⬜ Phase 6 (Self-service & Polish)
@@ -30,14 +31,14 @@
 - ⬜ LLM-as-judge eval scoring still deferred (needs OpenAI key in CI)
 - ⬜ Phase 4 hiring/promotion coefficients (HIRING_COEF=0.05, PROMO_COEF=0.10) need comp-consultant validation before customer use (bible §7 Q1)
 
-**What's next (Phase 6 — Self-service & Polish, ~3-4 days):**
+**What's next (Phase 6 remainder + deferred items):**
 
-1. 6.1 Employee personal equity statement
-2. 6.2 Pay range publication module (CA / NY / CO / EU)
-3. 6.3 Manager equity copilot (bounded RAG Q&A)
-4. 6.4 CHRO daily digest (Slack + email)
-
-(Plus deferred items above as time allows.)
+1. 6.4 CHRO daily digest (Slack + email) — needs cron + Slack webhook
+2. 6.1 Employee personal equity statement
+3. 6.2 Pay range publication module (CA / NY / CO / EU)
+4. Phase 4 Prevent half (4.3 promotion slate, 4.4 pay band drift, 4.6 in-cycle warning, 4.7 pre-offer guardrail) — needs comp cycle / offer-flow hooks
+5. Phase 5.5 external auditor portal — share-token + read-only UI
+6. Phase 2.4 / 2.6 / 3.6 / 3.7 — multi-quarter plan, letters hook, comp committee deck, scheduled delivery
 
 ---
 
@@ -312,14 +313,14 @@ interface Citation {
 | 5.4 | Defensibility documentation export        | ✅     | New `defensibility` report type. `GET /pay-equity/runs/:id/reports/defensibility` returns a watermarked PDF bundling methodology + full regression detail + citations + every audit event + every child agent invocation. Identifiers NOT hashed (internal litigation artifact, distinct from the auditor export). |
 | 5.5 | External auditor read-only portal         | ⬜     | Deferred. Needs share-token + read-only access path + a separate UI surface — substantial enough for its own session.                                                                                                                                                                                              |
 
-### Phase 6 — Self-service & Polish _(~3-4 days, optional)_
+### Phase 6 — Self-service & Polish _(6.3 shipped 2026-04-29; rest deferred)_
 
-| #   | Feature                            | Status | Effort | Notes           |
-| --- | ---------------------------------- | ------ | ------ | --------------- |
-| 6.1 | Employee personal equity statement | ⬜     | 1 d    |                 |
-| 6.2 | Pay range publication module       | ⬜     | 1 d    | CA/NY/CO/EU     |
-| 6.3 | Manager equity copilot (Q&A)       | ⬜     | 1.5 d  | Bounded RAG     |
-| 6.4 | CHRO daily digest (Slack + email)  | ⬜     | 1 d    | Recurring touch |
+| #   | Feature                            | Status | Notes                                                                                                                                                                                                                                                                                                                                                                                                 |
+| --- | ---------------------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 6.1 | Employee personal equity statement | ⬜     | Deferred                                                                                                                                                                                                                                                                                                                                                                                              |
+| 6.2 | Pay range publication module       | ⬜     | Deferred (CA/NY/CO/EU)                                                                                                                                                                                                                                                                                                                                                                                |
+| 6.3 | Manager equity copilot (Q&A)       | ✅     | `POST /pay-equity/copilot/ask`. Bounded RAG: service resolves manager → Employee by email, loads direct reports + latest narrative run, invokes the new `pay-equity-copilot-graph.ts` LLM agent (numbers come from input only; out-of-scope questions refused). Persists child PayEquityRun (agentType=copilot). Surfaced as a CopilotCard on the Overview tab with suggested questions + follow-ups. |
+| 6.4 | CHRO daily digest (Slack + email)  | ⬜     | Deferred. Needs cron + Slack webhook + email template                                                                                                                                                                                                                                                                                                                                                 |
 
 **Total: ~5 weeks of disciplined work.**
 
@@ -388,6 +389,11 @@ Will populate as we ship. Format:
 | 5        | TrustCard UI on the Overview tab — methodology box, headline stats, agent invocations, expandable audit trail panel                                                                | ✅     | TBD    | Replaces no placeholder; sits below the run-controls card. Auto-loads from latest run. Audit panel shows ≤100 events with a pointer to the defensibility export for the full record          |
 | 5        | Web hooks usePayEquityMethodology + usePayEquityAuditTrail + types                                                                                                                 | ✅     | TBD    | apps/web/src/hooks/use-pay-equity.ts                                                                                                                                                         |
 | 5        | 5 new service tests (methodology snapshot + 404; audit trail composition + 404; defensibility export composes audit + child runs before chrome check)                              | ✅     | TBD    | 82 total tests green (54 service + 28 eval)                                                                                                                                                  |
+| 6.3      | `pay-equity-copilot-graph.ts` — bounded-scope manager Q&A LLM agent                                                                                                                | ✅     | TBD    | Returns answer + scope (team/org/out_of_scope) + refusal + highlights + followUpSuggestions under PayEquityAgentResult. Prompt enforces refuse-on-out-of-scope; numbers come from input only |
+| 6.3      | `POST /pay-equity/copilot/ask` — body { question } — resolves manager→Employee by email, loads direct reports + latest narrative run, invokes agent, persists child PayEquityRun   | ✅     | TBD    | 30/min throttle. agentType=copilot. Audit action `PAY_EQUITY_COPILOT` records question + scope + refused flag + teamSize. Tolerates manager with no Employee row (team scope returns empty)  |
+| 6.3      | CopilotCard on the Overview tab — textarea + Cmd/Ctrl-Enter to ask + 3 suggested questions + answer block with scope badge, citations, highlights, follow-up chips                 | ✅     | TBD    | apps/web/src/app/(dashboard)/dashboard/pay-equity/page.tsx. Refused answers show an amber badge + toast                                                                                      |
+| 6.3      | Web hook usePayEquityCopilotMutation + CopilotEnvelope type                                                                                                                        | ✅     | TBD    | apps/web/src/hooks/use-pay-equity.ts                                                                                                                                                         |
+| 6.3      | 4 new service tests (team-scope happy path + audit; manager without Employee row → empty team; refusal recorded in audit; agent throw → child run FAILED)                          | ✅     | TBD    | 86 total green (58 service + 28 eval). Copilot LLM stubbed via vi.mock                                                                                                                       |
 
 (Add rows as features ship.)
 
@@ -432,10 +438,9 @@ Will populate as we ship. Format:
 | 2026-04-29 | Defensibility export does NOT hash identifiers, unlike the auditor export | Litigation defense needs the actual employee/cohort/audit-event ids so counsel can cross-reference HR systems. Privacy is handled by routing — only authenticated users with `Pay Equity` permission can pull the file (same `@RequirePermission` gate as everything else); it's not a public-facing artifact like the auditor export might become. |
 | 2026-04-29 | Phase 5.3 (role gating) is marked shipped without code changes — `@RequirePermission('Pay Equity', ...)` already enforces it on every endpoint since Phase 0 | The bible originally listed 5.3 as a 0.5-day item, but reading the code shows the work was already done as a side effect of building each endpoint correctly. Honest accounting: ship-status reflects current state, not effort spent. |
 | 2026-04-29 | Phase 5.5 (external auditor read-only portal) deferred to its own session | Substantial enough to warrant separate scope: needs a share-token/access-link infra, a separate UI surface (not the workspace shell — auditors aren't tenant users), and careful access-scope decisions (single-run vs date-range, expiring vs revocable). Done correctly takes ~1d on its own; folding it in here would dilute Phase 5 polish. |
-
----
-
-## 7 — Open questions
+| 2026-04-29 | Phase 6.3 manager → team is resolved by email join, not a User.employeeId column | Schema doesn't link User to Employee directly; email is the only reliable cross-reference. Tolerated for now (the agent handles missing-Employee gracefully — empty team, org-scope answers still work). A proper User.employeeId FK would be cleaner but requires a migration + backfill — defer until a customer needs it. |
+| 2026-04-29 | Phase 6.3 keeps the workspace at 5 tabs; CopilotCard goes inline on Overview, not a 6th tab | Adding a "Copilot" tab would suggest the copilot is a destination; it's actually a tool. Inline placement above TrustCard makes it feel like a contextual companion to the run controls, not a sub-page. |
+| 2026-04-29 | Phase 6.3 ships alone; 6.1 / 6.2 / 6.4 deferred | The wedge story is "narrative AI in the workflow" — copilot is the strongest expression of that. 6.1 (employee statement) and 6.2 (pay range publication) are table-stakes, less differentiated. 6.4 (CHRO digest) needs cron + Slack/email infra we don't have — separate plumbing session. |
 
 Need answers before the relevant phase ships:
 
@@ -505,6 +510,7 @@ To be linked / quoted in implementation:
 | 2026-04-28 | Phase 3 (Report) first cut shipped: pure renderer module producing 6 artifacts — board narrative PDF, EU PTD CSV, UK GPG CSV, EEO-1 CSV, CA SB 1162 CSV, auditor PDF. Single `GET /pay-equity/runs/:id/reports/:type` endpoint, 30/min throttle, BOM-prefixed UTF-8 CSV for Excel compatibility, BadRequestException when host has no Chrome instead of silent degradation. Statutory fields that need source data we don't yet have (bonus, hourly rate, quartiles, race/ethnicity, job category) are explicitly emitted as `not_available` rather than blank. Auditor PDF hashes the tenant id (sha256, 12 hex) and watermarks "AUDITOR EXPORT". Each export writes an AuditLog row (`action=PAY_EQUITY_REPORT_EXPORTED`); no child PayEquityRun is created since the envelope is already immutable. ReportsPanel UI with 6 download cards replaces the Phase 3 placeholder. 11 new tests (6 renderer-level + 5 service-level), 71 total green. Phase 3.6 (comp committee deck) + 3.7 (scheduled delivery) deferred to a later session; statutory CSVs need a comp-lawyer review pass before customer filing.                                                  | Claude                         |
 | 2026-04-28 | Phase 4 (Predict half) shipped: `pay-equity-projection-graph.ts` narrative-only agent + deterministic forecast (linear extrapolation of worst-cohort gap from last 6 narrative runs at checkpoints 1/3/6/horizon, 95% CI from observed sigma, scenario adjustment with HIRING_COEF=0.05pp + PROMO_COEF=0.10pp). Two endpoints: `POST /pay-equity/projections/forecast` (10/min throttle; persists child PayEquityRun agentType=projection + AuditLog `PAY_EQUITY_PROJECTION`) and `GET /pay-equity/runs/:id/air` (read-only OFCCP four-fifths rule per cohort, AIR=exp(β), AIR<0.8 fails). PreventPanel UI with AIR table + 12-month forecast card with hiring scenario form + drivers + recommended actions + projected-series sparkline replaces the Phase 4 placeholder. 6 new service tests, 77 total green (49 service + 28 eval). Prevent half (4.3 promotion slate, 4.4 pay band drift, 4.6 in-cycle warning, 4.7 pre-offer guardrail) deferred to a later session — they hook into modules we haven't built yet. Scenario coefficients need comp-consultant validation.                                                                                  | Claude                         |
 | 2026-04-29 | Phase 5 (Trust) first cut shipped: methodology snapshot + per-run audit trail are read-only views over data we already store (no new persistence). Two new endpoints: `GET /pay-equity/runs/:id/methodology` (model+version, controls, dep var, sample size, CI, compliance threshold, headline stats, child agent invocations, citation count) and `GET /pay-equity/runs/:id/audit` (this run + child runs + linked remediation events, newest first, capped at 500). New `defensibility` report type — comprehensive litigation-ready PDF bundling methodology + full regression detail + citations + every audit event + every child agent invocation, watermarked, identifiers NOT hashed (distinct from auditor export). TrustCard UI on the Overview tab (methodology box, headline stats, agent invocations, expandable audit panel showing ≤100 events). 5.3 (role gating) marked shipped without code changes — `@RequirePermission` already enforced it on every endpoint since Phase 0. 5.5 (external auditor portal) deferred — needs share-token + separate UI surface, ~1d on its own. 5 new service tests, 82 total green (54 service + 28 eval). | Claude                         |
+| 2026-04-29 | Phase 6.3 (Manager Equity Copilot) shipped: new `pay-equity-copilot-graph.ts` bounded-RAG LLM agent (returns answer + scope team/org/out_of_scope + refused flag + highlights + followUpSuggestions under PayEquityAgentResult). One endpoint `POST /pay-equity/copilot/ask` (30/min throttle); service resolves manager → Employee by email, loads ≤50 direct reports + latest narrative run, invokes agent. Persists child PayEquityRun (agentType=copilot) + AuditLog `PAY_EQUITY_COPILOT` recording question/scope/refused/teamSize. CopilotCard on Overview tab with textarea, suggested questions, and follow-up chips. Tolerates manager with no Employee row (empty team, org-scope answers still work). 4 new service tests, 86 total green (58 service + 28 eval). 6.1, 6.2, 6.4 deferred.                                                                                                                                                                                                                                                                                                                                                             | Claude                         |
 
 ---
 

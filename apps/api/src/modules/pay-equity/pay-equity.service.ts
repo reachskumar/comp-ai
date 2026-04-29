@@ -13,9 +13,11 @@ import {
   checkSampleSize,
   invokeCohortRootCauseGraph,
   invokeOutlierExplainerGraph,
+  invokePayEquityCopilotGraph,
   invokeProjectionGraph,
   invokeRemediationGraph,
   type AgentWarning,
+  type CopilotOutput,
   type GapProjectionOutput,
   type PayEquityAgentResult,
   type PayEquityMethodology,
@@ -2177,6 +2179,223 @@ export class PayEquityV2Service implements OnModuleInit {
       total: trail.length,
       events: trail,
     };
+  }
+
+  // ─── Phase 6.3 — Manager Equity Copilot ──────────────────────────
+
+  /**
+   * Bounded-scope Q&A for managers.
+   *
+   * - Resolves the asking user's Employee row by email
+   * - Loads their direct reports as the team-scope source of truth
+   * - Pulls the latest narrative run as the org-scope source of truth
+   * - Invokes the copilot LLM agent (numbers come from input, not the LLM)
+   * - Persists a child PayEquityRun (agentType=copilot) + AuditLog
+   *
+   * Out-of-scope questions are refused by the agent itself; the service
+   * provides the bounded inputs and trusts the prompt contract.
+   */
+  async askCopilot(
+    tenantId: string,
+    userId: string,
+    user: { email: string; name?: string },
+    question: string,
+  ): Promise<{ runId: string; envelope: PayEquityAgentResult<CopilotOutput> }> {
+    // ── Resolve manager → Employee by email (within tenant) ─────
+    const managerEmployee = await this.db.forTenant(tenantId, (tx) =>
+      tx.employee.findFirst({
+        where: { tenantId, email: user.email },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          level: true,
+          department: true,
+        },
+      }),
+    );
+
+    // ── Direct reports (team scope) ─────────────────────────────
+    const team = managerEmployee
+      ? await this.db.forTenant(tenantId, (tx) =>
+          tx.employee.findMany({
+            where: { tenantId, managerId: managerEmployee.id, terminationDate: null },
+            select: {
+              id: true,
+              employeeCode: true,
+              firstName: true,
+              lastName: true,
+              level: true,
+              department: true,
+              gender: true,
+              compaRatio: true,
+              baseSalary: true,
+              currency: true,
+            },
+            take: 50,
+          }),
+        )
+      : [];
+
+    // ── Latest narrative run (org scope) ────────────────────────
+    const latestRun = await this.db.forTenant(tenantId, (tx) =>
+      tx.payEquityRun.findFirst({
+        where: { tenantId, agentType: 'narrative', status: 'COMPLETE' },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          createdAt: true,
+          sampleSize: true,
+          methodologyName: true,
+          methodologyVersion: true,
+          result: true,
+        },
+      }),
+    );
+
+    let orgState: Parameters<typeof invokePayEquityCopilotGraph>[0]['orgState'] = {
+      runId: null,
+      runAt: null,
+      methodology: null,
+      sampleSize: 0,
+      significantGaps: 0,
+      worstCohort: null,
+      confidence: null,
+    };
+    if (latestRun) {
+      const env = latestRun.result as unknown as PayEquityAgentResult<{
+        regressionResults: Array<{
+          dimension: string;
+          group: string;
+          gapPercent: number;
+          significance: string;
+        }>;
+      }>;
+      const regs = env.output.regressionResults ?? [];
+      const sigCount = regs.filter((r) => r.significance === 'significant').length;
+      const worst = regs.reduce(
+        (a, b) => (Math.abs(a?.gapPercent ?? 0) > Math.abs(b.gapPercent) ? a : b),
+        regs[0],
+      );
+      orgState = {
+        runId: latestRun.id,
+        runAt: latestRun.createdAt.toISOString(),
+        methodology: `${latestRun.methodologyName}@${latestRun.methodologyVersion}`,
+        sampleSize: latestRun.sampleSize ?? 0,
+        significantGaps: sigCount,
+        worstCohort: worst
+          ? {
+              dimension: worst.dimension,
+              group: worst.group,
+              gapPercent: worst.gapPercent,
+            }
+          : null,
+        confidence: env.confidence ?? null,
+      };
+    }
+
+    // ── Pre-create child PayEquityRun row ──────────────────────
+    const pendingRun = await this.db.forTenant(tenantId, (tx) =>
+      tx.payEquityRun.create({
+        data: {
+          tenantId,
+          userId,
+          agentType: 'copilot',
+          methodologyName: PayEquityV2Service.METHODOLOGY_NAME,
+          methodologyVersion:
+            latestRun?.methodologyVersion ?? PayEquityV2Service.METHODOLOGY_VERSION,
+          controls: [],
+          status: 'PENDING',
+          summary: question.slice(0, 200),
+        },
+      }),
+    );
+
+    try {
+      const envelope = await invokePayEquityCopilotGraph({
+        tenantId,
+        userId,
+        question,
+        manager: {
+          employeeId: managerEmployee?.id ?? null,
+          name:
+            user.name ??
+            (`${managerEmployee?.firstName ?? ''} ${managerEmployee?.lastName ?? ''}`.trim() ||
+              user.email),
+          email: user.email,
+          level: managerEmployee?.level ?? null,
+          department: managerEmployee?.department ?? null,
+        },
+        team: team.map((e) => ({
+          employeeId: e.id,
+          employeeCode: e.employeeCode,
+          firstName: e.firstName,
+          lastName: e.lastName,
+          level: e.level,
+          department: e.department,
+          gender: e.gender,
+          compaRatio: e.compaRatio === null ? null : Number(e.compaRatio),
+          baseSalary: Number(e.baseSalary),
+          currency: e.currency,
+        })),
+        orgState,
+        methodology: {
+          name: PayEquityV2Service.METHODOLOGY_NAME,
+          version: latestRun?.methodologyVersion ?? PayEquityV2Service.METHODOLOGY_VERSION,
+          controls: [],
+          sampleSize: orgState.sampleSize,
+        },
+      });
+      envelope.runId = pendingRun.id;
+
+      await this.db.forTenant(tenantId, async (tx) => {
+        await tx.payEquityRun.update({
+          where: { id: pendingRun.id },
+          data: {
+            status: 'COMPLETE',
+            sampleSize: team.length,
+            result: envelope as unknown as Prisma.InputJsonValue,
+            summary: envelope.output.refused
+              ? `Refused: ${envelope.output.refusalReason ?? 'out of scope'}`
+              : `Q: ${question.slice(0, 80)} · scope=${envelope.output.scope}`,
+          },
+        });
+        await tx.auditLog.create({
+          data: {
+            tenantId,
+            userId,
+            action: 'PAY_EQUITY_COPILOT',
+            entityType: 'PayEquityRun',
+            entityId: pendingRun.id,
+            changes: {
+              question: question.slice(0, 200),
+              scope: envelope.output.scope,
+              refused: envelope.output.refused,
+              teamSize: team.length,
+              managerEmail: user.email,
+            } as unknown as Prisma.InputJsonValue,
+          },
+        });
+      });
+
+      this.logger.log(
+        `Copilot: child=${pendingRun.id} scope=${envelope.output.scope} refused=${envelope.output.refused} team=${team.length}`,
+      );
+      return { runId: pendingRun.id, envelope };
+    } catch (err) {
+      this.logger.error(`Copilot failed for ${pendingRun.id}`, err);
+      await this.db.forTenant(tenantId, (tx) =>
+        tx.payEquityRun.update({
+          where: { id: pendingRun.id },
+          data: {
+            status: 'FAILED',
+            errorMsg: err instanceof Error ? err.message : 'Unknown error',
+          },
+        }),
+      );
+      throw err;
+    }
   }
 }
 

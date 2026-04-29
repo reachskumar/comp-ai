@@ -37,6 +37,7 @@ export {
   type CohortRootCauseOutput,
   type RemediationOptimizationOutput,
   type GapProjectionOutput,
+  type CopilotOutput,
   type Citation,
   type CitationType,
   type AgentConfidence,
@@ -204,6 +205,11 @@ export {
   invokeProjectionGraph,
   type ProjectionAgentInput,
 } from './graphs/pay-equity-projection-graph.js';
+export {
+  buildPayEquityCopilotGraph,
+  invokePayEquityCopilotGraph,
+  type CopilotAgentInput,
+} from './graphs/pay-equity-copilot-graph.js';
 
 // Attrition Predictor tools
 export { createAttritionTools, type AttritionDbAdapter } from './tools/attrition-tools.js';

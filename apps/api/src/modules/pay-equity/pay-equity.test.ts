@@ -11,6 +11,7 @@ vi.mock('@compensation/ai', async () => {
     invokeOutlierExplainerGraph: vi.fn(),
     invokeRemediationGraph: vi.fn(),
     invokeProjectionGraph: vi.fn(),
+    invokePayEquityCopilotGraph: vi.fn(),
   };
 });
 
@@ -19,6 +20,7 @@ import { renderReport } from './report-renderers';
 import {
   invokeCohortRootCauseGraph,
   invokeOutlierExplainerGraph,
+  invokePayEquityCopilotGraph,
   invokeProjectionGraph,
   invokeRemediationGraph,
 } from '@compensation/ai';
@@ -2148,5 +2150,217 @@ describe('PayEquityV2Service.generateReport — defensibility', () => {
     // child-run lookup AND the audit-trail child-run lookup.
     expect(db.client.payEquityRun.findMany).toHaveBeenCalled();
     expect(db.client.auditLog.findMany).toHaveBeenCalled();
+  });
+});
+
+// ─── Phase 6.3 — Manager Equity Copilot ─────────────────────────────────
+
+const mockedCopilotAgent = vi.mocked(invokePayEquityCopilotGraph);
+
+function stubCopilotAgent(
+  overrides: Partial<{
+    refused: boolean;
+    scope: 'team' | 'org' | 'out_of_scope';
+    answer: string;
+    refusalReason: string;
+  }> = {},
+) {
+  mockedCopilotAgent.mockImplementation((input) =>
+    Promise.resolve({
+      output: {
+        answer: overrides.answer ?? 'Two reports sit below 0.9 compa-ratio.',
+        scope: overrides.scope ?? 'team',
+        refused: overrides.refused ?? false,
+        refusalReason: overrides.refusalReason,
+        highlights: [{ label: 'Below 0.9 CR', value: '2 of 4', detail: 'EMP-1, EMP-2' }],
+        followUpSuggestions: ['How does this compare to L4 across the company?'],
+      },
+      citations: input.team.map((e) => ({
+        type: 'employee_row',
+        ref: e.employeeId,
+        excerpt: e.employeeCode,
+      })),
+      methodology: {
+        name: input.methodology.name,
+        version: input.methodology.version,
+        controls: input.methodology.controls,
+        dependentVariable: 'log_salary' as const,
+        sampleSize: input.methodology.sampleSize,
+        confidenceInterval: 0.95,
+      },
+      confidence: 'high' as const,
+      warnings: [],
+      runId: '',
+      generatedAt: new Date().toISOString(),
+    }),
+  );
+}
+
+describe('PayEquityV2Service.askCopilot', () => {
+  let service: PayEquityV2Service;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createService());
+    mockedCopilotAgent.mockReset();
+  });
+
+  it('resolves manager → team via email, invokes the agent, persists child run + audit', async () => {
+    db.client.employee.findFirst.mockResolvedValue({
+      id: 'emp-mgr',
+      firstName: 'Mary',
+      lastName: 'Manager',
+      email: 'mgr@acme.com',
+      level: 'L5',
+      department: 'Eng',
+    });
+    db.client.employee.findMany.mockResolvedValue([
+      {
+        id: 'emp-1',
+        employeeCode: 'E1',
+        firstName: 'A',
+        lastName: 'D',
+        level: 'L4',
+        department: 'Eng',
+        gender: 'FEMALE',
+        compaRatio: 0.85,
+        baseSalary: 90000,
+        currency: 'USD',
+      },
+    ]);
+    db.client.payEquityRun.findFirst.mockResolvedValue({
+      id: 'narr-1',
+      createdAt: new Date('2026-04-28'),
+      sampleSize: 500,
+      methodologyName: 'edge-multivariate',
+      methodologyVersion: '2026.04',
+      result: buildEnvelope(
+        [
+          {
+            dimension: 'gender',
+            group: 'Female',
+            referenceGroup: 'Male',
+            gapPercent: -3.2,
+            significance: 'significant',
+          },
+        ],
+        500,
+      ),
+    });
+    db.client.payEquityRun.create.mockResolvedValue({ id: 'cop-run-1' });
+    db.client.payEquityRun.update.mockResolvedValue({ id: 'cop-run-1' });
+    db.client.auditLog.create.mockResolvedValue({});
+    stubCopilotAgent();
+
+    const result = await service.askCopilot(
+      TEST_TENANT_ID,
+      TEST_USER_ID,
+      { email: 'mgr@acme.com', name: 'Mary Manager' },
+      'Is anyone on my team underpaid?',
+    );
+
+    // Agent received the resolved team + org state
+    expect(mockedCopilotAgent).toHaveBeenCalledTimes(1);
+    const agentArgs = mockedCopilotAgent.mock.calls[0]![0];
+    expect(agentArgs.manager.employeeId).toBe('emp-mgr');
+    expect(agentArgs.team).toHaveLength(1);
+    expect(agentArgs.team[0]!.employeeCode).toBe('E1');
+    expect(agentArgs.orgState.runId).toBe('narr-1');
+    expect(agentArgs.orgState.worstCohort?.dimension).toBe('gender');
+
+    // Child PayEquityRun created with agentType=copilot
+    const createCall = db.client.payEquityRun.create.mock.calls[0]![0];
+    expect(createCall.data.agentType).toBe('copilot');
+
+    // Run completed + audit row written
+    expect(db.client.payEquityRun.update).toHaveBeenCalled();
+    const auditCall = db.client.auditLog.create.mock.calls[0]![0];
+    expect(auditCall.data.action).toBe('PAY_EQUITY_COPILOT');
+    expect(auditCall.data.changes.scope).toBe('team');
+    expect(auditCall.data.changes.refused).toBe(false);
+    expect(auditCall.data.changes.teamSize).toBe(1);
+    expect(result.runId).toBe('cop-run-1');
+  });
+
+  it('still works when manager has no Employee row (returns empty team, agent answers from org scope only)', async () => {
+    db.client.employee.findFirst.mockResolvedValue(null);
+    db.client.payEquityRun.findFirst.mockResolvedValue({
+      id: 'narr-2',
+      createdAt: new Date('2026-04-28'),
+      sampleSize: 500,
+      methodologyName: 'edge-multivariate',
+      methodologyVersion: '2026.04',
+      result: buildEnvelope([], 500),
+    });
+    db.client.payEquityRun.create.mockResolvedValue({ id: 'cop-run-2' });
+    db.client.payEquityRun.update.mockResolvedValue({ id: 'cop-run-2' });
+    db.client.auditLog.create.mockResolvedValue({});
+    stubCopilotAgent({ scope: 'org' });
+
+    await service.askCopilot(
+      TEST_TENANT_ID,
+      TEST_USER_ID,
+      { email: 'unknown@acme.com' },
+      "What's the worst cohort overall?",
+    );
+
+    const agentArgs = mockedCopilotAgent.mock.calls[0]![0];
+    expect(agentArgs.manager.employeeId).toBeNull();
+    expect(agentArgs.team).toEqual([]);
+
+    // Should NOT have queried direct reports when no manager Employee found
+    expect(db.client.employee.findMany).not.toHaveBeenCalled();
+  });
+
+  it('records refusal in the audit log when the agent declines', async () => {
+    db.client.employee.findFirst.mockResolvedValue({
+      id: 'emp-mgr',
+      firstName: 'Mary',
+      lastName: 'Manager',
+      email: 'mgr@acme.com',
+      level: 'L5',
+      department: 'Eng',
+    });
+    db.client.employee.findMany.mockResolvedValue([]);
+    db.client.payEquityRun.findFirst.mockResolvedValue(null);
+    db.client.payEquityRun.create.mockResolvedValue({ id: 'cop-run-3' });
+    db.client.payEquityRun.update.mockResolvedValue({ id: 'cop-run-3' });
+    db.client.auditLog.create.mockResolvedValue({});
+    stubCopilotAgent({
+      refused: true,
+      scope: 'out_of_scope',
+      answer: 'This is out of scope.',
+      refusalReason: 'Asks about firing decisions',
+    });
+
+    await service.askCopilot(
+      TEST_TENANT_ID,
+      TEST_USER_ID,
+      { email: 'mgr@acme.com' },
+      'Should I fire someone?',
+    );
+
+    const auditCall = db.client.auditLog.create.mock.calls[0]![0];
+    expect(auditCall.data.changes.refused).toBe(true);
+    expect(auditCall.data.changes.scope).toBe('out_of_scope');
+    const updateCall = db.client.payEquityRun.update.mock.calls[0]![0];
+    expect(updateCall.data.summary).toMatch(/Refused/);
+  });
+
+  it('marks the child run FAILED when the copilot agent throws', async () => {
+    db.client.employee.findFirst.mockResolvedValue(null);
+    db.client.payEquityRun.findFirst.mockResolvedValue(null);
+    db.client.payEquityRun.create.mockResolvedValue({ id: 'cop-run-4' });
+    db.client.payEquityRun.update.mockResolvedValue({ id: 'cop-run-4' });
+    mockedCopilotAgent.mockRejectedValue(new Error('LLM down'));
+
+    await expect(
+      service.askCopilot(TEST_TENANT_ID, TEST_USER_ID, { email: 'mgr@acme.com' }, 'Anything?'),
+    ).rejects.toThrow(/LLM down/);
+
+    const updates = db.client.payEquityRun.update.mock.calls;
+    const lastUpdate = updates[updates.length - 1]![0];
+    expect(lastUpdate.data.status).toBe('FAILED');
+    expect(lastUpdate.data.errorMsg).toMatch(/LLM down/);
   });
 });

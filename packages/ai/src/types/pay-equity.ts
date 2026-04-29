@@ -111,6 +111,20 @@ export interface PayEquityNarrativeOutput {
   fullReportMarkdown: string;
 }
 
+/** Manager equity copilot agent (Phase 6.3). */
+export interface CopilotOutput {
+  answer: string;
+  scope: 'team' | 'org' | 'out_of_scope';
+  refused: boolean;
+  refusalReason?: string;
+  highlights: Array<{
+    label: string;
+    value: string;
+    detail?: string;
+  }>;
+  followUpSuggestions: string[];
+}
+
 /** Cohort root-cause agent (Phase 1.5). */
 export interface CohortRootCauseOutput {
   cohort: { dimension: string; group: string };

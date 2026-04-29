@@ -627,3 +627,36 @@ export function usePayEquityAuditTrail(runId: string | null) {
     enabled: !!runId,
   });
 }
+
+// ─── Phase 6.3 — Manager Equity Copilot ───────────────────────────
+
+export interface CopilotEnvelope {
+  output: {
+    answer: string;
+    scope: 'team' | 'org' | 'out_of_scope';
+    refused: boolean;
+    refusalReason?: string;
+    highlights: Array<{ label: string; value: string; detail?: string }>;
+    followUpSuggestions: string[];
+  };
+  citations: PayEquityCitation[];
+  methodology: PayEquityMethodology;
+  confidence: 'high' | 'medium' | 'low';
+  warnings: PayEquityWarning[];
+  runId: string;
+  generatedAt: string;
+}
+
+export function usePayEquityCopilotMutation() {
+  const qc = useQueryClient();
+  return useMutation<{ runId: string; envelope: CopilotEnvelope }, Error, { question: string }>({
+    mutationFn: (body) =>
+      apiClient.fetch('/api/v1/pay-equity/copilot/ask', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['pay-equity-runs'] });
+    },
+  });
+}
