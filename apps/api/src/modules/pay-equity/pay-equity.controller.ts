@@ -27,6 +27,7 @@ import {
   DecideRemediationDto,
   ForecastProjectionDto,
   ListPayEquityRunsDto,
+  PreviewChangeDto,
   RunPayEquityAnalysisDto,
 } from './dto';
 
@@ -341,5 +342,26 @@ export class PayEquityController {
   async askCopilot(@Body() dto: AskCopilotDto, @Request() req: AuthRequest) {
     const { tenantId, userId, email, name } = req.user;
     return this.service.askCopilot(tenantId, userId, { email, name }, dto.question);
+  }
+
+  // ─── Phase 4 — Prevent half ──────────────────────────────────────────
+
+  @Get('band-drift')
+  @ApiOperation({
+    summary:
+      'Pay band drift detector: compares mean compa-ratio across recent runs. Falling CR = bands outpacing salaries. Read-only.',
+  })
+  async getBandDrift(@Request() req: AuthRequest) {
+    return this.service.getBandDrift(req.user.tenantId);
+  }
+
+  @Post('preview-change')
+  @ApiOperation({
+    summary:
+      'Pre-decision equity check: given hypothetical changes (promotion slate, in-cycle salary change, or new-hire offer), returns projected gap impact + flagged employees + verdict (safe/warn/block). Read-only; deterministic; no LLM. Designed to be called inline from /comp-cycles or a recruiter offer flow.',
+  })
+  @HttpCode(HttpStatus.OK)
+  async previewChange(@Body() dto: PreviewChangeDto, @Request() req: AuthRequest) {
+    return this.service.previewChange(req.user.tenantId, dto.changes);
   }
 }

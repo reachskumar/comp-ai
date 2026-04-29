@@ -2364,3 +2364,200 @@ describe('PayEquityV2Service.askCopilot', () => {
     expect(lastUpdate.data.errorMsg).toMatch(/LLM down/);
   });
 });
+
+// ─── Phase 4 — Prevent half ─────────────────────────────────────────────
+
+describe('PayEquityV2Service.getBandDrift', () => {
+  let service: PayEquityV2Service;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createService());
+  });
+
+  function envWithCompaRatios(avgs: number[]) {
+    return {
+      output: {
+        regressionResults: [],
+        compaRatios: avgs.map((avg) => ({ avgCompaRatio: avg, count: 100 })),
+        overallStats: { totalEmployees: 100 },
+      },
+      citations: [],
+      methodology: {
+        name: 'edge-multivariate',
+        version: '2026.04',
+        controls: [],
+        dependentVariable: 'log_salary',
+        sampleSize: 100,
+        confidenceInterval: 0.95,
+      },
+      confidence: 'high',
+      warnings: [],
+      runId: 'r',
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
+  it('returns hasData=false when no completed runs exist', async () => {
+    db.client.payEquityRun.findMany.mockResolvedValue([]);
+    const result = await service.getBandDrift(TEST_TENANT_ID);
+    expect(result.hasData).toBe(false);
+  });
+
+  it('flags bands_outpacing when mean compa-ratio falls > 2% across runs', async () => {
+    db.client.payEquityRun.findMany.mockResolvedValue([
+      {
+        id: 'r3',
+        createdAt: new Date('2026-04-28'),
+        sampleSize: 100,
+        result: envWithCompaRatios([0.92]),
+      },
+      {
+        id: 'r2',
+        createdAt: new Date('2026-03-28'),
+        sampleSize: 100,
+        result: envWithCompaRatios([0.97]),
+      },
+      {
+        id: 'r1',
+        createdAt: new Date('2026-02-28'),
+        sampleSize: 100,
+        result: envWithCompaRatios([1.0]),
+      },
+    ]);
+    const result = await service.getBandDrift(TEST_TENANT_ID);
+    expect(result.hasData).toBe(true);
+    if (result.hasData) {
+      expect(result.verdict).toBe('bands_outpacing');
+      expect(result.drift?.driftPercent ?? 0).toBeLessThan(-2);
+    }
+  });
+
+  it('returns insufficient_history when only one run is available', async () => {
+    db.client.payEquityRun.findMany.mockResolvedValue([
+      {
+        id: 'r1',
+        createdAt: new Date('2026-04-28'),
+        sampleSize: 100,
+        result: envWithCompaRatios([1.0]),
+      },
+    ]);
+    const result = await service.getBandDrift(TEST_TENANT_ID);
+    if (result.hasData) {
+      expect(result.verdict).toBe('insufficient_history');
+    }
+  });
+});
+
+describe('PayEquityV2Service.previewChange', () => {
+  let service: PayEquityV2Service;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createService());
+    db.client.payEquityRun.findFirst.mockResolvedValue({
+      id: 'narr-1',
+      createdAt: new Date('2026-04-28'),
+      result: buildEnvelope(
+        [
+          {
+            dimension: 'gender',
+            group: 'F',
+            referenceGroup: 'M',
+            gapPercent: -3,
+            sampleSize: 200,
+            significance: 'significant',
+          },
+        ],
+        500,
+      ),
+    });
+  });
+
+  it('promotion of reference-group employee widens projected gap', async () => {
+    db.client.employee.findMany.mockResolvedValue([
+      {
+        id: 'emp-1',
+        employeeCode: 'E1',
+        firstName: 'A',
+        lastName: 'B',
+        level: 'L4',
+        gender: 'MALE',
+        baseSalary: 100000,
+        compaRatio: 1.0,
+      },
+    ]);
+
+    // 6 reference-group promotions → 0.6pp widening (above warn=0.1, above block=0.5)
+    const result = await service.previewChange(TEST_TENANT_ID, [
+      { kind: 'promotion', employeeId: 'emp-1', toSalary: 130000 },
+      { kind: 'promotion', employeeId: 'emp-1', toSalary: 130000 },
+      { kind: 'promotion', employeeId: 'emp-1', toSalary: 130000 },
+      { kind: 'promotion', employeeId: 'emp-1', toSalary: 130000 },
+      { kind: 'promotion', employeeId: 'emp-1', toSalary: 130000 },
+      { kind: 'promotion', employeeId: 'emp-1', toSalary: 130000 },
+    ]);
+
+    expect(result.changesEvaluated).toBe(6);
+    expect(result.projectedDelta).toBeGreaterThan(0);
+    expect(['warn', 'block']).toContain(result.verdict);
+  });
+
+  it('promotion of minority-group employee narrows projected gap', async () => {
+    db.client.employee.findMany.mockResolvedValue([
+      {
+        id: 'emp-2',
+        employeeCode: 'E2',
+        firstName: 'C',
+        lastName: 'D',
+        level: 'L4',
+        gender: 'FEMALE',
+        baseSalary: 100000,
+        compaRatio: 0.95,
+      },
+    ]);
+
+    const result = await service.previewChange(TEST_TENANT_ID, [
+      { kind: 'promotion', employeeId: 'emp-2', toSalary: 120000 },
+    ]);
+
+    expect(result.projectedDelta).toBeLessThan(0);
+    expect(result.verdict).toBe('safe');
+  });
+
+  it('flags employees whose post-change compa-ratio falls below 0.85', async () => {
+    db.client.employee.findMany.mockResolvedValue([
+      {
+        id: 'emp-3',
+        employeeCode: 'E3',
+        firstName: 'E',
+        lastName: 'F',
+        level: 'L4',
+        gender: 'FEMALE',
+        baseSalary: 100000,
+        compaRatio: 0.95,
+      },
+    ]);
+
+    const result = await service.previewChange(TEST_TENANT_ID, [
+      { kind: 'salary_change', employeeId: 'emp-3', fromSalary: 100000, toSalary: 80000 },
+    ]);
+
+    expect(result.flagged).toHaveLength(1);
+    expect(result.flagged[0]!.severity).toBe('high');
+    expect(result.flagged[0]!.reason).toMatch(/below 0.85/);
+  });
+
+  it('works without any historical run (baseline=0)', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue(null);
+    db.client.employee.findMany.mockResolvedValue([]);
+
+    const result = await service.previewChange(TEST_TENANT_ID, [
+      { kind: 'new_hire', toSalary: 120000, dimension: 'gender', group: 'Male' },
+    ]);
+
+    expect(result.runId).toBeNull();
+    expect(result.baselineGap).toBe(0);
+    expect(result.changesEvaluated).toBe(1);
+  });
+});

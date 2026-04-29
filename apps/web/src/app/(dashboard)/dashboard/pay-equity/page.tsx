@@ -59,6 +59,8 @@ import {
   usePayEquityMethodology,
   usePayEquityAuditTrail,
   usePayEquityCopilotMutation,
+  usePayEquityBandDrift,
+  usePreviewChangeMutation,
   type PayEquityOverviewData,
   type CohortCell,
   type CohortRootCauseEnvelope,
@@ -68,6 +70,7 @@ import {
   type AirCohort,
   type AuditEvent,
   type CopilotEnvelope,
+  type ChangeItem,
 } from '@/hooks/use-pay-equity';
 
 const ALL_DIMENSIONS = [
@@ -1653,6 +1656,10 @@ function PreventPanel({ latestRunId }: { latestRunId: string | null }) {
         </CardContent>
       </Card>
 
+      <BandDriftCard />
+
+      <PreviewChangeCard />
+
       {/* Forecast scenario */}
       <Card>
         <CardHeader>
@@ -2219,6 +2226,278 @@ function CopilotCard() {
                     </button>
                   ))}
                 </div>
+              </div>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Phase 4.4 — Pay band drift ────────────────────────────────────
+
+function BandDriftCard() {
+  const drift = usePayEquityBandDrift();
+
+  if (drift.isLoading) return <Skeleton className="h-24 w-full" />;
+  if (!drift.data) return null;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Pay band drift</CardTitle>
+        <CardDescription>
+          Tracks whether salaries are keeping up with the salary bands. Falling mean compa-ratio
+          across runs = bands are outpacing salaries (drift).
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {!drift.data.hasData ? (
+          <p className="text-sm text-muted-foreground">{drift.data.message}</p>
+        ) : drift.data.verdict === 'insufficient_history' ? (
+          <p className="text-sm text-muted-foreground">{drift.data.message}</p>
+        ) : (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Badge
+                variant="outline"
+                className={
+                  drift.data.verdict === 'bands_outpacing'
+                    ? 'bg-red-50 text-red-700'
+                    : drift.data.verdict === 'salaries_outpacing'
+                      ? 'bg-blue-50 text-blue-700'
+                      : 'bg-emerald-50 text-emerald-700'
+                }
+              >
+                {drift.data.verdict?.replace('_', ' ')}
+              </Badge>
+              <span className="text-xs text-muted-foreground">
+                {drift.data.drift?.runsCovered} runs · drift{' '}
+                {(drift.data.drift?.driftPercent ?? 0) >= 0 ? '+' : ''}
+                {drift.data.drift?.driftPercent.toFixed(2)}%
+              </span>
+            </div>
+            <p className="text-sm">{drift.data.message}</p>
+            <div className="flex items-end gap-2">
+              {drift.data.series?.map((p) => {
+                const max = Math.max(
+                  ...(drift.data?.series?.map((q) => q.meanCompaRatio) ?? [1]),
+                  1,
+                );
+                const h = Math.max(8, (p.meanCompaRatio / max) * 80);
+                return (
+                  <div key={p.runId} className="flex flex-col items-center text-xs">
+                    <div
+                      className="w-10 rounded-t bg-primary/70"
+                      style={{ height: `${h}px` }}
+                      title={p.meanCompaRatio.toFixed(2)}
+                    />
+                    <div className="mt-1 font-mono text-[10px]">{p.meanCompaRatio.toFixed(2)}</div>
+                    <div className="text-[10px] text-muted-foreground">{p.runAt.slice(0, 10)}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Phase 4.3 / 4.6 / 4.7 — Pre-decision equity check ─────────────
+
+function PreviewChangeCard() {
+  const previewMutation = usePreviewChangeMutation();
+  const { toast } = useToast();
+  const [changes, setChanges] = React.useState<ChangeItem[]>([]);
+  const [draft, setDraft] = React.useState<ChangeItem>({
+    kind: 'salary_change',
+    employeeId: '',
+    fromSalary: 100000,
+    toSalary: 110000,
+    level: 'L4',
+    dimension: 'gender',
+    group: 'Male',
+  });
+  const [result, setResult] = React.useState<Awaited<
+    ReturnType<typeof previewMutation.mutateAsync>
+  > | null>(null);
+
+  const handleAdd = () => {
+    if (draft.toSalary <= 0) return;
+    setChanges((prev) => [...prev, { ...draft }]);
+  };
+  const handleRun = () => {
+    if (changes.length === 0) return;
+    previewMutation.mutate(
+      { changes },
+      {
+        onSuccess: (res) => {
+          setResult(res);
+          toast({
+            title: `Preview: ${res.verdict}`,
+            description: res.message,
+            variant: res.verdict === 'block' ? 'destructive' : undefined,
+          });
+        },
+        onError: (err) =>
+          toast({ title: 'Preview failed', description: err.message, variant: 'destructive' }),
+      },
+    );
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Pre-decision equity check</CardTitle>
+        <CardDescription>
+          Stage hypothetical changes (promotions, salary updates, new hires) and see the projected
+          gap impact + verdict before applying. Used inline by /comp-cycles for in-cycle warnings
+          and by recruiter offer flows as a pre-offer guardrail.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="rounded-md border border-border p-3">
+          <div className="mb-2 text-sm font-medium">Stage a change</div>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <select
+              value={draft.kind}
+              onChange={(e) => setDraft({ ...draft, kind: e.target.value as ChangeItem['kind'] })}
+              className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+            >
+              <option value="salary_change">salary_change</option>
+              <option value="promotion">promotion</option>
+              <option value="new_hire">new_hire</option>
+            </select>
+            {draft.kind !== 'new_hire' && (
+              <input
+                placeholder="employeeId"
+                value={draft.employeeId ?? ''}
+                onChange={(e) => setDraft({ ...draft, employeeId: e.target.value })}
+                className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+              />
+            )}
+            {draft.kind === 'salary_change' && (
+              <input
+                type="number"
+                placeholder="from salary"
+                value={draft.fromSalary ?? 0}
+                onChange={(e) =>
+                  setDraft({ ...draft, fromSalary: parseInt(e.target.value, 10) || 0 })
+                }
+                className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+              />
+            )}
+            <input
+              type="number"
+              placeholder="to salary"
+              value={draft.toSalary}
+              onChange={(e) => setDraft({ ...draft, toSalary: parseInt(e.target.value, 10) || 0 })}
+              className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+            />
+            {draft.kind === 'new_hire' && (
+              <>
+                <input
+                  placeholder="dimension"
+                  value={draft.dimension ?? ''}
+                  onChange={(e) => setDraft({ ...draft, dimension: e.target.value })}
+                  className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+                />
+                <input
+                  placeholder="group"
+                  value={draft.group ?? ''}
+                  onChange={(e) => setDraft({ ...draft, group: e.target.value })}
+                  className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+                />
+              </>
+            )}
+          </div>
+          <div className="mt-2 flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={handleAdd}>
+              Add to set
+            </Button>
+            {changes.length > 0 && (
+              <span className="text-xs text-muted-foreground">
+                {changes.length} change{changes.length === 1 ? '' : 's'} staged
+              </span>
+            )}
+          </div>
+          {changes.length > 0 && (
+            <ul className="mt-2 space-y-1 text-xs">
+              {changes.map((c, i) => (
+                <li key={i} className="flex items-center justify-between">
+                  <span className="font-mono">
+                    {c.kind} · {c.employeeId ?? `${c.dimension}/${c.group}`} · →{' '}
+                    {c.toSalary.toLocaleString()}
+                  </span>
+                  <button
+                    className="text-muted-foreground hover:text-foreground"
+                    onClick={() => setChanges((prev) => prev.filter((_, j) => j !== i))}
+                  >
+                    ✗
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="flex items-center justify-end">
+          <Button
+            size="sm"
+            onClick={handleRun}
+            disabled={previewMutation.isPending || changes.length === 0}
+          >
+            {previewMutation.isPending && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}
+            Run preview
+          </Button>
+        </div>
+
+        {result && (
+          <div
+            className={
+              'rounded-md border p-4 ' +
+              (result.verdict === 'block'
+                ? 'border-red-200 bg-red-50/30'
+                : result.verdict === 'warn'
+                  ? 'border-amber-200 bg-amber-50/30'
+                  : 'border-emerald-200 bg-emerald-50/30')
+            }
+          >
+            <div className="flex items-center gap-2">
+              <Badge
+                variant="outline"
+                className={
+                  result.verdict === 'block'
+                    ? 'bg-red-100 text-red-700'
+                    : result.verdict === 'warn'
+                      ? 'bg-amber-100 text-amber-700'
+                      : 'bg-emerald-100 text-emerald-700'
+                }
+              >
+                {result.verdict}
+              </Badge>
+              <span className="text-xs text-muted-foreground">
+                {result.changesEvaluated} change{result.changesEvaluated === 1 ? '' : 's'} ·
+                baseline {result.baselineGap.toFixed(1)}% → projected{' '}
+                {result.projectedGap.toFixed(1)}% ({result.projectedDelta >= 0 ? '+' : ''}
+                {result.projectedDelta.toFixed(2)}pp)
+              </span>
+            </div>
+            <p className="mt-2 text-sm">{result.message}</p>
+            {result.flagged.length > 0 && (
+              <div className="mt-2">
+                <div className="text-xs uppercase tracking-wide text-muted-foreground">Flagged</div>
+                <ul className="mt-1 space-y-1 text-xs">
+                  {result.flagged.map((f, i) => (
+                    <li key={i}>
+                      <span className="font-mono">{f.employeeCode ?? f.employeeId}</span>{' '}
+                      <span className="text-muted-foreground">— {f.reason}</span>
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
           </div>

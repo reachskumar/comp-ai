@@ -660,3 +660,63 @@ export function usePayEquityCopilotMutation() {
     },
   });
 }
+
+// ─── Phase 4 — Prevent half ───────────────────────────────────────
+
+export interface BandDriftResponse {
+  hasData: boolean;
+  message?: string;
+  series?: Array<{ runId: string; runAt: string; meanCompaRatio: number; sampleSize: number }>;
+  drift?: {
+    firstMeanCompaRatio: number;
+    latestMeanCompaRatio: number;
+    driftPercent: number;
+    runsCovered: number;
+  } | null;
+  verdict?: 'bands_outpacing' | 'salaries_outpacing' | 'stable' | 'insufficient_history';
+}
+
+export function usePayEquityBandDrift() {
+  return useQuery<BandDriftResponse>({
+    queryKey: ['pay-equity-band-drift'],
+    queryFn: () => apiClient.fetch('/api/v1/pay-equity/band-drift'),
+  });
+}
+
+export interface ChangeItem {
+  kind: 'promotion' | 'salary_change' | 'new_hire';
+  employeeId?: string;
+  fromSalary?: number;
+  toSalary: number;
+  level?: string;
+  dimension?: string;
+  group?: string;
+}
+
+export interface PreviewChangeResponse {
+  runId: string | null;
+  runAt: string | null;
+  changesEvaluated: number;
+  baselineGap: number;
+  projectedDelta: number;
+  projectedGap: number;
+  verdict: 'safe' | 'warn' | 'block';
+  flagged: Array<{
+    employeeId: string | null;
+    employeeCode: string | null;
+    kind: string;
+    reason: string;
+    severity: 'high' | 'medium' | 'low';
+  }>;
+  message: string;
+}
+
+export function usePreviewChangeMutation() {
+  return useMutation<PreviewChangeResponse, Error, { changes: ChangeItem[] }>({
+    mutationFn: (body) =>
+      apiClient.fetch('/api/v1/pay-equity/preview-change', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+  });
+}

@@ -2397,6 +2397,233 @@ export class PayEquityV2Service implements OnModuleInit {
       throw err;
     }
   }
+
+  // ─── Phase 4 — Prevent half ─────────────────────────────────────
+
+  /**
+   * Pay band drift detector (4.4).
+   *
+   * Detects whether salaries are lagging the salary bands by comparing the
+   * mean compa-ratio across the last N narrative runs. Falling CR over time
+   * = bands are outpacing salaries (drift). Rising CR = the opposite. No
+   * new schema needed; uses the immutable run envelopes.
+   */
+  async getBandDrift(tenantId: string) {
+    const runs = await this.db.forTenant(tenantId, (tx) =>
+      tx.payEquityRun.findMany({
+        where: { tenantId, agentType: 'narrative', status: 'COMPLETE' },
+        orderBy: { createdAt: 'desc' },
+        take: 6,
+        select: { id: true, createdAt: true, sampleSize: true, result: true },
+      }),
+    );
+
+    if (runs.length === 0) {
+      return {
+        hasData: false as const,
+        message: 'No completed narrative runs yet — band drift unavailable.',
+      };
+    }
+
+    const series = runs
+      .map((r) => {
+        const env = r.result as unknown as PayEquityAgentResult<{
+          compaRatios?: Array<{ avgCompaRatio: number; count: number }>;
+        }>;
+        const crs = env.output?.compaRatios ?? [];
+        if (crs.length === 0) return null;
+        const totalN = crs.reduce((s, c) => s + c.count, 0);
+        const weightedMean =
+          totalN === 0 ? 0 : crs.reduce((s, c) => s + c.avgCompaRatio * c.count, 0) / totalN;
+        return {
+          runId: r.id,
+          runAt: r.createdAt.toISOString(),
+          meanCompaRatio: round2(weightedMean),
+          sampleSize: r.sampleSize ?? 0,
+        };
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null)
+      .reverse(); // oldest → newest
+
+    if (series.length < 2) {
+      return {
+        hasData: true as const,
+        series,
+        drift: null,
+        verdict: 'insufficient_history' as const,
+        message: 'Need at least 2 runs to compute band drift.',
+      };
+    }
+
+    const first = series[0]!.meanCompaRatio;
+    const last = series[series.length - 1]!.meanCompaRatio;
+    const driftPercent = round2(((last - first) / first) * 100);
+
+    // Drift verdict: CR dropped >2% relative = bands outpacing salaries.
+    const verdict: 'bands_outpacing' | 'salaries_outpacing' | 'stable' =
+      driftPercent < -2 ? 'bands_outpacing' : driftPercent > 2 ? 'salaries_outpacing' : 'stable';
+
+    return {
+      hasData: true as const,
+      series,
+      drift: {
+        firstMeanCompaRatio: first,
+        latestMeanCompaRatio: last,
+        driftPercent,
+        runsCovered: series.length,
+      },
+      verdict,
+      message:
+        verdict === 'bands_outpacing'
+          ? `Mean compa-ratio fell ${Math.abs(driftPercent).toFixed(1)}% over ${series.length} runs — salaries are lagging market.`
+          : verdict === 'salaries_outpacing'
+            ? `Mean compa-ratio rose ${driftPercent.toFixed(1)}% over ${series.length} runs — salaries growing faster than bands.`
+            : `Mean compa-ratio held within ±2% over ${series.length} runs.`,
+    };
+  }
+
+  /**
+   * Pre-decision equity check (4.3 + 4.6 + 4.7).
+   *
+   * Takes a hypothetical change set (promotion slate, in-cycle adjustment, or
+   * pre-offer salary) and returns a deterministic equity verdict: projected
+   * mean compa-ratio shift per affected cohort, flagged employees, and an
+   * overall verdict. No persistence; no LLM. Designed to be fast enough to
+   * call inline from /comp-cycles/my-team or a recruiter-facing offer flow.
+   *
+   * Use cases:
+   *   kind='promotion' → 4.3 promotion slate equity check
+   *   kind='salary_change' → 4.6 in-cycle warning
+   *   kind='new_hire' → 4.7 pre-offer guardrail
+   */
+  async previewChange(
+    tenantId: string,
+    changes: Array<{
+      kind: 'promotion' | 'salary_change' | 'new_hire';
+      employeeId?: string;
+      fromSalary?: number;
+      toSalary: number;
+      level?: string;
+      dimension?: string; // for new_hire scenarios
+      group?: string; // for new_hire scenarios
+    }>,
+  ) {
+    const latestRun = await this.db.forTenant(tenantId, (tx) =>
+      tx.payEquityRun.findFirst({
+        where: { tenantId, agentType: 'narrative', status: 'COMPLETE' },
+        orderBy: { createdAt: 'desc' },
+        select: { id: true, createdAt: true, result: true },
+      }),
+    );
+
+    const baselineGap = latestRun
+      ? (() => {
+          const env = latestRun.result as unknown as PayEquityAgentResult<{
+            regressionResults: Array<{ gapPercent: number }>;
+          }>;
+          const worst = (env.output.regressionResults ?? []).reduce(
+            (a, b) => (Math.abs(a?.gapPercent ?? 0) > Math.abs(b.gapPercent) ? a : b),
+            env.output.regressionResults?.[0],
+          );
+          return Math.abs(worst?.gapPercent ?? 0);
+        })()
+      : 0;
+
+    // Per-change equity impact estimate. Same coefficient model as Phase 4
+    // forecast (HIRING_COEF=0.05pp/hire, PROMO_COEF=0.10pp/promo) — see bible §6.
+    const HIRING_COEF = 0.05;
+    const PROMO_COEF = 0.1;
+    const SALARY_COEF_PER_PCT = 0.02; // 1% salary change ≈ 0.02pp gap shift
+    const isReferenceGroup = (g: string) =>
+      /^m$|^male$|^men$/i.test(g.trim()) || /^white$|^non.?hispanic$/i.test(g.trim());
+
+    // Resolve employees referenced by the changes (need their group / level).
+    const employeeIds = changes
+      .map((c) => c.employeeId)
+      .filter((id): id is string => typeof id === 'string');
+    const employees = employeeIds.length
+      ? await this.db.forTenant(tenantId, (tx) =>
+          tx.employee.findMany({
+            where: { tenantId, id: { in: employeeIds } },
+            select: {
+              id: true,
+              employeeCode: true,
+              firstName: true,
+              lastName: true,
+              level: true,
+              gender: true,
+              baseSalary: true,
+              compaRatio: true,
+            },
+          }),
+        )
+      : [];
+    const empById = new Map(employees.map((e) => [e.id, e]));
+
+    let projectedDelta = 0;
+    const flagged: Array<{
+      employeeId: string | null;
+      employeeCode: string | null;
+      kind: string;
+      reason: string;
+      severity: 'high' | 'medium' | 'low';
+    }> = [];
+
+    for (const c of changes) {
+      const emp = c.employeeId ? empById.get(c.employeeId) : undefined;
+      const group = c.group ?? emp?.gender ?? '';
+      const sign = isReferenceGroup(group) ? +1 : -1;
+
+      if (c.kind === 'new_hire') {
+        projectedDelta += sign * HIRING_COEF;
+      } else if (c.kind === 'promotion') {
+        projectedDelta += sign * PROMO_COEF;
+      } else if (c.kind === 'salary_change') {
+        const from = c.fromSalary ?? (emp ? Number(emp.baseSalary) : c.toSalary);
+        const pctChange = from === 0 ? 0 : ((c.toSalary - from) / from) * 100;
+        projectedDelta += -sign * SALARY_COEF_PER_PCT * pctChange;
+      }
+
+      // Flag: post-change salary likely puts employee below 0.85 CR proxy
+      if (emp && c.kind === 'salary_change') {
+        const cr = emp.compaRatio === null ? null : Number(emp.compaRatio);
+        if (cr !== null) {
+          const projectedCR = (cr * c.toSalary) / Number(emp.baseSalary);
+          if (projectedCR < 0.85) {
+            flagged.push({
+              employeeId: emp.id,
+              employeeCode: emp.employeeCode,
+              kind: c.kind,
+              reason: `Projected compa-ratio ${projectedCR.toFixed(2)} below 0.85 floor.`,
+              severity: 'high',
+            });
+          }
+        }
+      }
+    }
+
+    projectedDelta = round2(projectedDelta);
+    const projectedGap = round2(baselineGap + projectedDelta);
+    const verdict: 'safe' | 'warn' | 'block' =
+      projectedDelta > 0.5 ? 'block' : projectedDelta > 0.1 ? 'warn' : 'safe';
+
+    return {
+      runId: latestRun?.id ?? null,
+      runAt: latestRun?.createdAt ?? null,
+      changesEvaluated: changes.length,
+      baselineGap: round2(baselineGap),
+      projectedDelta,
+      projectedGap,
+      verdict,
+      flagged,
+      message:
+        verdict === 'block'
+          ? `These changes would widen the worst-cohort gap by ${projectedDelta.toFixed(2)}pp (${baselineGap.toFixed(1)}% → ${projectedGap.toFixed(1)}%). Review before applying.`
+          : verdict === 'warn'
+            ? `Modest gap impact: +${projectedDelta.toFixed(2)}pp. Proceed with awareness.`
+            : `Equity-safe: change set is within ±0.10pp of current baseline.`,
+    };
+  }
 }
 
 // ─── Phase 4 helpers: deterministic projection math ─────────────────────
