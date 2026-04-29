@@ -720,3 +720,94 @@ export function usePreviewChangeMutation() {
       }),
   });
 }
+
+// ─── Phase 3.7 + 6.4 — Subscriptions ───────────────────────────────
+
+export interface PESubscription {
+  id: string;
+  reportType: string;
+  cadence: 'daily' | 'weekly' | 'monthly' | 'quarterly';
+  recipients: string[];
+  slackWebhook: string | null;
+  active: boolean;
+  lastRunAt: string | null;
+  nextRunAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+}
+
+export function usePESubscriptions() {
+  return useQuery<PESubscription[]>({
+    queryKey: ['pe-subscriptions'],
+    queryFn: () => apiClient.fetch('/api/v1/pay-equity/subscriptions'),
+  });
+}
+
+export function useCreateSubscriptionMutation() {
+  const qc = useQueryClient();
+  return useMutation<
+    PESubscription,
+    Error,
+    { reportType: string; cadence: string; recipients: string[]; slackWebhook?: string }
+  >({
+    mutationFn: (body) =>
+      apiClient.fetch('/api/v1/pay-equity/subscriptions', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['pe-subscriptions'] }),
+  });
+}
+
+export function useDeleteSubscriptionMutation() {
+  const qc = useQueryClient();
+  return useMutation<{ deleted: boolean }, Error, { id: string }>({
+    mutationFn: ({ id }) =>
+      apiClient.fetch(`/api/v1/pay-equity/subscriptions/${id}`, { method: 'PATCH' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['pe-subscriptions'] }),
+  });
+}
+
+// ─── Phase 5.5 — Share tokens ──────────────────────────────────────
+
+export interface PEShareToken {
+  id: string;
+  runId: string;
+  token: string;
+  scope: 'auditor' | 'defensibility' | 'methodology';
+  expiresAt: string;
+  revokedAt: string | null;
+  accessCount: number;
+  lastAccessedAt: string | null;
+  createdAt: string;
+}
+
+export function usePEShareTokens() {
+  return useQuery<PEShareToken[]>({
+    queryKey: ['pe-share-tokens'],
+    queryFn: () => apiClient.fetch('/api/v1/pay-equity/share-tokens'),
+  });
+}
+
+export function useCreateShareTokenMutation() {
+  const qc = useQueryClient();
+  return useMutation<PEShareToken, Error, { runId: string; scope: string; expiresInDays?: number }>(
+    {
+      mutationFn: (body) =>
+        apiClient.fetch('/api/v1/pay-equity/share-tokens', {
+          method: 'POST',
+          body: JSON.stringify(body),
+        }),
+      onSuccess: () => qc.invalidateQueries({ queryKey: ['pe-share-tokens'] }),
+    },
+  );
+}
+
+export function useRevokeShareTokenMutation() {
+  const qc = useQueryClient();
+  return useMutation<{ revoked: boolean }, Error, { id: string }>({
+    mutationFn: ({ id }) =>
+      apiClient.fetch(`/api/v1/pay-equity/share-tokens/${id}/revoke`, { method: 'PATCH' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['pe-share-tokens'] }),
+  });
+}

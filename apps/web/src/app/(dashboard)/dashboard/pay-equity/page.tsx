@@ -61,6 +61,12 @@ import {
   usePayEquityCopilotMutation,
   usePayEquityBandDrift,
   usePreviewChangeMutation,
+  usePESubscriptions,
+  useCreateSubscriptionMutation,
+  useDeleteSubscriptionMutation,
+  usePEShareTokens,
+  useCreateShareTokenMutation,
+  useRevokeShareTokenMutation,
   type PayEquityOverviewData,
   type CohortCell,
   type CohortRootCauseEnvelope,
@@ -71,6 +77,8 @@ import {
   type AuditEvent,
   type CopilotEnvelope,
   type ChangeItem,
+  type PESubscription,
+  type PEShareToken,
 } from '@/hooks/use-pay-equity';
 
 const ALL_DIMENSIONS = [
@@ -326,6 +334,12 @@ export default function PayEquityWorkspacePage() {
         </TabsContent>
         <TabsContent value="reports" className="space-y-4">
           <ReportsPanel
+            latestRunId={
+              overview.data?.hasData ? (overview.data as PayEquityOverviewData).latestRunId : null
+            }
+          />
+          <SubscriptionsCard />
+          <ShareTokensCard
             latestRunId={
               overview.data?.hasData ? (overview.data as PayEquityOverviewData).latestRunId : null
             }
@@ -2501,6 +2515,321 @@ function PreviewChangeCard() {
               </div>
             )}
           </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Phase 3.7 + 6.4 — Scheduled subscriptions ─────────────────────
+
+function SubscriptionsCard() {
+  const subs = usePESubscriptions();
+  const create = useCreateSubscriptionMutation();
+  const del = useDeleteSubscriptionMutation();
+  const { toast } = useToast();
+  const [draft, setDraft] = React.useState({
+    reportType: 'digest',
+    cadence: 'weekly',
+    recipientsCsv: '',
+    slackWebhook: '',
+  });
+
+  const handleCreate = () => {
+    const recipients = draft.recipientsCsv
+      .split(/[,\s]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (recipients.length === 0 && !draft.slackWebhook) {
+      toast({
+        title: 'Need a recipient',
+        description: 'Add at least one email or a Slack webhook.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    create.mutate(
+      {
+        reportType: draft.reportType,
+        cadence: draft.cadence,
+        recipients,
+        slackWebhook: draft.slackWebhook || undefined,
+      },
+      {
+        onSuccess: () => {
+          toast({
+            title: 'Subscription created',
+            description: `${draft.reportType} · ${draft.cadence}`,
+          });
+          setDraft({ ...draft, recipientsCsv: '', slackWebhook: '' });
+        },
+        onError: (err) =>
+          toast({
+            title: 'Could not create subscription',
+            description: err.message,
+            variant: 'destructive',
+          }),
+      },
+    );
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Scheduled delivery</CardTitle>
+        <CardDescription>
+          Email reports on a cadence, or send a daily Pay Equity digest to a Slack channel and the
+          CHRO. The cron scans every hour and dispatches due subscriptions; Slack uses an incoming
+          webhook URL.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="rounded-md border border-border p-3">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
+            <select
+              value={draft.reportType}
+              onChange={(e) => setDraft({ ...draft, reportType: e.target.value })}
+              className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+            >
+              <option value="digest">digest (CHRO daily)</option>
+              <option value="board">board (PDF)</option>
+              <option value="eu_ptd">eu_ptd (CSV)</option>
+              <option value="uk_gpg">uk_gpg (CSV)</option>
+              <option value="eeo1">eeo1 (CSV)</option>
+              <option value="sb1162">sb1162 (CSV)</option>
+              <option value="auditor">auditor (PDF)</option>
+              <option value="defensibility">defensibility (PDF)</option>
+            </select>
+            <select
+              value={draft.cadence}
+              onChange={(e) => setDraft({ ...draft, cadence: e.target.value })}
+              className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+            >
+              <option value="daily">daily</option>
+              <option value="weekly">weekly</option>
+              <option value="monthly">monthly</option>
+              <option value="quarterly">quarterly</option>
+            </select>
+            <input
+              placeholder="recipient emails (comma-separated)"
+              value={draft.recipientsCsv}
+              onChange={(e) => setDraft({ ...draft, recipientsCsv: e.target.value })}
+              className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+            />
+            <input
+              placeholder="https://hooks.slack.com/... (optional)"
+              value={draft.slackWebhook}
+              onChange={(e) => setDraft({ ...draft, slackWebhook: e.target.value })}
+              className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+            />
+          </div>
+          <div className="mt-2 flex justify-end">
+            <Button size="sm" onClick={handleCreate} disabled={create.isPending}>
+              {create.isPending && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}
+              Create
+            </Button>
+          </div>
+        </div>
+
+        {subs.isLoading ? (
+          <Skeleton className="h-16 w-full" />
+        ) : (subs.data ?? []).length === 0 ? (
+          <p className="text-sm text-muted-foreground">No subscriptions yet.</p>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b text-left text-xs uppercase text-muted-foreground">
+                <th className="py-1">Type</th>
+                <th className="py-1">Cadence</th>
+                <th className="py-1">Recipients</th>
+                <th className="py-1">Next</th>
+                <th className="py-1">Last</th>
+                <th className="py-1"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {(subs.data ?? []).map((s: PESubscription) => (
+                <tr key={s.id} className="border-b last:border-0">
+                  <td className="py-1 font-mono text-xs">{s.reportType}</td>
+                  <td className="py-1">{s.cadence}</td>
+                  <td className="py-1 text-xs text-muted-foreground">
+                    {s.recipients.length} email{s.recipients.length === 1 ? '' : 's'}
+                    {s.slackWebhook ? ' + slack' : ''}
+                  </td>
+                  <td className="py-1 font-mono text-[10px]">
+                    {s.nextRunAt ? new Date(s.nextRunAt).toISOString().slice(0, 10) : '—'}
+                  </td>
+                  <td className="py-1 font-mono text-[10px] text-muted-foreground">
+                    {s.lastRunAt
+                      ? new Date(s.lastRunAt).toISOString().slice(0, 16).replace('T', ' ')
+                      : '—'}
+                    {s.lastError && (
+                      <span className="ml-1 text-red-600" title={s.lastError}>
+                        !
+                      </span>
+                    )}
+                  </td>
+                  <td className="py-1 text-right">
+                    <button
+                      className="text-xs text-muted-foreground hover:text-foreground"
+                      onClick={() => del.mutate({ id: s.id })}
+                    >
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Phase 5.5 — External auditor share tokens ─────────────────────
+
+function ShareTokensCard({ latestRunId }: { latestRunId: string | null }) {
+  const tokens = usePEShareTokens();
+  const create = useCreateShareTokenMutation();
+  const revoke = useRevokeShareTokenMutation();
+  const { toast } = useToast();
+  const [scope, setScope] = React.useState('auditor');
+  const [days, setDays] = React.useState(30);
+
+  const apiBase =
+    typeof window !== 'undefined'
+      ? (process.env['NEXT_PUBLIC_API_URL'] ?? window.location.origin)
+      : '';
+
+  const handleCreate = () => {
+    if (!latestRunId) {
+      toast({
+        title: 'No run available',
+        description: 'Run an analysis from the Overview tab first.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    create.mutate(
+      { runId: latestRunId, scope, expiresInDays: days },
+      {
+        onSuccess: (row) => {
+          const link = `${apiBase}/api/v1/pe-share/${row.token}`;
+          navigator.clipboard?.writeText(link).catch(() => {});
+          toast({ title: 'Share link created and copied', description: link });
+        },
+        onError: (err) =>
+          toast({ title: 'Failed', description: err.message, variant: 'destructive' }),
+      },
+    );
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">External auditor portal</CardTitle>
+        <CardDescription>
+          Mint a read-only share link bound to a single run. The auditor doesn&apos;t need a tenant
+          account — the token is the credential. Links expire and can be revoked; every access is
+          audit-logged.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="rounded-md border border-border p-3">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            <select
+              value={scope}
+              onChange={(e) => setScope(e.target.value)}
+              className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+            >
+              <option value="auditor">auditor (anonymized PDF)</option>
+              <option value="defensibility">defensibility (full PDF)</option>
+              <option value="methodology">methodology (anonymized PDF)</option>
+            </select>
+            <input
+              type="number"
+              min={1}
+              max={365}
+              value={days}
+              onChange={(e) => setDays(Math.max(1, parseInt(e.target.value, 10) || 30))}
+              className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+              placeholder="expires in days"
+            />
+            <Button size="sm" onClick={handleCreate} disabled={create.isPending || !latestRunId}>
+              {create.isPending && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}
+              Mint link
+            </Button>
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            The new link is copied to your clipboard. Send it to the auditor.
+          </p>
+        </div>
+
+        {tokens.isLoading ? (
+          <Skeleton className="h-16 w-full" />
+        ) : (tokens.data ?? []).length === 0 ? (
+          <p className="text-sm text-muted-foreground">No share tokens yet.</p>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b text-left text-xs uppercase text-muted-foreground">
+                <th className="py-1">Scope</th>
+                <th className="py-1">Run</th>
+                <th className="py-1">Expires</th>
+                <th className="py-1">Access</th>
+                <th className="py-1">Status</th>
+                <th className="py-1"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {(tokens.data ?? []).map((t: PEShareToken) => {
+                const expired = new Date(t.expiresAt) < new Date();
+                const status = t.revokedAt ? 'revoked' : expired ? 'expired' : 'active';
+                return (
+                  <tr key={t.id} className="border-b last:border-0">
+                    <td className="py-1 font-mono text-xs">{t.scope}</td>
+                    <td className="py-1 font-mono text-[10px] text-muted-foreground">
+                      {t.runId.slice(0, 10)}…
+                    </td>
+                    <td className="py-1 font-mono text-[10px]">
+                      {new Date(t.expiresAt).toISOString().slice(0, 10)}
+                    </td>
+                    <td className="py-1 text-xs">
+                      {t.accessCount}×
+                      {t.lastAccessedAt && (
+                        <> · last {new Date(t.lastAccessedAt).toISOString().slice(0, 10)}</>
+                      )}
+                    </td>
+                    <td className="py-1">
+                      <Badge
+                        variant="outline"
+                        className={
+                          status === 'active'
+                            ? 'bg-emerald-50 text-emerald-700'
+                            : status === 'revoked'
+                              ? 'bg-red-50 text-red-700'
+                              : 'bg-amber-50 text-amber-700'
+                        }
+                      >
+                        {status}
+                      </Badge>
+                    </td>
+                    <td className="py-1 text-right">
+                      {status === 'active' && (
+                        <button
+                          className="text-xs text-muted-foreground hover:text-red-600"
+                          onClick={() => revoke.mutate({ id: t.id })}
+                        >
+                          Revoke
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         )}
       </CardContent>
     </Card>

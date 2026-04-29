@@ -9,6 +9,7 @@ interface SendArgs {
   html: string;
   text?: string;
   fromOverride?: string;
+  attachments?: Array<{ filename: string; content: Buffer; contentType?: string }>;
 }
 
 /**
@@ -47,6 +48,7 @@ export class LetterEmailService {
       subject: args.subject,
       html: args.html,
       text: args.text,
+      ...(args.attachments && args.attachments.length > 0 ? { attachments: args.attachments } : {}),
     });
 
     return {

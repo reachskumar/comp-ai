@@ -20,10 +20,13 @@ import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../../auth';
 import { PermissionGuard, RequirePermission, TenantGuard } from '../../common';
 import { PayEquityV2Service } from './pay-equity.service';
+import { PEDistributionService } from './pe-distribution.service';
 import { REPORT_TYPES, type ReportType } from './report-renderers';
 import {
   AskCopilotDto,
   CalculateRemediationDto,
+  CreateShareTokenDto,
+  CreateSubscriptionDto,
   DecideRemediationDto,
   ForecastProjectionDto,
   ListPayEquityRunsDto,
@@ -50,7 +53,10 @@ interface AuthRequest {
 export class PayEquityController {
   private readonly logger = new Logger(PayEquityController.name);
 
-  constructor(private readonly service: PayEquityV2Service) {}
+  constructor(
+    private readonly service: PayEquityV2Service,
+    private readonly distribution: PEDistributionService,
+  ) {}
 
   @Post('runs')
   @ApiOperation({
@@ -363,5 +369,67 @@ export class PayEquityController {
   @HttpCode(HttpStatus.OK)
   async previewChange(@Body() dto: PreviewChangeDto, @Request() req: AuthRequest) {
     return this.service.previewChange(req.user.tenantId, dto.changes);
+  }
+
+  // ─── Phase 3.7 + 6.4 — Subscriptions ────────────────────────────────
+
+  @Get('subscriptions')
+  @ApiOperation({ summary: 'List Pay Equity report subscriptions for this tenant.' })
+  async listSubscriptions(@Request() req: AuthRequest) {
+    return this.distribution.listSubscriptions(req.user.tenantId);
+  }
+
+  @Post('subscriptions')
+  @ApiOperation({
+    summary:
+      'Create a scheduled report subscription. reportType=digest = daily CHRO summary; otherwise the named report is generated and emailed (and optionally posted to Slack for digest).',
+  })
+  @RequirePermission('Pay Equity', 'insert')
+  async createSubscription(@Body() dto: CreateSubscriptionDto, @Request() req: AuthRequest) {
+    return this.distribution.createSubscription(req.user.tenantId, req.user.userId, dto);
+  }
+
+  @Post('subscriptions/run-due')
+  @ApiOperation({
+    summary:
+      'Cron-style scanner: dispatch every subscription whose nextRunAt is due. Idempotent. Intended to be called by an external scheduler (BullMQ repeat or k8s cron).',
+  })
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('Pay Equity', 'insert')
+  @Throttle({ default: { limit: 60, ttl: 60_000 } })
+  async runDueSubscriptions() {
+    return this.distribution.runDueSubscriptions();
+  }
+
+  @Patch('subscriptions/:id')
+  @ApiOperation({ summary: 'Delete a subscription. Audit-logged.' })
+  @RequirePermission('Pay Equity', 'update')
+  async deleteSubscription(@Param('id') id: string, @Request() req: AuthRequest) {
+    return this.distribution.deleteSubscription(req.user.tenantId, id, req.user.userId);
+  }
+
+  // ─── Phase 5.5 — Share tokens ──────────────────────────────────────
+
+  @Get('share-tokens')
+  @ApiOperation({ summary: 'List Pay Equity auditor share tokens for this tenant.' })
+  async listShareTokens(@Request() req: AuthRequest) {
+    return this.distribution.listShareTokens(req.user.tenantId);
+  }
+
+  @Post('share-tokens')
+  @ApiOperation({
+    summary:
+      'Mint a share token bound to a single PayEquityRun. The token alone authenticates the public /pe-share/:token route — no tenant account needed for the auditor.',
+  })
+  @RequirePermission('Pay Equity', 'insert')
+  async createShareToken(@Body() dto: CreateShareTokenDto, @Request() req: AuthRequest) {
+    return this.distribution.createShareToken(req.user.tenantId, req.user.userId, dto);
+  }
+
+  @Patch('share-tokens/:id/revoke')
+  @ApiOperation({ summary: 'Revoke a share token. Subsequent redemptions return 400.' })
+  @RequirePermission('Pay Equity', 'update')
+  async revokeShareToken(@Param('id') id: string, @Request() req: AuthRequest) {
+    return this.distribution.revokeShareToken(req.user.tenantId, id, req.user.userId);
   }
 }

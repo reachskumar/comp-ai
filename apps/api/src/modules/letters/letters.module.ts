@@ -14,6 +14,6 @@ import { LetterEmailService } from './email.service';
   // endpoint is public; the rest requires JWT/Tenant/Permission guards.
   controllers: [LetterAcknowledgeController, LettersController],
   providers: [LettersService, LettersBatchProcessor, LetterEmailService],
-  exports: [LettersService],
+  exports: [LettersService, LetterEmailService],
 })
 export class LettersModule {}

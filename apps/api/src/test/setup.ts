@@ -74,6 +74,8 @@ export function createMockPrismaClient() {
     compensationLetter: createModelMock(),
     payEquityRun: createModelMock(),
     payEquityRemediation: createModelMock(),
+    pEReportSubscription: createModelMock(),
+    pEShareToken: createModelMock(),
     $connect: vi.fn(),
     $disconnect: vi.fn(),
     $queryRawUnsafe: vi.fn().mockResolvedValue([{ '?column?': 1 }]),
