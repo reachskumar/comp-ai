@@ -30,6 +30,7 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   Download,
+  BookOpen,
 } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -151,6 +152,13 @@ export default function PayEquityWorkspacePage() {
             </p>
           </div>
         </div>
+        <a
+          href="/dashboard/docs/pay-equity-overview"
+          className="inline-flex items-center gap-1 rounded-md border border-input bg-background px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+        >
+          <BookOpen className="h-3.5 w-3.5" />
+          How it works
+        </a>
       </div>
 
       {/* Persistent status bar */}

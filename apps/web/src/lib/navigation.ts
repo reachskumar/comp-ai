@@ -72,6 +72,7 @@ export const mainNavItems: NavItem[] = [
   { title: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
   { title: 'AI Copilot', href: '/dashboard/ai-copilot', icon: MessageSquareText },
   { title: 'My Rewards', href: '/dashboard/my-rewards', icon: Trophy },
+  { title: 'Docs', href: '/dashboard/docs', icon: BookOpen },
 ];
 
 export const navGroups: NavGroup[] = [
