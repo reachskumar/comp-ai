@@ -24,7 +24,9 @@ export type ReportType =
   | 'eeo1'
   | 'sb1162'
   | 'auditor'
-  | 'defensibility';
+  | 'defensibility'
+  | 'comp_committee_deck'
+  | 'employee_statement';
 
 export const REPORT_TYPES: ReportType[] = [
   'board',
@@ -34,6 +36,8 @@ export const REPORT_TYPES: ReportType[] = [
   'sb1162',
   'auditor',
   'defensibility',
+  'comp_committee_deck',
+  'employee_statement',
 ];
 
 export type RenderOutput =
@@ -67,6 +71,18 @@ export interface RenderContext {
   /** Phase 5 — populated only for the defensibility renderer. */
   auditTrail?: AuditEvent[];
   childRuns?: ChildAgentRun[];
+  /** Phase 6.1 — populated only for the employee_statement renderer. */
+  employee?: {
+    employeeId: string;
+    employeeCode: string;
+    firstName: string;
+    lastName: string;
+    level: string;
+    department: string;
+    compaRatio: number | null;
+    baseSalary: number;
+    currency: string;
+  };
 }
 
 const NA = 'not_available';
@@ -675,6 +691,207 @@ function renderDefensibilityPdf(ctx: RenderContext): RenderOutput {
   };
 }
 
+/**
+ * Phase 3.6 — Comp committee deck.
+ *
+ * Auto-slides PDF: title slide + headline slide + cohort slide + methodology
+ * slide + recommendations slide. CSS @page breaks force one card per page.
+ */
+function renderCompCommitteeDeck(ctx: RenderContext): RenderOutput {
+  const { envelope, tenantName, runAt, runId } = ctx;
+  const r = envelope.output;
+  const sigGaps = r.regressionResults.filter((x) => x.significance === 'significant');
+  const worst = r.regressionResults
+    .slice()
+    .sort((a, b) => Math.abs(b.gapPercent) - Math.abs(a.gapPercent))[0];
+  const dimsCount =
+    r.dimensions?.length ?? new Set(r.regressionResults.map((x) => x.dimension)).size;
+
+  const slide = (content: string) =>
+    `<section class="slide">${content}<div class="slide-footer">${htmlEscape(tenantName)} · Pay Equity · ${isoDate(runAt)} · ${htmlEscape(runId)}</div></section>`;
+
+  const slides = [
+    // 1. Title
+    slide(`
+      <div class="slide-title">
+        <div class="kicker">Pay Equity</div>
+        <h1>${htmlEscape(tenantName)} — Comp Committee Briefing</h1>
+        <div class="meta">${isoDate(runAt)} · Methodology ${htmlEscape(envelope.methodology.name)}@${htmlEscape(envelope.methodology.version)}</div>
+      </div>
+    `),
+    // 2. Headline
+    slide(`
+      <h2>Headline</h2>
+      <div class="headline-grid">
+        <div class="headline-card"><div class="label">Sample size</div><div class="value">${(envelope.methodology.sampleSize ?? 0).toLocaleString()}</div></div>
+        <div class="headline-card"><div class="label">Significant gaps</div><div class="value">${sigGaps.length}</div></div>
+        <div class="headline-card"><div class="label">Worst gap</div><div class="value">${worst ? pct(worst.gapPercent) : '—'}</div></div>
+        <div class="headline-card"><div class="label">Dimensions</div><div class="value">${dimsCount}</div></div>
+      </div>
+      <p class="bullet">${
+        sigGaps.length
+          ? `${sigGaps.length} statistically-significant gap${sigGaps.length === 1 ? '' : 's'} identified.`
+          : 'No statistically-significant gaps identified.'
+      }</p>
+    `),
+    // 3. Cohort findings
+    slide(`
+      <h2>Cohort findings</h2>
+      <table class="deck-table"><thead><tr><th>Cohort</th><th>Gap</th><th>p</th><th>n</th><th>Risk</th></tr></thead><tbody>
+        ${r.regressionResults
+          .slice(0, 8)
+          .map(
+            (x) =>
+              `<tr><td>${htmlEscape(x.dimension)}/${htmlEscape(x.group)}</td><td>${pct(x.gapPercent)}</td><td>${x.pValue.toFixed(3)}</td><td>${x.sampleSize}</td><td>${severityBadge(x.riskLevel)}</td></tr>`,
+          )
+          .join('')}
+      </tbody></table>
+    `),
+    // 4. Methodology
+    slide(`
+      <h2>Methodology</h2>
+      <ul class="bullets">
+        <li>Model: <b>${htmlEscape(envelope.methodology.name)}@${htmlEscape(envelope.methodology.version)}</b></li>
+        <li>Dependent variable: <code>${htmlEscape(envelope.methodology.dependentVariable ?? 'log_salary')}</code></li>
+        <li>Controls: ${envelope.methodology.controls.length === 0 ? '<i>none recorded</i>' : envelope.methodology.controls.map(htmlEscape).join(', ')}</li>
+        <li>Sample: ${envelope.methodology.sampleSize.toLocaleString()} employees · CI ${(envelope.methodology.confidenceInterval * 100).toFixed(0)}%</li>
+        <li>Citations: ${envelope.citations.length} regression coefficients backing the findings</li>
+        <li>Confidence: <b>${htmlEscape(envelope.confidence)}</b></li>
+      </ul>
+    `),
+    // 5. Recommendation
+    slide(`
+      <h2>Recommendation</h2>
+      <p class="bullet">Estimated cost-to-close: <b>${(r.remediation?.totalCost ?? 0).toLocaleString()}</b> across <b>${r.remediation?.affectedEmployees ?? 0}</b> employees (avg adjustment ${(r.remediation?.avgAdjustment ?? 0).toLocaleString()}).</p>
+      <ul class="bullets">
+        <li>Approve the proposed remediation plan to bring the worst-cohort gap below 2%.</li>
+        <li>Receive monthly pay-equity digest from this point forward.</li>
+        <li>Re-run analysis after Q-end to confirm gap reduction.</li>
+      </ul>
+    `),
+  ].join('');
+
+  const deckCss = `
+    *{box-sizing:border-box}
+    body{margin:0;padding:0;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a;background:#fff}
+    .slide{position:relative;width:100%;min-height:100vh;padding:60px 72px;page-break-after:always;display:flex;flex-direction:column;justify-content:flex-start}
+    .slide:last-child{page-break-after:auto}
+    .slide-title{display:flex;flex-direction:column;justify-content:center;align-items:flex-start;height:100%;min-height:80vh}
+    .kicker{font-size:14px;letter-spacing:.2em;text-transform:uppercase;color:#64748b;margin-bottom:8px}
+    h1{font-size:42px;margin:0 0 12px;letter-spacing:-.02em}
+    h2{font-size:28px;margin:0 0 24px;letter-spacing:-.01em}
+    .meta{color:#64748b;font-size:14px;margin-top:8px}
+    .headline-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin:24px 0}
+    .headline-card{border:1px solid #e2e8f0;border-radius:10px;padding:20px}
+    .headline-card .label{font-size:12px;color:#64748b;text-transform:uppercase;letter-spacing:.06em}
+    .headline-card .value{font-size:32px;font-weight:700;margin-top:8px}
+    .deck-table{border-collapse:collapse;width:100%;font-size:14px;margin-top:16px}
+    .deck-table th{background:#f8fafc;text-align:left;padding:10px 12px;border-bottom:1px solid #e2e8f0;font-weight:600}
+    .deck-table td{padding:10px 12px;border-bottom:1px solid #f1f5f9}
+    .bullets{font-size:16px;line-height:1.8;padding-left:20px}
+    .bullet{font-size:18px;margin:16px 0}
+    .badge{display:inline-block;padding:2px 8px;border-radius:9999px;font-size:11px;font-weight:600}
+    .badge-high{background:#fee2e2;color:#991b1b}.badge-medium{background:#fef3c7;color:#92400e}.badge-low{background:#dcfce7;color:#166534}
+    .slide-footer{position:absolute;bottom:24px;left:72px;right:72px;font-size:11px;color:#94a3b8;border-top:1px solid #e2e8f0;padding-top:8px}
+  `;
+
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Comp Committee Deck</title><style>${deckCss}</style></head><body>${slides}</body></html>`;
+
+  return {
+    format: 'pdf-html',
+    filename: `pay-equity-comp-committee-${isoDate(runAt)}.pdf`,
+    mimeType: 'application/pdf',
+    html,
+  };
+}
+
+/**
+ * Phase 6.1 — Employee personal equity statement.
+ *
+ * Per-employee PDF: their compa-ratio in context (level mid + range) without
+ * exposing peer salaries. Privacy-aware. Requires `ctx.employee` to be set
+ * (the calling service supplies it).
+ */
+function renderEmployeeStatement(ctx: RenderContext): RenderOutput {
+  const { tenantName, runAt, runId, envelope } = ctx;
+  const e = ctx.employee;
+
+  if (!e) {
+    return {
+      format: 'pdf-html',
+      filename: `pay-equity-employee-statement-${isoDate(runAt)}.pdf`,
+      mimeType: 'application/pdf',
+      html: pdfShell({
+        title: 'Pay Equity — Employee Statement',
+        bodyHtml:
+          '<h1>Statement unavailable</h1><p>Employee context was not provided. Pass an employeeId when generating this report.</p>',
+      }),
+    };
+  }
+
+  const cr = e.compaRatio;
+  const crBucket =
+    cr === null
+      ? 'unknown'
+      : cr < 0.85
+        ? 'below band'
+        : cr < 0.95
+          ? 'lower-half of band'
+          : cr < 1.05
+            ? 'mid-band'
+            : cr < 1.15
+              ? 'upper-half of band'
+              : 'above band';
+  const crBadgeCls =
+    cr === null
+      ? 'badge-medium'
+      : cr < 0.85
+        ? 'badge-high'
+        : cr > 1.15
+          ? 'badge-low'
+          : 'badge-medium';
+
+  // Position visualization: the band is conceptually p25..p75 around p50.
+  // We show CR on a 0.7..1.3 scale so the employee sees where they sit.
+  const barPosition = cr === null ? 50 : Math.max(0, Math.min(100, ((cr - 0.7) / 0.6) * 100));
+
+  const body = `
+    <h1>Your compensation in context</h1>
+    <div class="meta">${htmlEscape(tenantName)} · ${isoDate(runAt)} · Confidential</div>
+
+    <h2>Where you sit</h2>
+    <p>You're at level <b>${htmlEscape(e.level)}</b> in <b>${htmlEscape(e.department)}</b>. Based on the latest pay equity analysis, your compensation sits at <b>${cr === null ? 'unavailable' : cr.toFixed(2) + ' compa-ratio'}</b> — <span class="badge ${crBadgeCls}">${htmlEscape(crBucket)}</span> for your level.</p>
+
+    <div style="position:relative;height:24px;background:#f1f5f9;border-radius:12px;margin:24px 0;border:1px solid #e2e8f0">
+      <div style="position:absolute;top:0;bottom:0;left:25%;width:50%;background:#dcfce7;border-radius:12px"></div>
+      <div style="position:absolute;top:-4px;bottom:-4px;left:${barPosition}%;width:6px;background:#0f172a;border-radius:3px"></div>
+      <div style="position:absolute;top:30px;left:25%;font-size:10px;color:#94a3b8">25th</div>
+      <div style="position:absolute;top:30px;left:50%;font-size:10px;color:#94a3b8;transform:translateX(-50%)">midpoint</div>
+      <div style="position:absolute;top:30px;left:75%;font-size:10px;color:#94a3b8">75th</div>
+    </div>
+
+    <h2>What this means</h2>
+    <ul>
+      <li>Compa-ratio = your salary divided by the midpoint for your level.</li>
+      <li>Above 1.0 means you're paid more than the midpoint; below 1.0 means less.</li>
+      <li>Most people sit between 0.85 and 1.15. Your individual position depends on tenure, performance, and market conditions when you were hired.</li>
+      <li>If you have questions about your compensation, talk to your manager or HR partner. They have the full context to discuss your situation.</li>
+    </ul>
+
+    <h2>How this analysis was done</h2>
+    <p>Your organization runs a regression-based pay equity analysis (${htmlEscape(envelope.methodology.name)}@${htmlEscape(envelope.methodology.version)}) controlling for ${envelope.methodology.controls.map(htmlEscape).join(', ') || 'level, tenure, and other factors'}. The model measures whether systematic pay differences exist after accounting for these legitimate factors.</p>
+
+    <div class="footer">This statement is generated from PayEquityRun ${htmlEscape(runId)}. Specific peer salaries are never shown for privacy. For questions, contact HR.</div>
+  `;
+
+  return {
+    format: 'pdf-html',
+    filename: `pay-equity-statement-${e.employeeCode}-${isoDate(runAt)}.pdf`,
+    mimeType: 'application/pdf',
+    html: pdfShell({ title: 'Your compensation in context', bodyHtml: body }),
+  };
+}
+
 /* ─── Dispatch ──────────────────────────────────────────────── */
 
 export function renderReport(type: ReportType, ctx: RenderContext): RenderOutput {
@@ -693,5 +910,9 @@ export function renderReport(type: ReportType, ctx: RenderContext): RenderOutput
       return renderSb1162Csv(ctx);
     case 'defensibility':
       return renderDefensibilityPdf(ctx);
+    case 'comp_committee_deck':
+      return renderCompCommitteeDeck(ctx);
+    case 'employee_statement':
+      return renderEmployeeStatement(ctx);
   }
 }

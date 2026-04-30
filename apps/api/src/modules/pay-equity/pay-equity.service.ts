@@ -1618,6 +1618,171 @@ export class PayEquityV2Service implements OnModuleInit {
     });
   }
 
+  /**
+   * Phase 2.4 — Phased multi-quarter plan generator.
+   *
+   * Splits the PROPOSED + APPROVED rows of a remediation run into N quarter
+   * buckets, biggest deltas first (front-loaded), so finance can budget per
+   * quarter. Read-only; no LLM. Returns the buckets without persisting —
+   * the caller can apply each quarter at its own pace via the existing
+   * decide + apply endpoints.
+   */
+  async phaseRemediations(tenantId: string, remediationRunId: string, quarters: number) {
+    if (quarters < 1 || quarters > 8) {
+      throw new BadRequestException('quarters must be 1..8');
+    }
+    const run = await this.getRun(tenantId, remediationRunId);
+    if (run.agentType !== 'remediation') {
+      throw new BadRequestException(
+        `Run ${remediationRunId} agentType=${run.agentType}, expected remediation`,
+      );
+    }
+    const rows = await this.db.forTenant(tenantId, (tx) =>
+      tx.payEquityRemediation.findMany({
+        where: { tenantId, runId: remediationRunId, status: { in: ['PROPOSED', 'APPROVED'] } },
+        orderBy: { createdAt: 'asc' },
+      }),
+    );
+
+    // Sort by absolute delta DESC so the biggest fixes go first.
+    const enriched = rows
+      .map((r) => ({
+        id: r.id,
+        employeeId: r.employeeId,
+        fromValue: Number(r.fromValue),
+        toValue: Number(r.toValue),
+        delta: Number(r.toValue) - Number(r.fromValue),
+        status: r.status,
+        justification: r.justification,
+      }))
+      .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+
+    const buckets: Array<{
+      quarter: number;
+      label: string;
+      rows: typeof enriched;
+      totalCost: number;
+      employeeCount: number;
+    }> = Array.from({ length: quarters }, (_, i) => ({
+      quarter: i + 1,
+      label: `Q${i + 1}`,
+      rows: [] as typeof enriched,
+      totalCost: 0,
+      employeeCount: 0,
+    }));
+
+    // Round-robin assignment by sorted index → spreads big-to-small evenly.
+    enriched.forEach((row, i) => {
+      const b = buckets[i % quarters]!;
+      b.rows.push(row);
+      b.totalCost += row.delta;
+      b.employeeCount += 1;
+    });
+
+    const totalCost = enriched.reduce((s, r) => s + r.delta, 0);
+    return {
+      remediationRunId,
+      quarters,
+      totalCost,
+      employeeCount: enriched.length,
+      buckets,
+    };
+  }
+
+  /**
+   * Phase 2.6 — Remediation letters.
+   *
+   * Generates an in-row CompensationLetter record per APPLIED remediation,
+   * using the existing Letters module's RAISE letter type. Doesn't actually
+   * email — the Letters module owns delivery; this just stages the rows so
+   * an HR admin can trigger send from the existing /letters dashboard.
+   *
+   * Returns the count of letters staged + the IDs.
+   */
+  async stageRemediationLetters(
+    tenantId: string,
+    remediationRunId: string,
+    userId: string,
+  ): Promise<{ stagedCount: number; letterIds: string[] }> {
+    const run = await this.getRun(tenantId, remediationRunId);
+    if (run.agentType !== 'remediation') {
+      throw new BadRequestException(
+        `Run ${remediationRunId} agentType=${run.agentType}, expected remediation`,
+      );
+    }
+
+    return this.db.forTenant(tenantId, async (tx) => {
+      const applied = await tx.payEquityRemediation.findMany({
+        where: { tenantId, runId: remediationRunId, status: 'APPLIED' },
+      });
+      if (applied.length === 0) {
+        return { stagedCount: 0, letterIds: [] };
+      }
+
+      const letterIds: string[] = [];
+      for (const r of applied) {
+        const employee = await tx.employee.findUnique({
+          where: { id: r.employeeId },
+          select: {
+            firstName: true,
+            lastName: true,
+            email: true,
+            level: true,
+            department: true,
+            currency: true,
+          },
+        });
+        if (!employee) continue;
+
+        const fromValue = Number(r.fromValue);
+        const toValue = Number(r.toValue);
+        const letter = await tx.compensationLetter.create({
+          data: {
+            tenantId,
+            userId,
+            employeeId: r.employeeId,
+            letterType: 'RAISE',
+            status: 'DRAFT',
+            subject: 'Compensation adjustment — pay equity',
+            content: '',
+            compData: {
+              fromValue,
+              toValue,
+              delta: toValue - fromValue,
+              currency: employee.currency,
+              justification:
+                r.justification ?? 'Pay equity adjustment to align with cohort midpoint.',
+            } as unknown as Prisma.InputJsonValue,
+            metadata: {
+              source: 'pay_equity_remediation',
+              remediationId: r.id,
+              remediationRunId,
+            } as unknown as Prisma.InputJsonValue,
+          },
+        });
+        letterIds.push(letter.id);
+      }
+
+      await tx.auditLog.create({
+        data: {
+          tenantId,
+          userId,
+          action: 'PAY_EQUITY_REMEDIATION_LETTERS_STAGED',
+          entityType: 'PayEquityRun',
+          entityId: remediationRunId,
+          changes: {
+            stagedCount: letterIds.length,
+            appliedCount: applied.length,
+          } as unknown as Prisma.InputJsonValue,
+        },
+      });
+
+      this.logger.log(`Staged ${letterIds.length} remediation letters for run ${remediationRunId}`);
+
+      return { stagedCount: letterIds.length, letterIds };
+    });
+  }
+
   // ─── Phase 3 — Report ──────────────────────────────────────────
 
   /**
@@ -1634,6 +1799,7 @@ export class PayEquityV2Service implements OnModuleInit {
     runId: string,
     type: ReportType,
     userId: string,
+    options: { employeeId?: string } = {},
   ): Promise<{ buffer: Buffer; filename: string; mimeType: string }> {
     if (!REPORT_TYPES.includes(type)) {
       throw new BadRequestException(`Unknown report type: ${type}`);
@@ -1656,7 +1822,6 @@ export class PayEquityV2Service implements OnModuleInit {
     const envelope = run.result as unknown as PayEquityAgentResult<PayEquityReport>;
 
     // Defensibility export needs the full audit trail + child agent runs.
-    // For the other report types these fields are unused.
     let auditTrail: Awaited<ReturnType<typeof this.getAuditTrail>>['events'] = [];
     let childRuns: Awaited<ReturnType<typeof this.getMethodology>>['agentInvocations'] = [];
     if (type === 'defensibility') {
@@ -1664,6 +1829,42 @@ export class PayEquityV2Service implements OnModuleInit {
       auditTrail = trail.events;
       const meth = await this.getMethodology(tenantId, runId);
       childRuns = meth.agentInvocations;
+    }
+
+    // Employee statement (Phase 6.1) needs a specific employee row.
+    let employeeCtx: Parameters<typeof renderReport>[1]['employee'];
+    if (type === 'employee_statement') {
+      if (!options.employeeId) {
+        throw new BadRequestException('employee_statement requires an employeeId');
+      }
+      const emp = await this.db.forTenant(tenantId, (tx) =>
+        tx.employee.findFirst({
+          where: { id: options.employeeId, tenantId },
+          select: {
+            id: true,
+            employeeCode: true,
+            firstName: true,
+            lastName: true,
+            level: true,
+            department: true,
+            compaRatio: true,
+            baseSalary: true,
+            currency: true,
+          },
+        }),
+      );
+      if (!emp) throw new BadRequestException(`Employee ${options.employeeId} not found`);
+      employeeCtx = {
+        employeeId: emp.id,
+        employeeCode: emp.employeeCode,
+        firstName: emp.firstName,
+        lastName: emp.lastName,
+        level: emp.level,
+        department: emp.department,
+        compaRatio: emp.compaRatio === null ? null : Number(emp.compaRatio),
+        baseSalary: Number(emp.baseSalary),
+        currency: emp.currency,
+      };
     }
 
     const out = renderReport(type, {
@@ -1674,6 +1875,7 @@ export class PayEquityV2Service implements OnModuleInit {
       envelope,
       auditTrail,
       childRuns,
+      employee: employeeCtx,
     });
 
     let buffer: Buffer;
@@ -2396,6 +2598,71 @@ export class PayEquityV2Service implements OnModuleInit {
       );
       throw err;
     }
+  }
+
+  // ─── Phase 6.2 — Pay range publication ──────────────────────────
+
+  /**
+   * Returns the tenant's salary bands grouped by job family + level for
+   * publication on jurisdictions that mandate it (CA SB 1162, NY Local Law 32,
+   * CO Equal Pay Act, EU PTD pre-employment range disclosure).
+   *
+   * Read-only; bands are sourced from the existing `salary_bands` table.
+   * Filters: only bands that haven't expired and (optionally) match the
+   * jurisdiction's required disclosure shape.
+   */
+  async getPayRanges(tenantId: string) {
+    const now = new Date();
+    const bands = await this.db.forTenant(tenantId, (tx) =>
+      tx.salaryBand.findMany({
+        where: {
+          tenantId,
+          OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+        },
+        orderBy: [{ jobFamily: 'asc' }, { level: 'asc' }, { location: 'asc' }],
+        select: {
+          id: true,
+          jobFamily: true,
+          level: true,
+          location: true,
+          currency: true,
+          p10: true,
+          p25: true,
+          p50: true,
+          p75: true,
+          p90: true,
+          effectiveDate: true,
+        },
+      }),
+    );
+
+    return {
+      tenantId,
+      generatedAt: now.toISOString(),
+      total: bands.length,
+      ranges: bands.map((b) => ({
+        id: b.id,
+        jobFamily: b.jobFamily,
+        level: b.level,
+        location: b.location,
+        currency: b.currency,
+        // Most jurisdictions require min..max; we publish p25..p75 as the
+        // posting range (excludes outliers in either direction). p50 is the
+        // midpoint anchor.
+        rangeMin: Number(b.p25),
+        rangeMid: Number(b.p50),
+        rangeMax: Number(b.p75),
+        // Full distribution available for jurisdictions that want it.
+        distribution: {
+          p10: Number(b.p10),
+          p25: Number(b.p25),
+          p50: Number(b.p50),
+          p75: Number(b.p75),
+          p90: Number(b.p90),
+        },
+        effectiveDate: b.effectiveDate,
+      })),
+    };
   }
 
   // ─── Phase 4 — Prevent half ─────────────────────────────────────

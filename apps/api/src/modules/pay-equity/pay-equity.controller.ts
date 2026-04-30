@@ -432,4 +432,73 @@ export class PayEquityController {
   async revokeShareToken(@Param('id') id: string, @Request() req: AuthRequest) {
     return this.distribution.revokeShareToken(req.user.tenantId, id, req.user.userId);
   }
+
+  // ─── Phase 2.4 — Multi-quarter plan ─────────────────────────────────
+
+  @Get('runs/:id/remediations/phase')
+  @ApiOperation({
+    summary:
+      "Phase 2.4: split a remediation run's PROPOSED+APPROVED rows into N quarter buckets, biggest deltas first. Read-only; no persistence — caller can apply per-quarter via the existing decide + apply endpoints.",
+  })
+  async phaseRemediations(
+    @Param('id') runId: string,
+    @Request() req: AuthRequest,
+    @Query('quarters') quartersStr?: string,
+  ) {
+    const quarters = quartersStr ? parseInt(quartersStr, 10) : 4;
+    return this.service.phaseRemediations(req.user.tenantId, runId, quarters);
+  }
+
+  // ─── Phase 2.6 — Letters hook ───────────────────────────────────────
+
+  @Post('runs/:id/remediations/letters')
+  @ApiOperation({
+    summary:
+      'Phase 2.6: stage a CompensationLetter (DRAFT) for every APPLIED remediation in a run. Lets the existing /letters dashboard own delivery; this just creates the rows linked back to the remediation.',
+  })
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('Pay Equity', 'insert')
+  async stageRemediationLetters(@Param('id') runId: string, @Request() req: AuthRequest) {
+    const { tenantId, userId } = req.user;
+    return this.service.stageRemediationLetters(tenantId, runId, userId);
+  }
+
+  // ─── Phase 6.1 — Employee statement ─────────────────────────────────
+
+  @Get('runs/:id/employee-statement/:employeeId')
+  @ApiOperation({
+    summary:
+      "Phase 6.1: per-employee personal equity statement. Privacy-aware PDF showing the employee's compa-ratio in context (mid-band / range), no peer salaries shown.",
+  })
+  async getEmployeeStatement(
+    @Param('id') runId: string,
+    @Param('employeeId') employeeId: string,
+    @Request() req: AuthRequest,
+    @Res() reply: FastifyReply,
+  ) {
+    const { tenantId, userId } = req.user;
+    const { buffer, filename, mimeType } = await this.service.generateReport(
+      tenantId,
+      runId,
+      'employee_statement',
+      userId,
+      { employeeId },
+    );
+    void reply
+      .header('Content-Type', mimeType)
+      .header('Content-Disposition', `attachment; filename="${filename}"`)
+      .header('Content-Length', buffer.length)
+      .send(buffer);
+  }
+
+  // ─── Phase 6.2 — Pay range publication ──────────────────────────────
+
+  @Get('pay-ranges')
+  @ApiOperation({
+    summary:
+      "Phase 6.2: tenant's pay ranges (per jobFamily/level/location). Read-only feed for jurisdictions that mandate range publication (CA SB 1162, NY Local Law 32, CO Equal Pay, EU PTD).",
+  })
+  async getPayRanges(@Request() req: AuthRequest) {
+    return this.service.getPayRanges(req.user.tenantId);
+  }
 }

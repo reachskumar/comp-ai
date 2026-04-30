@@ -811,3 +811,84 @@ export function useRevokeShareTokenMutation() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['pe-share-tokens'] }),
   });
 }
+
+// ─── Phase 2.4 — Multi-quarter plan ────────────────────────────────
+
+export interface PhaseBucket {
+  quarter: number;
+  label: string;
+  rows: Array<{
+    id: string;
+    employeeId: string;
+    fromValue: number;
+    toValue: number;
+    delta: number;
+    status: string;
+  }>;
+  totalCost: number;
+  employeeCount: number;
+}
+
+export interface PhasedPlanResponse {
+  remediationRunId: string;
+  quarters: number;
+  totalCost: number;
+  employeeCount: number;
+  buckets: PhaseBucket[];
+}
+
+export function usePhasedRemediations(remediationRunId: string | null, quarters = 4) {
+  return useQuery<PhasedPlanResponse>({
+    queryKey: ['pe-phased', remediationRunId, quarters],
+    queryFn: () =>
+      apiClient.fetch(
+        `/api/v1/pay-equity/runs/${remediationRunId}/remediations/phase?quarters=${quarters}`,
+      ),
+    enabled: !!remediationRunId,
+  });
+}
+
+// ─── Phase 2.6 — Stage remediation letters ─────────────────────────
+
+export function useStageRemediationLettersMutation() {
+  return useMutation<
+    { stagedCount: number; letterIds: string[] },
+    Error,
+    { remediationRunId: string }
+  >({
+    mutationFn: ({ remediationRunId }) =>
+      apiClient.fetch(`/api/v1/pay-equity/runs/${remediationRunId}/remediations/letters`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      }),
+  });
+}
+
+// ─── Phase 6.2 — Pay range publication ─────────────────────────────
+
+export interface PayRangeRow {
+  id: string;
+  jobFamily: string;
+  level: string;
+  location: string | null;
+  currency: string;
+  rangeMin: number;
+  rangeMid: number;
+  rangeMax: number;
+  distribution: { p10: number; p25: number; p50: number; p75: number; p90: number };
+  effectiveDate: string;
+}
+
+export interface PayRangesResponse {
+  tenantId: string;
+  generatedAt: string;
+  total: number;
+  ranges: PayRangeRow[];
+}
+
+export function usePayRanges() {
+  return useQuery<PayRangesResponse>({
+    queryKey: ['pe-pay-ranges'],
+    queryFn: () => apiClient.fetch('/api/v1/pay-equity/pay-ranges'),
+  });
+}

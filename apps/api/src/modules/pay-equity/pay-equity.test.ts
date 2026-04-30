@@ -2561,3 +2561,170 @@ describe('PayEquityV2Service.previewChange', () => {
     expect(result.changesEvaluated).toBe(1);
   });
 });
+
+// ─── Phase 2.4 — Multi-quarter plan ─────────────────────────────────────
+
+describe('PayEquityV2Service.phaseRemediations', () => {
+  let service: PayEquityV2Service;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createService());
+  });
+
+  it('splits PROPOSED+APPROVED rows into N buckets, biggest deltas distributed first', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue({
+      id: 'rem-run',
+      tenantId: TEST_TENANT_ID,
+      agentType: 'remediation',
+      status: 'COMPLETE',
+    });
+    db.client.payEquityRemediation.findMany.mockResolvedValue([
+      { id: 'a', employeeId: 'e1', fromValue: 100, toValue: 200, status: 'PROPOSED' },
+      { id: 'b', employeeId: 'e2', fromValue: 100, toValue: 150, status: 'PROPOSED' },
+      { id: 'c', employeeId: 'e3', fromValue: 100, toValue: 120, status: 'APPROVED' },
+      { id: 'd', employeeId: 'e4', fromValue: 100, toValue: 110, status: 'PROPOSED' },
+    ]);
+
+    const result = await service.phaseRemediations(TEST_TENANT_ID, 'rem-run', 2);
+
+    expect(result.quarters).toBe(2);
+    expect(result.employeeCount).toBe(4);
+    expect(result.buckets).toHaveLength(2);
+    expect(result.totalCost).toBe(180);
+    // Round-robin sorted by delta DESC: 100, 50, 20, 10 → Q1=100+20=120, Q2=50+10=60
+    expect(result.buckets[0]!.totalCost).toBe(120);
+    expect(result.buckets[1]!.totalCost).toBe(60);
+  });
+
+  it('rejects quarters out of range', async () => {
+    await expect(service.phaseRemediations(TEST_TENANT_ID, 'rem-run', 0)).rejects.toThrow(
+      /quarters must be 1\.\.8/,
+    );
+    await expect(service.phaseRemediations(TEST_TENANT_ID, 'rem-run', 9)).rejects.toThrow(
+      /quarters must be 1\.\.8/,
+    );
+  });
+
+  it('rejects non-remediation runs', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue({
+      id: 'narr',
+      agentType: 'narrative',
+      status: 'COMPLETE',
+    });
+    await expect(service.phaseRemediations(TEST_TENANT_ID, 'narr', 4)).rejects.toThrow(
+      /expected remediation/,
+    );
+  });
+});
+
+// ─── Phase 2.6 — Remediation letters ─────────────────────────────────────
+
+describe('PayEquityV2Service.stageRemediationLetters', () => {
+  let service: PayEquityV2Service;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createService());
+  });
+
+  it('creates one DRAFT CompensationLetter per APPLIED remediation + audits', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue({
+      id: 'rem-run',
+      tenantId: TEST_TENANT_ID,
+      agentType: 'remediation',
+      status: 'COMPLETE',
+    });
+    db.client.payEquityRemediation.findMany.mockResolvedValue([
+      { id: 'a', employeeId: 'e1', fromValue: 100, toValue: 110, justification: 'cohort mean' },
+      { id: 'b', employeeId: 'e2', fromValue: 100, toValue: 120, justification: null },
+    ]);
+    db.client.employee.findUnique
+      .mockResolvedValueOnce({
+        firstName: 'A',
+        lastName: 'B',
+        email: 'a@b.com',
+        level: 'L4',
+        department: 'Eng',
+        currency: 'USD',
+      })
+      .mockResolvedValueOnce({
+        firstName: 'C',
+        lastName: 'D',
+        email: 'c@d.com',
+        level: 'L4',
+        department: 'Eng',
+        currency: 'USD',
+      });
+    db.client.compensationLetter.create
+      .mockResolvedValueOnce({ id: 'L1' })
+      .mockResolvedValueOnce({ id: 'L2' });
+    db.client.auditLog.create.mockResolvedValue({});
+
+    const result = await service.stageRemediationLetters(TEST_TENANT_ID, 'rem-run', TEST_USER_ID);
+    expect(result.stagedCount).toBe(2);
+    expect(result.letterIds).toEqual(['L1', 'L2']);
+
+    const audit = db.client.auditLog.create.mock.calls[0]![0];
+    expect(audit.data.action).toBe('PAY_EQUITY_REMEDIATION_LETTERS_STAGED');
+    expect(audit.data.changes.stagedCount).toBe(2);
+  });
+
+  it('returns 0 staged when no APPLIED rows exist', async () => {
+    db.client.payEquityRun.findFirst.mockResolvedValue({
+      id: 'rem-run',
+      tenantId: TEST_TENANT_ID,
+      agentType: 'remediation',
+      status: 'COMPLETE',
+    });
+    db.client.payEquityRemediation.findMany.mockResolvedValue([]);
+
+    const result = await service.stageRemediationLetters(TEST_TENANT_ID, 'rem-run', TEST_USER_ID);
+    expect(result.stagedCount).toBe(0);
+    expect(db.client.compensationLetter.create).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Phase 6.2 — Pay range publication ───────────────────────────────────
+
+describe('PayEquityV2Service.getPayRanges', () => {
+  let service: PayEquityV2Service;
+  let db: ReturnType<typeof createMockDatabaseService>;
+
+  beforeEach(() => {
+    ({ service, db } = createService());
+  });
+
+  it('returns p25..p75 as posting range and full distribution', async () => {
+    db.client.salaryBand.findMany.mockResolvedValue([
+      {
+        id: 'band-1',
+        jobFamily: 'Engineering',
+        level: 'L4',
+        location: 'San Francisco',
+        currency: 'USD',
+        p10: 90000,
+        p25: 110000,
+        p50: 130000,
+        p75: 150000,
+        p90: 170000,
+        effectiveDate: new Date('2026-01-01'),
+      },
+    ]);
+
+    const result = await service.getPayRanges(TEST_TENANT_ID);
+    expect(result.total).toBe(1);
+    expect(result.ranges[0]!.rangeMin).toBe(110000);
+    expect(result.ranges[0]!.rangeMid).toBe(130000);
+    expect(result.ranges[0]!.rangeMax).toBe(150000);
+    expect(result.ranges[0]!.distribution.p10).toBe(90000);
+    expect(result.ranges[0]!.distribution.p90).toBe(170000);
+  });
+
+  it('returns empty list when no bands exist', async () => {
+    db.client.salaryBand.findMany.mockResolvedValue([]);
+    const result = await service.getPayRanges(TEST_TENANT_ID);
+    expect(result.total).toBe(0);
+    expect(result.ranges).toEqual([]);
+  });
+});

@@ -1394,7 +1394,15 @@ function RemediationsTable({ runId }: { runId: string }) {
 // ─── Phase 3 — Reports panel ──────────────────────────────────────
 
 const REPORT_DEFS: Array<{
-  type: 'board' | 'eu_ptd' | 'uk_gpg' | 'eeo1' | 'sb1162' | 'auditor' | 'defensibility';
+  type:
+    | 'board'
+    | 'eu_ptd'
+    | 'uk_gpg'
+    | 'eeo1'
+    | 'sb1162'
+    | 'auditor'
+    | 'defensibility'
+    | 'comp_committee_deck';
   title: string;
   description: string;
   format: 'PDF' | 'CSV';
@@ -1442,6 +1450,13 @@ const REPORT_DEFS: Array<{
     title: 'Litigation defensibility export',
     description:
       'Comprehensive: methodology + full regression detail + citations + every audit event + every child agent invocation. Internal use; identifiers NOT hashed.',
+    format: 'PDF',
+  },
+  {
+    type: 'comp_committee_deck',
+    title: 'Comp committee deck',
+    description:
+      'Auto-generated 5-slide PDF: title · headline · cohort findings · methodology · recommendation. One slide per page.',
     format: 'PDF',
   },
 ];
