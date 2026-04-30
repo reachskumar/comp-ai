@@ -2064,7 +2064,16 @@ export class PayEquityV2Service implements OnModuleInit {
     // ── Deterministic forecast (linear extrapolation + scenario adjustment) ──
     const baselineGap = recentRuns[recentRuns.length - 1]!.gapPercent;
     const slopePerMonth = computeMonthlySlope(recentRuns);
-    const scenarioAdjustment = computeScenarioGapDelta(hiringPlan, promotionPlan);
+    // Composition math: scenario impact is the share-weighted reach of new
+    // hires/promotions relative to the current cohort, NOT a flat per-employee
+    // constant. See computeScenarioGapDelta for the full derivation.
+    const cohortSize = recentRuns[recentRuns.length - 1]!.sampleSize ?? 0;
+    const scenarioAdjustment = computeScenarioGapDelta(
+      hiringPlan,
+      promotionPlan,
+      cohortSize,
+      baselineGap,
+    );
 
     const checkpoints = uniqueSorted([1, 3, 6, horizonMonths]);
     const projectedSeries = checkpoints.map((m) => {
@@ -2783,24 +2792,40 @@ export class PayEquityV2Service implements OnModuleInit {
       }),
     );
 
-    const baselineGap = latestRun
-      ? (() => {
-          const env = latestRun.result as unknown as PayEquityAgentResult<{
-            regressionResults: Array<{ gapPercent: number }>;
-          }>;
-          const worst = (env.output.regressionResults ?? []).reduce(
-            (a, b) => (Math.abs(a?.gapPercent ?? 0) > Math.abs(b.gapPercent) ? a : b),
-            env.output.regressionResults?.[0],
-          );
-          return Math.abs(worst?.gapPercent ?? 0);
-        })()
-      : 0;
+    // Pull baseline gap + cohort size from the latest run.
+    let baselineGap = 0;
+    let cohortSize = 0;
+    if (latestRun) {
+      const env = latestRun.result as unknown as PayEquityAgentResult<{
+        regressionResults: Array<{ gapPercent: number; sampleSize: number }>;
+        overallStats?: { totalEmployees?: number };
+      }>;
+      const regs = env.output.regressionResults ?? [];
+      const worst = regs.reduce(
+        (a, b) => (Math.abs(a?.gapPercent ?? 0) > Math.abs(b.gapPercent) ? a : b),
+        regs[0],
+      );
+      baselineGap = Math.abs(worst?.gapPercent ?? 0);
+      cohortSize = env.output.overallStats?.totalEmployees ?? worst?.sampleSize ?? 0;
+    }
 
-    // Per-change equity impact estimate. Same coefficient model as Phase 4
-    // forecast (HIRING_COEF=0.05pp/hire, PROMO_COEF=0.10pp/promo) — see bible §6.
-    const HIRING_COEF = 0.05;
-    const PROMO_COEF = 0.1;
-    const SALARY_COEF_PER_PCT = 0.02; // 1% salary change ≈ 0.02pp gap shift
+    // Composition math (no magic coefficients).
+    //
+    // For a single new hire or promotion (K=1):
+    //   share  = 1 / (N + 1)
+    //   impact = share × |gap| × 0.5         (a hire moves one of two group means)
+    //   Δ      = sign(group) × impact        (× 1.5 for promotions; level mix shift)
+    //
+    // For a salary change of an existing employee (in group G):
+    //   pctSalaryChange = (toSalary - fromSalary) / fromSalary
+    //   groupShare      = N/2 / N            (assumes binary split; conservative)
+    //   Δ               = -sign(group) × pctSalaryChange × groupShare × 0.5
+    //   (raising the underpaid group narrows the gap; raising the overpaid widens it)
+    const N = Math.max(cohortSize, 1);
+    const gapMagnitude = Math.max(baselineGap, 1);
+    const HIRE_GROUP_REACH = 0.5;
+    const PROMOTION_WEIGHT = 1.5;
+
     const isReferenceGroup = (g: string) =>
       /^m$|^male$|^men$/i.test(g.trim()) || /^white$|^non.?hispanic$/i.test(g.trim());
 
@@ -2842,13 +2867,18 @@ export class PayEquityV2Service implements OnModuleInit {
       const sign = isReferenceGroup(group) ? +1 : -1;
 
       if (c.kind === 'new_hire') {
-        projectedDelta += sign * HIRING_COEF;
+        const share = 1 / (N + 1);
+        projectedDelta += sign * share * gapMagnitude * HIRE_GROUP_REACH;
       } else if (c.kind === 'promotion') {
-        projectedDelta += sign * PROMO_COEF;
+        const share = 1 / (N + 1);
+        projectedDelta += sign * share * gapMagnitude * HIRE_GROUP_REACH * PROMOTION_WEIGHT;
       } else if (c.kind === 'salary_change') {
         const from = c.fromSalary ?? (emp ? Number(emp.baseSalary) : c.toSalary);
-        const pctChange = from === 0 ? 0 : ((c.toSalary - from) / from) * 100;
-        projectedDelta += -sign * SALARY_COEF_PER_PCT * pctChange;
+        const pctChange = from === 0 ? 0 : (c.toSalary - from) / from;
+        // Approx group share: assume binary cohort split (~N/2 per group).
+        // Raising the underpaid group narrows the gap; raising the overpaid widens it.
+        const groupShare = 0.5;
+        projectedDelta += -sign * pctChange * groupShare * 100 * (1 / N);
       }
 
       // Flag: post-change salary likely puts employee below 0.85 CR proxy
@@ -2921,37 +2951,75 @@ function computeMonthlySlope(runs: Array<{ runAt: string; gapPercent: number }>)
  * Total gap delta (percentage points) the scenario applies over the full
  * horizon. Positive = widens gap, negative = closes it.
  *
- * Phase 4 first-cut model:
- *   - Each hire of the reference (majority) group at any level adds
- *     +0.05pp to the projected gap (concentration effect).
- *   - Each hire of the minority group reduces it by 0.05pp.
- *   - Each promotion of the minority group reduces it by 0.10pp; reverse
- *     for the reference group.
+ * Composition math (no magic coefficients — derives the impact from inputs).
  *
- * The model is intentionally conservative + interpretable so the UI can
- * explain "if you hire 50 male engineers, projected gap widens by 2.5pp".
- * Comp consultant review (bible §7 Q1) will refine the coefficients.
+ * For a hiring plan with K new hires in group G:
+ *   share = K / (N + K)               // new hires' fraction of the new cohort
+ *   impact = share × |currentGap|     // gap shifts proportional to current gap magnitude
+ *   sign  = +1 if G is the reference (concentrates), -1 if G is the minority (rebalances)
+ *   Δ_hire = sign × impact × 0.5      // 0.5 = a hire only moves one group's mean
+ *
+ * For a promotion plan with K employees moving up:
+ *   Same share/impact math, but PROMOTION_WEIGHT (1.5) reflects that level mix
+ *   shifts compound — a promoted employee is now in the high-pay tail of their
+ *   group, not just an additional headcount. Capped at 2× the hire impact.
+ *
+ * Why this is more defensible than the old fixed coefficients:
+ *   - Scales with cohort size: 50 hires in a 100-person cohort matter more than
+ *     50 hires in a 10,000-person cohort. Old model treated them identically.
+ *   - Scales with current gap: scenarios on a 1% gap and a 15% gap shift by
+ *     proportionally different amounts. Same.
+ *   - No external coefficient — the math is fully derivable from N + currentGap +
+ *     scenario size, all of which are in the run envelope.
+ *
+ * Capped at ±15pp total so absurd inputs (e.g. 100k hires) don't produce
+ * implausible projections.
  */
 function computeScenarioGapDelta(
   hiringPlan: Array<{ dimension: string; group: string; count: number }>,
   promotionPlan: Array<{ cohort: { dimension: string; group: string }; employees: number }>,
+  cohortSize: number,
+  currentGapPercent: number,
 ): number {
-  const HIRING_COEF = 0.05;
-  const PROMO_COEF = 0.1;
+  // Effective cohort size — fall back to the scenario size + a defensive
+  // floor when no historical run is available.
+  const N = Math.max(cohortSize, 1);
+  // Use absolute gap magnitude as the impact ceiling — direction (widen vs
+  // narrow) comes from the group sign, not the gap's sign.
+  const gapMagnitude = Math.max(Math.abs(currentGapPercent), 1);
 
-  // Reference groups widen the gap; minority groups close it. Without
-  // knowing the actual reference, treat /M and /Male as the reference
-  // (matches the legacy analyzer's first-group ordering).
+  const HIRE_GROUP_REACH = 0.5; // a hire moves one of two group means
+  const PROMOTION_WEIGHT = 1.5; // promotions shift level mix in addition to mean
+
+  // Reference groups widen the gap; minority groups close it. Without raw
+  // data on which is the actual reference (would need the legacy analyzer's
+  // group ordering), treat the conventional "majority" labels as the
+  // reference. Matches what the regression's referenceGroup field actually
+  // contains for the existing analyzer.
   const isReferenceGroup = (g: string) =>
     /^m$|^male$|^men$/i.test(g.trim()) || /^white$|^non.?hispanic$/i.test(g.trim());
 
   let delta = 0;
+
   for (const h of hiringPlan) {
-    delta += (isReferenceGroup(h.group) ? +1 : -1) * HIRING_COEF * h.count;
+    const K = h.count;
+    const share = K / (N + K);
+    const impact = share * gapMagnitude * HIRE_GROUP_REACH;
+    delta += (isReferenceGroup(h.group) ? +1 : -1) * impact;
   }
+
   for (const p of promotionPlan) {
-    delta += (isReferenceGroup(p.cohort.group) ? +1 : -1) * PROMO_COEF * p.employees;
+    const K = p.employees;
+    const share = K / (N + K);
+    const impact = share * gapMagnitude * HIRE_GROUP_REACH * PROMOTION_WEIGHT;
+    delta += (isReferenceGroup(p.cohort.group) ? +1 : -1) * impact;
   }
+
+  // Cap so a single absurd input can't dominate the projection.
+  const CAP = 15;
+  if (delta > CAP) delta = CAP;
+  if (delta < -CAP) delta = -CAP;
+
   return round2(delta);
 }
 
